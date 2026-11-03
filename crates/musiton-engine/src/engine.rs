@@ -7,7 +7,7 @@ use musiton_core::{SamplePos, TempoMap, Tick, TimeSig};
 use musiton_dsp::osc::SineOsc;
 use musiton_dsp::smooth::LinearRamp;
 
-use crate::command::{EngineCommand, Garbage};
+use crate::command::{EngineCommand, Garbage, InputSource};
 use crate::graph::CompiledGraph;
 use crate::node::ProcessContext;
 use crate::EngineShared;
@@ -26,6 +26,12 @@ const COMMAND_CAPACITY: usize = 1024;
 const GARBAGE_CAPACITY: usize = 256;
 /// Most commands handled per block (keeps the callback time bounded).
 const MAX_COMMANDS_PER_BLOCK: usize = 64;
+/// Most input channels the engine reads.
+pub const MAX_INPUT_CHANNELS: usize = 16;
+/// Input frames allowed to queue up before old ones are skipped (keeps latency bounded).
+const MAX_INPUT_BACKLOG: usize = 2048;
+/// Level on input 1 that counts as "the measurement click arrived".
+const PROBE_THRESHOLD: f32 = 0.1;
 /// How often the GC thread wakes up.
 const GC_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -63,6 +69,12 @@ pub fn create(sample_rate: f32, max_block: usize) -> (EngineHandle, Engine) {
         fade_pos: 0,
         tone: SineOsc::new(TEST_TONE_HZ, f64::from(sample_rate)),
         tone_gain: LinearRamp::with_time(0.0, TONE_FADE_MS, sample_rate),
+        input: None,
+        input_buf: vec![vec![0.0; max_block]; MAX_INPUT_CHANNELS],
+        recording: false,
+        punch: None,
+        input_started: false,
+        probe: None,
     };
     (handle, engine)
 }
@@ -142,6 +154,15 @@ pub struct Engine {
     fade_pos: usize,
     tone: SineOsc,
     tone_gain: LinearRamp,
+    input: Option<Box<InputSource>>,
+    /// Planar input of the current segment.
+    input_buf: Vec<Vec<f32>>,
+    recording: bool,
+    punch: Option<(Tick, Tick)>,
+    /// The current input has delivered samples at least once.
+    input_started: bool,
+    /// Frames since the latency-measurement click was played.
+    probe: Option<u64>,
 }
 
 impl Engine {
@@ -159,6 +180,7 @@ impl Engine {
         }
         self.drain_commands();
         let frames = out.len() / channels;
+        self.skip_input_backlog(frames);
         let (body, tail) = out.split_at_mut(frames * channels);
         tail.fill(0.0);
         let mut done = 0;
@@ -183,6 +205,55 @@ impl Engine {
             done += n;
         }
         self.shared.publish_transport(self.playing, self.pos);
+        self.shared.publish_recording(self.recording);
+    }
+
+    /// Drops queued input beyond `frames + MAX_INPUT_BACKLOG` so input latency stays low.
+    fn skip_input_backlog(&mut self, frames: usize) {
+        let Some(input) = self.input.as_mut() else {
+            return;
+        };
+        let ch = input.channels.max(1);
+        let keep = (frames + MAX_INPUT_BACKLOG) * ch;
+        let excess = input.samples.slots().saturating_sub(keep);
+        let excess = excess - excess % ch;
+        if excess > 0 {
+            if let Ok(chunk) = input.samples.read_chunk(excess) {
+                chunk.commit_all();
+            }
+        }
+    }
+
+    /// Reads `frames` input frames into `input_buf` (silence where the ring runs dry).
+    fn read_input(&mut self, frames: usize) -> usize {
+        let Some(input) = self.input.as_mut() else {
+            return 0;
+        };
+        let ch = input.channels.clamp(1, MAX_INPUT_CHANNELS);
+        let avail = (input.samples.slots() / input.channels.max(1)).min(frames);
+        // Count input gaps only once the device has delivered data (not while it starts).
+        if avail > 0 {
+            self.input_started = true;
+        }
+        if avail < frames && self.input_started {
+            self.shared.add_xrun();
+        }
+        if let Ok(chunk) = input.samples.read_chunk(avail * input.channels.max(1)) {
+            let (a, b) = chunk.as_slices();
+            for (k, s) in a.iter().chain(b).enumerate() {
+                let (frame, c) = (k / input.channels.max(1), k % input.channels.max(1));
+                if let Some(x) = self.input_buf.get_mut(c).and_then(|v| v.get_mut(frame)) {
+                    *x = *s;
+                }
+            }
+            chunk.commit_all();
+        }
+        for buf in self.input_buf.iter_mut().take(ch) {
+            if let Some(rest) = buf.get_mut(avail..frames) {
+                rest.fill(0.0);
+            }
+        }
+        ch
     }
 
     /// Loop range in samples if the loop is active for the current position.
@@ -215,6 +286,14 @@ impl Engine {
                     self.retire(old);
                 }
                 EngineCommand::SetTimeSig(sig) => self.time_sig = sig,
+                EngineCommand::SetInput(new) => {
+                    self.input_started = false;
+                    if let Some(old) = std::mem::replace(&mut self.input, new) {
+                        self.retire(old);
+                    }
+                }
+                EngineCommand::SetRecording(on) => self.recording = on,
+                EngineCommand::SetPunch(range) => self.punch = range,
                 EngineCommand::SetMetronome(on) => self.metronome = on,
                 EngineCommand::SwapGraph(new) => {
                     if let Some(stale) = self.old_graph.take() {
@@ -241,6 +320,12 @@ impl Engine {
     }
 
     fn render_segment(&mut self, out: &mut [f32], channels: usize, frames: usize) {
+        let in_ch = self.read_input(frames);
+        let sr = f64::from(self.sample_rate);
+        let punch = self.punch.map(|(a, b)| {
+            let at = |t: Tick| self.tempo.tick_to_sample(t.0 as f64, sr).round().max(0.0) as u64;
+            (at(a), at(b))
+        });
         let ctx = ProcessContext {
             sample_rate: self.sample_rate,
             frames,
@@ -249,6 +334,9 @@ impl Engine {
             tempo: &self.tempo,
             time_sig: self.time_sig,
             metronome: self.metronome,
+            inputs: self.input_buf.get(..in_ch).unwrap_or(&[]),
+            recording: self.recording && self.playing,
+            punch,
         };
         out.fill(0.0);
         let fade_start = self.fade_pos;
@@ -271,6 +359,38 @@ impl Engine {
             }
         }
         self.mix_test_tone(out, channels);
+        self.run_probe(out, channels, frames, in_ch > 0);
+    }
+
+    /// Latency measurement: plays a short click, then counts frames until input 1 hears it.
+    fn run_probe(&mut self, out: &mut [f32], channels: usize, frames: usize, has_input: bool) {
+        if self.shared.take_probe_request() {
+            self.probe = Some(0);
+            for frame in out.chunks_exact_mut(channels).take(4) {
+                frame.fill(0.5);
+            }
+        }
+        let Some(start) = self.probe else {
+            return;
+        };
+        let input = self
+            .input_buf
+            .first()
+            .map_or(&[][..], |b| b.get(..frames).unwrap_or(&[]));
+        if has_input {
+            if let Some(i) = input.iter().position(|s| s.abs() > PROBE_THRESHOLD) {
+                self.shared.set_probe_result((start + i as u64) as i64);
+                self.probe = None;
+                return;
+            }
+        }
+        let elapsed = start + frames as u64;
+        if elapsed > self.sample_rate as u64 {
+            self.shared.set_probe_result(crate::PROBE_TIMEOUT);
+            self.probe = None;
+        } else {
+            self.probe = Some(elapsed);
+        }
     }
 
     fn mix_test_tone(&mut self, out: &mut [f32], channels: usize) {

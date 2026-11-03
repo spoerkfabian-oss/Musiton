@@ -17,6 +17,9 @@ fn ctx(tempo: &TempoMap, frames: usize) -> ProcessContext<'_> {
         tempo,
         time_sig: Default::default(),
         metronome: false,
+        inputs: &[],
+        recording: false,
+        punch: None,
     }
 }
 

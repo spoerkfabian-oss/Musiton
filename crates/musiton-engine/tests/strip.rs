@@ -44,6 +44,9 @@ fn run(
             tempo: &tempo,
             time_sig: TimeSig::default(),
             metronome: false,
+            inputs: &[],
+            recording: false,
+            punch: None,
         };
         node.process(&ctx, &mut AudioIo::new(&ins, &mut outs, n), &[]);
         for (o, b) in out.iter_mut().zip(&outs) {

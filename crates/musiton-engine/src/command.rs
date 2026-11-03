@@ -5,6 +5,14 @@ use musiton_core::{SamplePos, TempoMap, Tick, TimeSig};
 
 use crate::graph::{CompiledGraph, NodeIdx};
 
+/// Interleaved input samples from the input device's callback.
+pub struct InputSource {
+    /// Interleaved samples.
+    pub samples: rtrb::Consumer<f32>,
+    /// Channels per frame.
+    pub channels: usize,
+}
+
 /// A command for the audio thread. Heap data is boxed so that the audio thread only
 /// moves pointers; replaced objects are sent to the GC thread to be freed.
 pub enum EngineCommand {
@@ -22,6 +30,12 @@ pub enum EngineCommand {
     SetTimeSig(TimeSig),
     /// Switch the metronome on/off.
     SetMetronome(bool),
+    /// Use a new audio input (or none).
+    SetInput(Option<Box<InputSource>>),
+    /// Arm/disarm recording (records while the transport runs).
+    SetRecording(bool),
+    /// Restrict recording to a range (punch in/out); `None` = record everywhere.
+    SetPunch(Option<(Tick, Tick)>),
     /// Replace the running graph (cross-faded, click-free).
     SwapGraph(Box<CompiledGraph>),
     /// Set a node parameter in the running graph.

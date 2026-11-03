@@ -19,6 +19,12 @@ pub struct ProcessContext<'a> {
     pub time_sig: TimeSig,
     /// Whether the metronome is switched on.
     pub metronome: bool,
+    /// Audio input channels for this block (from the input device; may be empty).
+    pub inputs: &'a [Vec<f32>],
+    /// Whether recording is active (transport running and record enabled).
+    pub recording: bool,
+    /// Punch range in samples: recording only happens inside it.
+    pub punch: Option<(u64, u64)>,
 }
 
 /// A timed event inside a block.

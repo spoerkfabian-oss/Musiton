@@ -1,22 +1,75 @@
 //! Lock-free status shared between the UI thread and the audio thread.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Scalars read and written from both threads (atomics only).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EngineShared {
     test_tone: AtomicBool,
     xruns: AtomicU64,
     cpu_load_bits: AtomicU32,
     playing: AtomicBool,
     playhead: AtomicU64,
+    probe_request: AtomicBool,
+    /// Last latency measurement: frames, or [`PROBE_NONE`] / [`PROBE_TIMEOUT`].
+    probe_result: AtomicI64,
+    recording: AtomicBool,
+}
+
+/// No latency measurement yet.
+pub const PROBE_NONE: i64 = -1;
+/// The measurement click was not heard on the input within one second.
+pub const PROBE_TIMEOUT: i64 = -2;
+
+impl Default for EngineShared {
+    fn default() -> Self {
+        Self {
+            test_tone: AtomicBool::new(false),
+            xruns: AtomicU64::new(0),
+            cpu_load_bits: AtomicU32::new(0),
+            playing: AtomicBool::new(false),
+            playhead: AtomicU64::new(0),
+            probe_request: AtomicBool::new(false),
+            probe_result: AtomicI64::new(PROBE_NONE),
+            recording: AtomicBool::new(false),
+        }
+    }
 }
 
 impl EngineShared {
     /// Creates a new shared state with everything off/zero.
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Starts a round-trip latency measurement: a click is played and timed until it
+    /// arrives at input channel 1 (needs a cable or a microphone near the speaker).
+    pub fn request_latency_probe(&self) {
+        self.probe_result.store(PROBE_NONE, Ordering::Relaxed);
+        self.probe_request.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn take_probe_request(&self) -> bool {
+        self.probe_request.swap(false, Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_probe_result(&self, v: i64) {
+        self.probe_result.store(v, Ordering::Relaxed);
+    }
+
+    /// Result of the last latency measurement (frames, [`PROBE_NONE`] or [`PROBE_TIMEOUT`]).
+    pub fn probe_result(&self) -> i64 {
+        self.probe_result.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn publish_recording(&self, on: bool) {
+        self.recording.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether recording is armed in the engine.
+    pub fn recording(&self) -> bool {
+        self.recording.load(Ordering::Relaxed)
     }
 
     /// Turns the 440 Hz test tone on or off.

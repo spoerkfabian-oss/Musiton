@@ -54,6 +54,9 @@ fn render(
             tempo,
             time_sig: TimeSig::default(),
             metronome: false,
+            inputs: &[],
+            recording: false,
+            punch: None,
         };
         let mut io = AudioIo::new(&[], &mut outs, n);
         player.process(&ctx, &mut io, &[]);
@@ -142,6 +145,9 @@ fn stopped_transport_is_silent() {
         tempo: &tempo,
         time_sig: TimeSig::default(),
         metronome: false,
+        inputs: &[],
+        recording: false,
+        punch: None,
     };
     p.process(&ctx, &mut AudioIo::new(&[], &mut outs, 64), &[]);
     assert!(outs.iter().flatten().all(|&s| s == 0.0));

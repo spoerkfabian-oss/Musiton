@@ -12,6 +12,6 @@ pub mod nodes;
 pub mod rt;
 mod shared;
 
-pub use command::EngineCommand;
+pub use command::{EngineCommand, InputSource};
 pub use engine::{create, render_offline, Engine, EngineHandle, TEST_TONE_HZ, TEST_TONE_LEVEL};
-pub use shared::EngineShared;
+pub use shared::{EngineShared, PROBE_NONE, PROBE_TIMEOUT};
