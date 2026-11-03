@@ -107,3 +107,20 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 - If the audio device runs at a different rate than the project (default 48 kHz), clips are played with linear interpolation (lower quality). Choose 48 kHz in Options → Audio settings.
 - Missing audio files are reported in the status bar; the relink dialog comes later.
 - No rubber-band (box) selection yet.
+
+## Phase 6 — Mixer
+**Built:** Mixer tab with a strip per track plus master: fader (−∞…+6 dB, double-click = 0 dB), pan (double-click = centre), mute, solo, solo-safe (buses), stereo peak + RMS meters with falling peak line and clip indicator (click to reset), output routing (master or a bus), sends to buses (level, pre/post fader, add/remove). Engine: `Strip` node (smoothed gain/pan/mute, pre-fader taps, lock-free `Meter`), `SendGain` node.
+
+**Decisions**
+- Pan law: constant power, −3 dB in the centre (hard left/right = 0 dB). A centred track therefore plays 3 dB below its file level per strip (track and master).
+- Fader, pan, mute/solo and send levels never rebuild the graph: they are sent as `SetParam` commands (20 ms smoothing, no zipper noise). Only structural changes (clips, routing, adding/removing sends/tracks, loaded audio) rebuild it.
+- Solo: soloing a track keeps the buses it feeds audible; soloing a bus keeps its sources audible; solo-safe buses (e.g. reverb returns) always play.
+- Routing loops are prevented in the UI (only loop-free buses are offered) and skipped again when building the graph.
+- Meters: peak = highest sample since the UI last looked (never missed between frames), RMS over ~300 ms. The UI peak line falls at 20 dB/s.
+- Metronome bypasses the master fader.
+
+**Acceptance:** `engine_graph::tests::drum_bus_with_send` — drums → drum bus with a −6 dB send to an FX bus; output and the drum-bus/FX/master meters match the levels computed by hand (also with a pre-fader send and the drum fader fully down). A real reverb on the FX bus comes with the built-in effects in phase 10.
+
+**Known issues**
+- No meters in the track headers yet (only in the mixer).
+- Instrument tracks have a strip but no sound source until phase 9.

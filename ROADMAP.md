@@ -38,8 +38,8 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** you can build a loop-based arrangement from samples and it plays back sample-accurately (golden test).
 
 ## Phase 6 — Mixer
-- [ ] Channel strips: fader (dB), pan (−3 dB law), mute, solo (incl. solo-safe for buses), peak + RMS meters, clip indicator
-- [ ] Bus tracks, sends (pre/post), output routing, master strip; cycle detection in routing
+- [x] Channel strips: fader (dB), pan (−3 dB law), mute, solo (incl. solo-safe for buses), peak + RMS meters, clip indicator
+- [x] Bus tracks, sends (pre/post), output routing, master strip; cycle detection in routing
 **Done when:** a drum bus with reverb send works; meters match offline-computed levels.
 
 ## Phase 7 — Audio recording
