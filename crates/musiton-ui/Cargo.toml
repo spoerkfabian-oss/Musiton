@@ -9,9 +9,9 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+egui.workspace = true
 musiton-core.workspace = true
 musiton-project.workspace = true
-egui.workspace = true
 
 [lints]
 workspace = true
