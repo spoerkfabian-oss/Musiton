@@ -10,7 +10,12 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     /// Audio device settings.
     pub audio: AudioSettings,
+    /// Recently opened projects, newest first.
+    pub recent_projects: Vec<PathBuf>,
 }
+
+/// Most entries kept in [`Settings::recent_projects`].
+const MAX_RECENT: usize = 10;
 
 /// Audio device settings; `None` means "device default".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +40,18 @@ impl Default for AudioSettings {
 }
 
 impl Settings {
+    /// Puts `path` at the top of the recent-projects list.
+    pub fn add_recent(&mut self, path: &Path) {
+        self.recent_projects.retain(|p| p != path);
+        self.recent_projects.insert(0, path.to_path_buf());
+        self.recent_projects.truncate(MAX_RECENT);
+    }
+
+    /// Folder for files that belong to no project (e.g. autosave of an unsaved song).
+    pub fn data_dir() -> Option<PathBuf> {
+        directories::ProjectDirs::from("", "", "Musiton").map(|d| d.data_dir().to_path_buf())
+    }
+
     /// Default location: `%APPDATA%\Musiton\config\settings.json` on Windows.
     pub fn default_path() -> Option<PathBuf> {
         directories::ProjectDirs::from("", "", "Musiton")
@@ -87,6 +104,7 @@ mod tests {
                 sample_rate: Some(48_000),
                 buffer_size: Some(128),
             },
+            recent_projects: vec![PathBuf::from("a/b.musiton")],
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
@@ -101,6 +119,24 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(Settings::load_from(&path), Settings::default());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn recent_list_is_unique_newest_first_and_capped() {
+        let mut s = Settings::default();
+        for i in 0..12 {
+            s.add_recent(Path::new(&format!("{i}.musiton")));
+        }
+        s.add_recent(Path::new("5.musiton"));
+        assert_eq!(s.recent_projects.len(), MAX_RECENT);
+        assert_eq!(s.recent_projects[0], PathBuf::from("5.musiton"));
+        assert_eq!(
+            s.recent_projects
+                .iter()
+                .filter(|p| p.ends_with("5.musiton"))
+                .count(),
+            1
+        );
     }
 
     #[test]

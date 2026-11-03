@@ -5,35 +5,21 @@ use musiton_core::{BarBeatTick, SamplePos, TempoMap, Tick, TimeSig};
 use musiton_engine::graph::GraphBuilder;
 use musiton_engine::nodes::Metronome;
 use musiton_engine::{EngineCommand, EngineHandle};
+use musiton_project::{Edit, Project};
 
-/// UI-side transport settings (will move into the project model in phase 3).
-pub struct Transport {
-    bpm: f64,
-    time_sig: TimeSig,
-    metronome: bool,
-    loop_on: bool,
-    loop_start_bar: u32,
-    loop_bars: u32,
-    test_tone: bool,
+/// Keeps the engine's transport settings in step with the project (sends only changes).
+#[derive(Default)]
+pub struct EngineSync {
+    tempo: Option<TempoMap>,
+    time_sig: Option<TimeSig>,
+    loop_range: Option<Option<(Tick, Tick)>>,
+    metronome: Option<bool>,
 }
 
-impl Default for Transport {
-    fn default() -> Self {
-        Self {
-            bpm: 120.0,
-            time_sig: TimeSig::default(),
-            metronome: true,
-            loop_on: false,
-            loop_start_bar: 1,
-            loop_bars: 4,
-            test_tone: false,
-        }
-    }
-}
-
-impl Transport {
-    /// Sends the whole state (and the phase-2 graph) to a freshly started engine.
-    pub fn init_engine(&self, engine: &mut EngineHandle) {
+impl EngineSync {
+    /// Installs the graph and forgets what was sent (call after starting a new engine).
+    pub fn init_engine(&mut self, engine: &mut EngineHandle) {
+        *self = Self::default();
         let mut b = GraphBuilder::new();
         let m = b.add(Box::new(Metronome::new()));
         b.set_output(m);
@@ -41,34 +27,57 @@ impl Transport {
             Ok(g) => engine.send_or_log(EngineCommand::SwapGraph(Box::new(g))),
             Err(e) => tracing::error!("building graph failed: {e}"),
         }
-        engine.send_or_log(EngineCommand::SetTempoMap(Box::new(self.tempo_map())));
-        engine.send_or_log(EngineCommand::SetTimeSig(self.time_sig));
-        engine.send_or_log(EngineCommand::SetMetronome(self.metronome));
-        engine.send_or_log(EngineCommand::SetLoop(self.loop_range()));
-        engine.shared().set_test_tone(self.test_tone);
     }
 
-    fn tempo_map(&self) -> TempoMap {
-        TempoMap::constant(self.bpm)
-    }
-
-    fn loop_range(&self) -> Option<(Tick, Tick)> {
-        if !self.loop_on {
-            return None;
+    /// Sends whatever changed in `project` since the last call.
+    pub fn sync(&mut self, project: &Project, engine: &mut EngineHandle) {
+        if self.tempo.as_ref() != Some(&project.tempo) {
+            self.tempo = Some(project.tempo.clone());
+            engine.send_or_log(EngineCommand::SetTempoMap(Box::new(project.tempo.clone())));
         }
-        let bar = self.time_sig.ticks_per_bar();
-        let start = i64::from(self.loop_start_bar.max(1) - 1) * bar;
-        Some((
-            Tick(start),
-            Tick(start + i64::from(self.loop_bars.max(1)) * bar),
-        ))
+        if self.time_sig != Some(project.time_sig) {
+            self.time_sig = Some(project.time_sig);
+            engine.send_or_log(EngineCommand::SetTimeSig(project.time_sig));
+        }
+        let range = project.loop_range.filter(|_| project.loop_enabled);
+        if self.loop_range != Some(range) {
+            self.loop_range = Some(range);
+            engine.send_or_log(EngineCommand::SetLoop(range));
+        }
+        if self.metronome != Some(project.metronome) {
+            self.metronome = Some(project.metronome);
+            engine.send_or_log(EngineCommand::SetMetronome(project.metronome));
+        }
     }
+}
 
-    /// Draws the bar; sends commands to `engine` when something changes.
-    pub fn ui(&mut self, ui: &mut egui::Ui, mut engine: Option<&mut EngineHandle>) {
+/// What the transport bar wants the app to do.
+#[derive(Default)]
+pub struct TransportOutput {
+    /// Undoable project edits, with "merge with previous" flag (true while dragging).
+    pub edits: Vec<(Edit, bool)>,
+    /// Non-undoable project setting changed (loop on/off, metronome).
+    pub settings_changed: bool,
+}
+
+/// Transport bar UI state.
+#[derive(Default)]
+pub struct Transport {
+    test_tone: bool,
+}
+
+impl Transport {
+    /// Draws the bar. Play/stop/locate go straight to the engine; project changes are
+    /// returned as edits.
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut Project,
+        engine: Option<&mut EngineHandle>,
+    ) -> TransportOutput {
+        let mut out = TransportOutput::default();
         let playing = engine.as_ref().is_some_and(|e| e.shared().playing());
         let mut cmds = Vec::new();
-        let mut send = |cmd: EngineCommand| cmds.push(cmd);
 
         // Consumed here so a focused button doesn't also react to the same key press.
         let none = egui::Modifiers::NONE;
@@ -81,7 +90,7 @@ impl Transport {
                 .clicked()
                 || home
             {
-                send(EngineCommand::Locate(SamplePos(0)));
+                cmds.push(EngineCommand::Locate(SamplePos(0)));
             }
             let label = if playing { "Stop" } else { "Play" };
             if ui
@@ -90,7 +99,7 @@ impl Transport {
                 .clicked()
                 || space
             {
-                send(if playing {
+                cmds.push(if playing {
                     EngineCommand::Stop
                 } else {
                     EngineCommand::Play
@@ -99,88 +108,95 @@ impl Transport {
             ui.separator();
 
             ui.label("BPM");
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.bpm)
-                        .range(20.0..=300.0)
-                        .speed(0.2)
-                        .fixed_decimals(1),
-                )
-                .changed()
-            {
-                send(EngineCommand::SetTempoMap(Box::new(self.tempo_map())));
-                if self.loop_on {
-                    send(EngineCommand::SetLoop(self.loop_range()));
-                }
+            let mut bpm = project.tempo.bpm_at(0.0);
+            let r = ui.add(
+                egui::DragValue::new(&mut bpm)
+                    .range(20.0..=300.0)
+                    .speed(0.2)
+                    .fixed_decimals(1),
+            );
+            if r.changed() {
+                let merge = r.dragged() && !r.drag_started();
+                out.edits
+                    .push((Edit::SetTempo(TempoMap::constant(bpm)), merge));
             }
+
             ui.label("Time sig");
+            let mut sig = project.time_sig;
             let mut sig_changed = ui
-                .add(egui::DragValue::new(&mut self.time_sig.num).range(1..=32))
+                .add(egui::DragValue::new(&mut sig.num).range(1..=32))
                 .changed();
             ui.label("/");
             egui::ComboBox::from_id_salt("den")
                 .width(40.0)
-                .selected_text(self.time_sig.den.to_string())
+                .selected_text(sig.den.to_string())
                 .show_ui(ui, |ui| {
                     for d in [2u8, 4, 8, 16] {
                         sig_changed |= ui
-                            .selectable_value(&mut self.time_sig.den, d, d.to_string())
+                            .selectable_value(&mut sig.den, d, d.to_string())
                             .changed();
                     }
                 });
             if sig_changed {
-                send(EngineCommand::SetTimeSig(self.time_sig));
-                send(EngineCommand::SetLoop(self.loop_range()));
+                out.edits.push((Edit::SetTimeSig(sig), false));
             }
             ui.separator();
 
-            if ui.toggle_value(&mut self.metronome, "Metronome").changed() {
-                send(EngineCommand::SetMetronome(self.metronome));
+            if ui
+                .toggle_value(&mut project.metronome, "Metronome")
+                .changed()
+            {
+                out.settings_changed = true;
             }
-            let mut loop_changed = ui.toggle_value(&mut self.loop_on, "Loop").changed();
+            if ui.toggle_value(&mut project.loop_enabled, "Loop").changed() {
+                out.settings_changed = true;
+            }
+            let bar = project.time_sig.ticks_per_bar();
+            let (start, end) = project.loop_range.unwrap_or((Tick(0), Tick(4 * bar)));
+            let mut start_bar = start.0 / bar + 1;
+            let mut len_bars = ((end.0 - start.0) / bar).max(1);
             ui.label("from bar");
-            loop_changed |= ui
-                .add(egui::DragValue::new(&mut self.loop_start_bar).range(1..=999))
-                .changed();
+            let r1 = ui.add(egui::DragValue::new(&mut start_bar).range(1..=999));
             ui.label("length");
-            loop_changed |= ui
-                .add(
-                    egui::DragValue::new(&mut self.loop_bars)
-                        .range(1..=64)
-                        .suffix(" bars"),
-                )
-                .changed();
-            if loop_changed {
-                send(EngineCommand::SetLoop(self.loop_range()));
+            let r2 = ui.add(
+                egui::DragValue::new(&mut len_bars)
+                    .range(1..=64)
+                    .suffix(" bars"),
+            );
+            if r1.changed() || r2.changed() {
+                let s = (start_bar - 1) * bar;
+                let merge =
+                    (r1.dragged() && !r1.drag_started()) || (r2.dragged() && !r2.drag_started());
+                out.edits.push((
+                    Edit::SetLoop(Some((Tick(s), Tick(s + len_bars * bar)))),
+                    merge,
+                ));
             }
             ui.separator();
 
             ui.toggle_value(&mut self.test_tone, "Test tone");
         });
 
-        if let Some(e) = engine.as_deref_mut() {
+        if let Some(e) = engine {
             for cmd in cmds {
                 e.send_or_log(cmd);
             }
             e.shared().set_test_tone(self.test_tone);
-        }
 
-        if let Some(e) = engine.as_deref() {
             let sr = f64::from(e.sample_rate());
             let pos = e.shared().playhead() as f64;
-            let tick = self.tempo_map().sample_to_tick(pos, sr);
-            let bbt = BarBeatTick::from_tick(Tick(tick.floor() as i64), self.time_sig);
+            let tick = project.tempo.sample_to_tick(pos, sr);
+            let bbt = BarBeatTick::from_tick(Tick(tick.floor() as i64), project.time_sig);
             let secs = pos / sr;
-            ui.horizontal(|ui| {
-                ui.monospace(
-                    egui::RichText::new(format!(
-                        "{bbt}   {:02}:{:06.3}",
-                        (secs / 60.0).floor(),
-                        secs % 60.0
-                    ))
-                    .size(20.0),
-                );
-            });
+            ui.monospace(
+                egui::RichText::new(format!(
+                    "{bbt}   {:02}:{:06.3}",
+                    (secs / 60.0).floor(),
+                    secs % 60.0
+                ))
+                .size(20.0),
+            );
         }
+        out
     }
 }
