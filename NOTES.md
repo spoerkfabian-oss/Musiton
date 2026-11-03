@@ -159,3 +159,20 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 
 **Known issues**
 - Needs the owner's MIDI keyboard test on Windows (no MIDI hardware here).
+
+## Phase 9 — Built-in instruments
+**Built:** **Polysynth** (2 oscillators saw/square/triangle/sine with PolyBLEP anti-aliasing, osc 2 pitch/detune, noise, 12 dB state-variable filter LP/HP/BP with its own ADSR and envelope amount, amp ADSR, LFO to pitch and cutoff, glide, velocity sensitivity, 16 voices with voice stealing) and **Sampler** (load a sample, root key, tune, ADSR, sustain loop with start/end, velocity → volume; drum mode with one sample per pad on keys C2…D#3). New "Device" tab in the bottom panel: choose the instrument of the selected instrument track, knobs for every parameter (drag up/down, Shift = fine, double-click = default), factory presets (Init, Warm pad, Pluck, Bass) and user presets ("Save preset", stored in `%APPDATA%\Musiton\data\presets\<type>\<name>.ron`), "Load sample…"/pad "Load…".
+
+**Decisions**
+- `ParamInfo` moved to `musiton-core` (with kind: linear/log/integer/toggle/choice, unit and formatting) so the UI can draw knobs without depending on the engine.
+- Projects store devices per track (`devices: Vec<DeviceSlot>`, first = instrument). Only changed parameters are saved; missing ones use the defaults (so new parameters in later versions need no migration). Instrument tracks without a device play the polysynth.
+- **No more instrument restarts on edits:** note edits are sent to the running `MidiTrack` node (`EngineCommand::NodeData`, old data freed on the GC thread) and parameter changes via `SetParam`; the graph is only rebuilt when the instrument type, its samples, audio clips or routing change. Notes that were sounding when their clip changed receive a note-off.
+- Click-free voices: oscillator phases are never reset and a retriggered/stolen voice starts its attack from its current level. In the sampler a stolen voice restarts its sample (can click when all 16 voices are busy).
+- Sampler anti-aliasing: every sample keeps 4 pre-filtered octave levels (63-tap Blackman-windowed sinc), played with cubic interpolation.
+- The phase-8 sine placeholder synth was removed.
+
+**Tests:** polysynth — pitch, no aliasing at key 120 (aliases < −30 dB), no clicks when retriggering/stealing/releasing, filter; sampler — pitch tracking, velocity, loop, drum pads, no aliasing two octaves up; DSP — PolyBLEP alias levels, SVF responses and stability under wild modulation, ADSR timing, mipmap filtering.
+
+**Known issues**
+- Owner test on real hardware: play both instruments from the keyboard, especially high notes.
+- Not every polysynth parameter is smoothed yet (levels/resonance change per block); full smoothing is a phase-10 item.

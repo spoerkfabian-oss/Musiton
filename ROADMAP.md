@@ -55,9 +55,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** you can play a keyboard into a track, edit it in the piano roll and hear it back identically.
 
 ## Phase 9 — Built-in instruments
-- [ ] Polysynth: 2 osc (saw/square/tri/sine, PolyBLEP), noise, SVF filter (LP/HP/BP) with env, amp ADSR, LFO, 16 voices, voice stealing, glide
-- [ ] Sampler: load sample, root key, ADSR, loop points, velocity → volume; simple drum mode (pad per note)
-- [ ] Generic parameter UI (knobs) + preset save/load
+- [x] Polysynth: 2 osc (saw/square/tri/sine, PolyBLEP), noise, SVF filter (LP/HP/BP) with env, amp ADSR, LFO, 16 voices, voice stealing, glide
+- [x] Sampler: load sample, root key, ADSR, loop points, velocity → volume; simple drum mode (pad per note)
+- [x] Generic parameter UI (knobs) + preset save/load
 **Done when:** both instruments are playable from the keyboard without clicks/aliasing artifacts at high notes.
 
 ## Phase 10 — Built-in effects
