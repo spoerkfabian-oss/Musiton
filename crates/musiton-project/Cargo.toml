@@ -10,6 +10,12 @@ publish = false
 
 [dependencies]
 musiton-core.workspace = true
+ron.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
