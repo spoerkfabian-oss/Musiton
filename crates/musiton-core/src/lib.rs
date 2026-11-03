@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod ids;
+pub mod params;
 pub mod time;
 pub mod units;
 

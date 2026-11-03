@@ -36,3 +36,8 @@ id_type!(
     /// Identifies a marker.
     MarkerId
 );
+
+id_type!(
+    /// Identifies a device (instrument/effect) in a track's chain.
+    DeviceId
+);
