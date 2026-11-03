@@ -1,17 +1,22 @@
 //! Offline tests for the phase-1 test tone.
 
 use musiton_engine::rt::{no_alloc, AllocDisabler};
-use musiton_engine::{render_offline, Engine, EngineShared, TEST_TONE_LEVEL};
+use musiton_engine::{create, render_offline, Engine, TEST_TONE_LEVEL};
 
 #[global_allocator]
 static ALLOC: AllocDisabler = AllocDisabler;
 
 const SR: f32 = 48_000.0;
 
+fn tone_engine(block: usize) -> (musiton_engine::EngineHandle, Engine) {
+    let (h, e) = create(SR, block);
+    h.shared().set_test_tone(true);
+    (h, e)
+}
+
 #[test]
 fn silent_when_tone_off() {
-    let shared = EngineShared::new();
-    let mut engine = Engine::new(shared, SR, 256);
+    let (_h, mut engine) = create(SR, 256);
     let out = render_offline(&mut engine, 4_800, 2, 256);
     assert_eq!(out.len(), 9_600);
     assert!(out.iter().all(|&s| s == 0.0));
@@ -19,9 +24,7 @@ fn silent_when_tone_off() {
 
 #[test]
 fn tone_is_440hz_at_minus_12_db_on_all_channels() {
-    let shared = EngineShared::new();
-    shared.set_test_tone(true);
-    let mut engine = Engine::new(shared, SR, 256);
+    let (_h, mut engine) = tone_engine(256);
     let out = render_offline(&mut engine, 48_000, 2, 256);
     let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
     assert!(out.chunks(2).all(|f| f[0] == f[1]));
@@ -36,8 +39,8 @@ fn tone_is_440hz_at_minus_12_db_on_all_channels() {
 
 #[test]
 fn toggling_is_click_free() {
-    let shared = EngineShared::new();
-    let mut engine = Engine::new(shared.clone(), SR, 128);
+    let (h, mut engine) = create(SR, 128);
+    let shared = h.shared().clone();
     let mut out = Vec::new();
     for i in 0..40 {
         shared.set_test_tone(i % 10 < 5);
@@ -53,21 +56,14 @@ fn toggling_is_click_free() {
 
 #[test]
 fn odd_callback_sizes_match_block_rendering() {
-    let make = || {
-        let shared = EngineShared::new();
-        shared.set_test_tone(true);
-        Engine::new(shared, SR, 256)
-    };
-    let a = render_offline(&mut make(), 3_000, 2, 256);
-    let b = render_offline(&mut make(), 3_000, 2, 1_000);
+    let a = render_offline(&mut tone_engine(256).1, 3_000, 2, 256);
+    let b = render_offline(&mut tone_engine(256).1, 3_000, 2, 1_000);
     assert_eq!(a, b);
 }
 
 #[test]
 fn process_does_not_allocate() {
-    let shared = EngineShared::new();
-    shared.set_test_tone(true);
-    let mut engine = Engine::new(shared, SR, 256);
+    let (_h, mut engine) = tone_engine(256);
     let mut buf = vec![0.0_f32; 512 * 2];
     no_alloc(|| {
         for _ in 0..100 {

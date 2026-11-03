@@ -1,11 +1,17 @@
 //! Real-time audio engine for Musiton.
 //!
-//! The engine renders interleaved `f32` audio. It is driven either by a device
-//! callback (see `musiton-io`) or offline by [`render_offline`] — both run the same code.
+//! [`create`] returns an [`EngineHandle`] (UI thread) and an [`Engine`] (audio thread).
+//! The engine is driven either by a device callback (see `musiton-io`) or offline by
+//! [`render_offline`] — both run exactly the same code.
 
+mod command;
 mod engine;
+pub mod graph;
+pub mod node;
+pub mod nodes;
 pub mod rt;
 mod shared;
 
-pub use engine::{render_offline, Engine, TEST_TONE_HZ, TEST_TONE_LEVEL};
+pub use command::EngineCommand;
+pub use engine::{create, render_offline, Engine, EngineHandle, TEST_TONE_HZ, TEST_TONE_LEVEL};
 pub use shared::EngineShared;

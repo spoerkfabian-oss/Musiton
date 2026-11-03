@@ -1,14 +1,16 @@
-//! Lock-free state shared between the UI thread and the audio thread.
+//! Lock-free status shared between the UI thread and the audio thread.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// Scalars read and written from both the UI and the audio thread (atomics only).
+/// Scalars read and written from both threads (atomics only).
 #[derive(Debug, Default)]
 pub struct EngineShared {
     test_tone: AtomicBool,
     xruns: AtomicU64,
     cpu_load_bits: AtomicU32,
+    playing: AtomicBool,
+    playhead: AtomicU64,
 }
 
 impl EngineShared {
@@ -50,5 +52,20 @@ impl EngineShared {
     /// Audio-thread load (1.0 = 100 %).
     pub fn cpu_load(&self) -> f32 {
         f32::from_bits(self.cpu_load_bits.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn publish_transport(&self, playing: bool, playhead: u64) {
+        self.playing.store(playing, Ordering::Relaxed);
+        self.playhead.store(playhead, Ordering::Relaxed);
+    }
+
+    /// Whether the transport is running (as of the last processed block).
+    pub fn playing(&self) -> bool {
+        self.playing.load(Ordering::Relaxed)
+    }
+
+    /// Song position in samples (as of the last processed block).
+    pub fn playhead(&self) -> u64 {
+        self.playhead.load(Ordering::Relaxed)
     }
 }

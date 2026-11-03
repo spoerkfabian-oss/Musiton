@@ -1,10 +1,15 @@
-//! The audio-thread side of the engine.
+//! The engine: UI-side handle and audio-side processor.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use musiton_core::{SamplePos, TempoMap, Tick, TimeSig};
 use musiton_dsp::osc::SineOsc;
 use musiton_dsp::smooth::LinearRamp;
 
+use crate::command::{EngineCommand, Garbage};
+use crate::graph::CompiledGraph;
+use crate::node::ProcessContext;
 use crate::EngineShared;
 
 /// Test tone frequency in Hz.
@@ -13,64 +18,312 @@ pub const TEST_TONE_HZ: f64 = 440.0;
 pub const TEST_TONE_LEVEL: f32 = 0.25;
 /// Fade time when the test tone is switched on/off.
 const TONE_FADE_MS: f32 = 10.0;
+/// Cross-fade time when a new graph replaces the running one.
+const GRAPH_FADE_MS: f32 = 10.0;
+/// Capacity of the UI → audio command ring.
+const COMMAND_CAPACITY: usize = 1024;
+/// Capacity of the audio → GC ring.
+const GARBAGE_CAPACITY: usize = 256;
+/// Most commands handled per block (keeps the callback time bounded).
+const MAX_COMMANDS_PER_BLOCK: usize = 64;
+/// How often the GC thread wakes up.
+const GC_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Renders audio. Lives on the audio thread; everything here is allocation-free.
-pub struct Engine {
+/// Creates a connected handle/engine pair and starts the GC thread.
+///
+/// `max_block` is the largest number of frames processed at once; longer device buffers
+/// are split. Graphs sent to this engine must be built with the same `max_block`.
+pub fn create(sample_rate: f32, max_block: usize) -> (EngineHandle, Engine) {
+    let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(COMMAND_CAPACITY);
+    let (trash_tx, trash_rx) = rtrb::RingBuffer::<Garbage>::new(GARBAGE_CAPACITY);
+    spawn_gc(trash_rx);
+    let shared = EngineShared::new();
+    let max_block = max_block.max(1);
+    let handle = EngineHandle {
+        commands: cmd_tx,
+        shared: shared.clone(),
+        sample_rate,
+        max_block,
+    };
+    let engine = Engine {
+        commands: cmd_rx,
+        trash: trash_tx,
+        shared,
+        sample_rate,
+        max_block,
+        playing: false,
+        pos: 0,
+        loop_range: None,
+        tempo: Box::new(TempoMap::default()),
+        time_sig: TimeSig::default(),
+        metronome: false,
+        graph: None,
+        old_graph: None,
+        fade_len: ((GRAPH_FADE_MS * 0.001 * sample_rate) as usize).max(1),
+        fade_pos: 0,
+        tone: SineOsc::new(TEST_TONE_HZ, f64::from(sample_rate)),
+        tone_gain: LinearRamp::with_time(0.0, TONE_FADE_MS, sample_rate),
+    };
+    (handle, engine)
+}
+
+fn spawn_gc(mut trash: rtrb::Consumer<Garbage>) {
+    let spawned = std::thread::Builder::new()
+        .name("musiton-gc".into())
+        .spawn(move || loop {
+            while let Ok(garbage) = trash.pop() {
+                drop(garbage);
+            }
+            if trash.is_abandoned() {
+                break;
+            }
+            std::thread::sleep(GC_INTERVAL);
+        });
+    if let Err(e) = spawned {
+        tracing::error!("could not start GC thread: {e}");
+    }
+}
+
+/// UI-thread side: sends commands, reads status.
+pub struct EngineHandle {
+    commands: rtrb::Producer<EngineCommand>,
     shared: Arc<EngineShared>,
+    sample_rate: f32,
     max_block: usize,
+}
+
+impl EngineHandle {
+    /// Sends a command. Returns it back if the ring is full (engine not running).
+    pub fn send(&mut self, cmd: EngineCommand) -> Result<(), EngineCommand> {
+        self.commands
+            .push(cmd)
+            .map_err(|rtrb::PushError::Full(c)| c)
+    }
+
+    /// Sends a command; logs and drops it if the ring is full.
+    pub fn send_or_log(&mut self, cmd: EngineCommand) {
+        if self.send(cmd).is_err() {
+            tracing::warn!("engine command queue full, command dropped");
+        }
+    }
+
+    /// Status shared with the audio thread.
+    pub fn shared(&self) -> &Arc<EngineShared> {
+        &self.shared
+    }
+
+    /// Sample rate the engine runs at.
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
+    /// Block size graphs for this engine must be built with.
+    pub fn max_block(&self) -> usize {
+        self.max_block
+    }
+}
+
+/// Audio-thread side. Everything reachable from [`Engine::process`] is allocation-free.
+pub struct Engine {
+    commands: rtrb::Consumer<EngineCommand>,
+    trash: rtrb::Producer<Garbage>,
+    shared: Arc<EngineShared>,
+    sample_rate: f32,
+    max_block: usize,
+    playing: bool,
+    pos: u64,
+    loop_range: Option<(Tick, Tick)>,
+    tempo: Box<TempoMap>,
+    time_sig: TimeSig,
+    metronome: bool,
+    graph: Option<Box<CompiledGraph>>,
+    old_graph: Option<Box<CompiledGraph>>,
+    fade_len: usize,
+    fade_pos: usize,
     tone: SineOsc,
     tone_gain: LinearRamp,
 }
 
 impl Engine {
-    /// Creates an engine. `max_block` is the largest number of frames processed at once;
-    /// longer buffers are split internally.
-    pub fn new(shared: Arc<EngineShared>, sample_rate: f32, max_block: usize) -> Self {
-        Self {
-            shared,
-            max_block: max_block.max(1),
-            tone: SineOsc::new(TEST_TONE_HZ, f64::from(sample_rate)),
-            tone_gain: LinearRamp::with_time(0.0, TONE_FADE_MS, sample_rate),
-        }
+    /// Status shared with the UI thread.
+    pub fn shared(&self) -> &Arc<EngineShared> {
+        &self.shared
     }
 
-    /// Fills `out` (interleaved, `channels` per frame) with the next block of audio.
-    /// Any length is accepted; a trailing partial frame is set to silence.
+    /// Fills `out` (interleaved, `channels` per frame) with the next audio.
+    /// Graph channel 0 goes to device channel 0, channel 1 to channel 1 (mono graphs are
+    /// duplicated); further device channels are silent. Any length is accepted.
     pub fn process(&mut self, out: &mut [f32], channels: usize) {
         if channels == 0 {
             return;
         }
-        let chunk = self.max_block * channels;
-        for block in out.chunks_mut(chunk) {
-            self.process_block(block, channels);
+        self.drain_commands();
+        let frames = out.len() / channels;
+        let (body, tail) = out.split_at_mut(frames * channels);
+        tail.fill(0.0);
+        let mut done = 0;
+        while done < frames {
+            let mut n = (frames - done).min(self.max_block);
+            let loop_samples = self.loop_samples();
+            if let Some((_, end)) = loop_samples {
+                n = n.min((end - self.pos) as usize);
+            }
+            let Some(seg) = body.get_mut(done * channels..(done + n) * channels) else {
+                break;
+            };
+            self.render_segment(seg, channels, n);
+            if self.playing {
+                self.pos += n as u64;
+                if let Some((start, end)) = loop_samples {
+                    if self.pos >= end {
+                        self.pos = start;
+                    }
+                }
+            }
+            done += n;
+        }
+        self.shared.publish_transport(self.playing, self.pos);
+    }
+
+    /// Loop range in samples if the loop is active for the current position.
+    fn loop_samples(&self) -> Option<(u64, u64)> {
+        let (a, b) = self.loop_range?;
+        if !self.playing {
+            return None;
+        }
+        let sr = f64::from(self.sample_rate);
+        let start = self.tempo.tick_to_sample(a.0 as f64, sr).round().max(0.0) as u64;
+        let end = self.tempo.tick_to_sample(b.0 as f64, sr).round().max(0.0) as u64;
+        (end > start && self.pos < end).then_some((start, end))
+    }
+
+    fn drain_commands(&mut self) {
+        for _ in 0..MAX_COMMANDS_PER_BLOCK {
+            let Ok(cmd) = self.commands.pop() else {
+                break;
+            };
+            match cmd {
+                EngineCommand::Play => self.playing = true,
+                EngineCommand::Stop => self.playing = false,
+                EngineCommand::Locate(SamplePos(p)) => self.pos = p,
+                EngineCommand::SetLoop(range) => self.loop_range = range,
+                EngineCommand::SetTempoMap(new) => {
+                    let sr = f64::from(self.sample_rate);
+                    let tick = self.tempo.sample_to_tick(self.pos as f64, sr);
+                    self.pos = new.tick_to_sample(tick, sr).round().max(0.0) as u64;
+                    let old = std::mem::replace(&mut self.tempo, new);
+                    self.retire(old);
+                }
+                EngineCommand::SetTimeSig(sig) => self.time_sig = sig,
+                EngineCommand::SetMetronome(on) => self.metronome = on,
+                EngineCommand::SwapGraph(new) => {
+                    if let Some(stale) = self.old_graph.take() {
+                        self.retire(stale);
+                    }
+                    self.old_graph = self.graph.replace(new);
+                    self.fade_pos = 0;
+                }
+                EngineCommand::SetParam { node, id, val } => {
+                    if let Some(g) = self.graph.as_mut() {
+                        g.set_param(node, id, val);
+                    }
+                }
+            }
         }
     }
 
-    fn process_block(&mut self, out: &mut [f32], channels: usize) {
+    /// Hands an object to the GC thread. If its queue is full the object is leaked
+    /// rather than freed here (freeing on the audio thread is not allowed).
+    fn retire<T: Send + 'static>(&mut self, obj: Box<T>) {
+        if let Err(rtrb::PushError::Full(g)) = self.trash.push(obj) {
+            std::mem::forget(g);
+        }
+    }
+
+    fn render_segment(&mut self, out: &mut [f32], channels: usize, frames: usize) {
+        let ctx = ProcessContext {
+            sample_rate: self.sample_rate,
+            frames,
+            playing: self.playing,
+            sample_pos: self.pos,
+            tempo: &self.tempo,
+            time_sig: self.time_sig,
+            metronome: self.metronome,
+        };
+        out.fill(0.0);
+        let fade_start = self.fade_pos;
+        let fade_len = self.fade_len;
+        let fade_in = |i: usize| ((fade_start + i) as f32 / fade_len as f32).min(1.0);
+        if let Some(g) = self.graph.as_mut() {
+            g.process(&ctx);
+            mix_graph(g, out, channels, frames, fade_in);
+        }
+        if let Some(old) = self.old_graph.as_mut() {
+            old.process(&ctx);
+            mix_graph(old, out, channels, frames, |i| 1.0 - fade_in(i));
+        }
+        if self.fade_pos < self.fade_len {
+            self.fade_pos = (self.fade_pos + frames).min(self.fade_len);
+            if self.fade_pos == self.fade_len {
+                if let Some(done) = self.old_graph.take() {
+                    self.retire(done);
+                }
+            }
+        }
+        self.mix_test_tone(out, channels);
+    }
+
+    fn mix_test_tone(&mut self, out: &mut [f32], channels: usize) {
         let target = if self.shared.test_tone() {
             TEST_TONE_LEVEL
         } else {
             0.0
         };
         self.tone_gain.set_target(target);
-
         if !self.tone_gain.is_ramping() && self.tone_gain.target() == 0.0 {
             self.tone.reset();
-            out.fill(0.0);
             return;
         }
-
-        let mut frames = out.chunks_exact_mut(channels);
-        for frame in &mut frames {
+        for frame in out.chunks_exact_mut(channels) {
             let s = self.tone.next_sample() * self.tone_gain.next_value();
-            frame.fill(s);
+            for x in frame {
+                *x += s;
+            }
         }
-        frames.into_remainder().fill(0.0);
+    }
+}
+
+/// Adds the graph's stereo (or mono) output, scaled by `gain(frame)`, to `out`.
+fn mix_graph(
+    g: &CompiledGraph,
+    out: &mut [f32],
+    channels: usize,
+    frames: usize,
+    gain: impl Fn(usize) -> f32,
+) {
+    let left = g.output(0, frames);
+    let right = if g.num_outputs() > 1 {
+        g.output(1, frames)
+    } else {
+        left
+    };
+    for (i, frame) in out.chunks_exact_mut(channels).enumerate() {
+        let k = gain(i);
+        let l = left.get(i).copied().unwrap_or(0.0) * k;
+        let r = right.get(i).copied().unwrap_or(0.0) * k;
+        match frame {
+            [mono] => *mono += 0.5 * (l + r),
+            [a, b, ..] => {
+                *a += l;
+                *b += r;
+            }
+            [] => {}
+        }
     }
 }
 
 /// Renders `frames` frames offline in callbacks of `callback_frames` frames.
-/// Used by tests and (later) export; runs exactly the same code as the device callback.
+/// Used by tests and export; runs exactly the same code as the device callback.
 pub fn render_offline(
     engine: &mut Engine,
     frames: usize,
