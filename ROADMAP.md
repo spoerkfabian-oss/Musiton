@@ -3,15 +3,15 @@
 Each phase ends with something the owner can **run and test**. "Done when" = acceptance criteria; all must hold before the next phase.
 
 ## Phase 0 — Foundation
-- [ ] Cargo workspace with all crates from ARCHITECTURE.md (empty stubs), `rust-toolchain.toml`, `.gitignore`, README; licence: ask owner (suggest MIT OR Apache-2.0)
-- [ ] GitHub Actions: windows-latest + ubuntu-latest → fmt, clippy -D warnings, test
-- [ ] `tracing` setup, `assert_no_alloc` wired as debug feature
+- [x] Cargo workspace with all crates from ARCHITECTURE.md (empty stubs), `rust-toolchain.toml`, `.gitignore`, README; licence: ask owner (suggest MIT OR Apache-2.0)
+- [x] GitHub Actions: windows-latest + ubuntu-latest → fmt, clippy -D warnings, test
+- [x] `tracing` setup, `assert_no_alloc` wired as debug feature
 **Done when:** CI green on both OSes; `cargo run` opens an empty eframe window titled with the app name.
 
 ## Phase 1 — Audio out
-- [ ] cpal backend: list devices, pick output, sample rate, buffer size; settings dialog; persist to settings.json
-- [ ] Test tone (sine) through the callback; xrun counter; CPU-load meter
-- [ ] Offline render path (no device) used by tests
+- [x] cpal backend: list devices, pick output, sample rate, buffer size; settings dialog; persist to settings.json
+- [x] Test tone (sine) through the callback; xrun counter; CPU-load meter
+- [x] Offline render path (no device) used by tests
 **Done when:** you can choose your output device and hear a clean 440 Hz tone with no crackle at 256 samples.
 
 ## Phase 2 — Engine core
