@@ -88,3 +88,22 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues**
 - Browser panel and Editor/Mixer tabs are placeholders until phases 5, 6 and 8.
 - Folder tracks can be created only from files for now (no UI to nest tracks yet).
+
+## Phase 5 — Audio clips
+**Built:** Import of WAV/FLAC/MP3/OGG/AIFF by dragging files from Explorer onto a track (or below the tracks for a new track) or from the new Browser panel (choose a folder; drag, or double-click to add on a new track at the playhead). Files are decoded (symphonia), converted to the project sample rate (rubato FFT resampler) and stored as 32-bit float WAV in the project's `audio/` folder, on a worker thread. Clips show their waveform from multi-resolution peaks. Editing: move (snapped, also to another track of the same kind), trim both edges, fade handles, clip gain (right-click), split at playhead (S), duplicate (Ctrl+D), delete, multi-select (Shift/Ctrl+click). Each drag is previewed and committed as a single undo step. The engine plays audio tracks through a `ClipPlayer` node per track into a master `Mix` node; mute/solo are honoured.
+
+**Decisions**
+- `AudioData` (planar f32) and `Peaks` live in `musiton-core` so engine, I/O and UI share them without extra dependencies.
+- The project → engine graph translation lives in the app (`engine_graph.rs`), because the engine must not depend on the project crate. The graph is rebuilt (and cross-faded) whenever the document revision or the set of loaded audio files changes.
+- Clip positions are converted from ticks to samples inside `ClipPlayer::process` using the current tempo map, so tempo changes need no rebuild. Audio clips are not time-stretched.
+- New edits: `ReplaceClip`, `MoveClipToTrack`, `AddAsset`, `Batch` (several edits = one undo step, rolled back if one fails).
+- Peaks are kept in memory (computed on load/import, ~10 ms per minute of audio); the `peaks/` folder is not used yet — a disk cache only pays off for very long files.
+- Importing into an unsaved project first asks for a save location (audio must be copied into the project folder).
+- Fades are linear.
+
+**Golden/accuracy test:** `engine_graph::tests::arrangement_plays_back_sample_accurately` — a kick on every beat and a hat on every off-beat at 120 BPM rendered offline with odd callback sizes; every output sample equals the expected sum exactly.
+
+**Known issues**
+- If the audio device runs at a different rate than the project (default 48 kHz), clips are played with linear interpolation (lower quality). Choose 48 kHz in Options → Audio settings.
+- Missing audio files are reported in the status bar; the relink dialog comes later.
+- No rubber-band (box) selection yet.

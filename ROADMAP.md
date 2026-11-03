@@ -32,9 +32,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** UI holds 60 fps with 50 empty tracks; all transport controls drive the engine.
 
 ## Phase 5 — Audio clips
-- [ ] Import WAV/FLAC/MP3/OGG (drag & drop + browser), resample to project rate on import, copy into project folder
-- [ ] Peak cache (multi-resolution) + waveform drawing
-- [ ] Clip move, trim both edges, split, duplicate, delete, fades in/out, clip gain; multi-select
+- [x] Import WAV/FLAC/MP3/OGG (drag & drop + browser), resample to project rate on import, copy into project folder
+- [x] Peak cache (multi-resolution) + waveform drawing
+- [x] Clip move, trim both edges, split, duplicate, delete, fades in/out, clip gain; multi-select
 **Done when:** you can build a loop-based arrangement from samples and it plays back sample-accurately (golden test).
 
 ## Phase 6 — Mixer
