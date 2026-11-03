@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "tools/scanner"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/spoerkfabian-oss/Musiton"
+
+[workspace.dependencies]
+musiton-core = { path = "crates/musiton-core" }
+musiton-project = { path = "crates/musiton-project" }
+musiton-dsp = { path = "crates/musiton-dsp" }
+musiton-engine = { path = "crates/musiton-engine" }
+musiton-devices = { path = "crates/musiton-devices" }
+musiton-io = { path = "crates/musiton-io" }
+musiton-plugin-host = { path = "crates/musiton-plugin-host" }
+musiton-ui = { path = "crates/musiton-ui" }
+
+anyhow = "1"
+assert_no_alloc = "1.1"
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
+egui = "0.37"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+debug = 1

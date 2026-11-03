@@ -1,0 +1,15 @@
+[package]
+name = "musiton-project"
+description = "Musiton project model, persistence and undo/redo."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+musiton-core.workspace = true
+
+[lints]
+workspace = true

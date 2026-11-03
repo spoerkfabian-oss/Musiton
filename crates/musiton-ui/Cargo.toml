@@ -1,0 +1,17 @@
+[package]
+name = "musiton-ui"
+description = "egui widgets for Musiton."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+musiton-core.workspace = true
+musiton-project.workspace = true
+egui.workspace = true
+
+[lints]
+workspace = true

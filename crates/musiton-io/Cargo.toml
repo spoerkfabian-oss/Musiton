@@ -1,0 +1,16 @@
+[package]
+name = "musiton-io"
+description = "Audio/MIDI device I/O and file I/O for Musiton."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+musiton-core.workspace = true
+musiton-engine.workspace = true
+
+[lints]
+workspace = true
