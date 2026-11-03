@@ -141,3 +141,21 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues / needs the owner**
 - The 30-minute 2-track test and "recorded clip lines up with the metronome" need real hardware: arm a track, record a few bars clapping on the click, check the alignment; if it is off, use Measure (cable from output to input 1) or the manual correction.
 - Input gaps count as dropouts once the input is running.
+
+## Phase 8 — MIDI + piano roll
+**Built:** MIDI keyboard input (midir; choose it in Options → Audio settings → MIDI input), live playing into the armed instrument track (or, if none is armed, the selected instrument track), MIDI clips (double-click an instrument track to create one; click a MIDI clip to open it), piano roll in the Editor tab: Draw/Select tools, click/drag to add notes, right-click deletes, drag notes (time + pitch), drag the right edge to resize, rectangle selection, Ctrl+A, Delete, Ctrl+D duplicate, ↑/↓ transpose (Shift = octave), Q / Quantize with strength, velocity lane (drag bars), keyboard preview (click the keys on the left). MIDI recording (Rec with an armed instrument track) in replace or "Overdub" mode, File → Import/Export MIDI file (.mid, type 1). A simple 16-voice sine synth plays instrument tracks until the real polysynth arrives in phase 9.
+
+**Decisions / deviations**
+- **Crate direction:** `musiton-devices` depends on `musiton-engine` (devices implement the engine's `AudioNode` trait), not the other way round as sketched in ARCHITECTURE.md.
+- No event routing in the graph: a `MidiTrack` node owns its instrument, turns clip notes (tick → sample with the tempo map) and live MIDI into sample-accurate events and calls the instrument. Transport stop/jumps/loop wraps send "all notes off".
+- Live MIDI: midir callback → ring → engine reads it at the start of each block (timing resolution = one block, ≤ 5 ms at 256 samples). Preview notes use the same path via a command.
+- Recorded MIDI is moved earlier by the output buffer (what you heard) and stored with tick resolution (PPQ 960 = 0.5 ms at 120 BPM). A recording becomes one clip spanning whole bars; replace mode removes older notes that start inside that range.
+- "MIDI learn groundwork": the engine reports the last controller moved (shown in the status bar). Mapping controllers to parameters comes with automation (phase 11).
+- Lasso selection is a rectangle selection for now.
+- Graph rebuilds (e.g. after editing notes) restart the instrument; editing while playing may cut sounding notes. Node reuse across rebuilds is still open (see phase 2 notes).
+- Importing a MIDI file into an empty song also takes over its tempo.
+
+**Acceptance:** `engine_graph::tests::recorded_midi_plays_back_identically` plays notes live while recording, turns the recording into a clip, plays it back and compares the audio sample by sample (identical when the notes fall on ticks; otherwise within ±½ tick).
+
+**Known issues**
+- Needs the owner's MIDI keyboard test on Windows (no MIDI hardware here).

@@ -49,9 +49,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** 30 min recording of 2 tracks has zero dropouts; recorded clip lines up with the metronome.
 
 ## Phase 8 — MIDI + piano roll
-- [ ] midir input, device selection, MIDI-learn groundwork; live play to armed instrument track
-- [ ] MIDI clips; piano roll: draw/erase, select (box/lasso), move, resize, duplicate, velocity lane, quantize (+ strength), transpose, keyboard preview
-- [ ] MIDI recording (replace/overdub), .mid import/export (midly)
+- [x] midir input, device selection, MIDI-learn groundwork; live play to armed instrument track
+- [x] MIDI clips; piano roll: draw/erase, select (box/lasso), move, resize, duplicate, velocity lane, quantize (+ strength), transpose, keyboard preview
+- [x] MIDI recording (replace/overdub), .mid import/export (midly)
 **Done when:** you can play a keyboard into a track, edit it in the piano roll and hear it back identically.
 
 ## Phase 9 — Built-in instruments
