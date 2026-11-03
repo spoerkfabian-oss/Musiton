@@ -4,18 +4,19 @@
 
 mod audio_dialog;
 mod settings;
+mod transport;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
-use musiton_engine::EngineShared;
+use musiton_engine::EngineHandle;
 use musiton_io::audio::{self, AudioOutput, OutputRequest};
 use tracing_subscriber::EnvFilter;
 
 use audio_dialog::AudioDialog;
 use settings::{AudioSettings, Settings};
+use transport::Transport;
 
 /// In debug builds every allocation inside `musiton_engine::rt::no_alloc` aborts.
 #[cfg(debug_assertions)]
@@ -47,8 +48,8 @@ fn main() -> anyhow::Result<()> {
 struct App {
     settings: Settings,
     settings_path: Option<PathBuf>,
-    shared: Arc<EngineShared>,
-    output: Option<AudioOutput>,
+    output: Option<(AudioOutput, EngineHandle)>,
+    transport: Transport,
     audio_error: Option<String>,
     audio_dialog: AudioDialog,
 }
@@ -63,8 +64,8 @@ impl App {
         let mut app = Self {
             settings,
             settings_path,
-            shared: EngineShared::new(),
             output: None,
+            transport: Transport::default(),
             audio_error: None,
             audio_dialog: AudioDialog::default(),
         };
@@ -80,11 +81,11 @@ impl App {
             sample_rate: a.sample_rate,
             buffer_size: a.buffer_size,
         };
-        match audio::start_output(&request, self.shared.clone()) {
-            Ok(out) => {
-                self.output = Some(out);
+        match audio::start_output(&request) {
+            Ok((out, mut engine)) => {
+                self.transport.init_engine(&mut engine);
+                self.output = Some((out, engine));
                 self.audio_error = None;
-                self.shared.reset_xruns();
             }
             Err(e) => {
                 tracing::error!("audio output failed: {e}");
@@ -124,7 +125,7 @@ impl App {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Audio: {err}"));
                 return;
             }
-            let Some(out) = &self.output else {
+            let Some((out, engine)) = &self.output else {
                 ui.label("Audio: off");
                 return;
             };
@@ -145,16 +146,17 @@ impl App {
                 None => ui.label("default buffer"),
             };
             ui.separator();
-            let load = self.shared.cpu_load();
+            let shared = engine.shared();
+            let load = shared.cpu_load();
             ui.add(
                 egui::ProgressBar::new(load.clamp(0.0, 1.0))
                     .desired_width(80.0)
                     .text(format!("CPU {:.0} %", load * 100.0)),
             );
             ui.separator();
-            ui.label(format!("Dropouts: {}", self.shared.xruns()));
+            ui.label(format!("Dropouts: {}", shared.xruns()));
             if ui.small_button("reset").clicked() {
-                self.shared.reset_xruns();
+                shared.reset_xruns();
             }
         });
     }
@@ -166,15 +168,11 @@ impl eframe::App for App {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            let mut tone = self.shared.test_tone();
-            if ui
-                .toggle_value(&mut tone, "Test tone (440 Hz)")
-                .changed()
-            {
-                self.shared.set_test_tone(tone);
-            }
+        egui::Panel::top("transport").show(ui, |ui| {
+            let engine = self.output.as_mut().map(|(_, e)| e);
+            self.transport.ui(ui, engine);
         });
+        egui::CentralPanel::default_margins().show(ui, |_ui| {});
 
         if let Some(new) = self.audio_dialog.show(ui.ctx()) {
             self.apply_audio_settings(new);
