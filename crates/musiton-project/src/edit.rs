@@ -3,7 +3,7 @@
 use musiton_core::ids::{ClipId, MarkerId, TrackId};
 use musiton_core::{TempoMap, Tick, TimeSig};
 
-use crate::{Asset, ChannelStrip, Clip, Marker, OutputRoute, Project, Track};
+use crate::{Asset, ChannelStrip, Clip, Marker, OutputRoute, Project, RecordSetup, Track};
 
 /// Most undo steps kept.
 const MAX_UNDO: usize = 1000;
@@ -139,6 +139,15 @@ pub enum Edit {
         /// New (after apply: old) route.
         output: OutputRoute,
     },
+    /// Change arm, monitoring or input of a track.
+    SetRecord {
+        /// Which track.
+        id: TrackId,
+        /// New (after apply: old) settings.
+        record: RecordSetup,
+    },
+    /// Change the punch range.
+    SetPunch(Option<(Tick, Tick)>),
     /// Add an audio file to the asset list.
     AddAsset(Option<Asset>),
     /// Several edits as one undo step (applied in order, reverted in reverse order).
@@ -167,6 +176,8 @@ impl Edit {
             Edit::MoveClipToTrack { .. } => "Move clip",
             Edit::AddAsset(_) => "Import audio",
             Edit::SetOutput { .. } => "Output routing",
+            Edit::SetRecord { .. } => "Record setup",
+            Edit::SetPunch(_) => "Punch range",
             Edit::Batch(edits) => edits.last().map_or("Edit", Edit::label),
         }
     }
@@ -186,7 +197,8 @@ impl Edit {
             }
             (Edit::SetTempo(_), Edit::SetTempo(_))
             | (Edit::SetTimeSig(_), Edit::SetTimeSig(_))
-            | (Edit::SetLoop(_), Edit::SetLoop(_)) => true,
+            | (Edit::SetLoop(_), Edit::SetLoop(_))
+            | (Edit::SetPunch(_), Edit::SetPunch(_)) => true,
             _ => false,
         }
     }
@@ -372,6 +384,11 @@ impl Edit {
             Edit::SetTempo(map) => std::mem::swap(&mut p.tempo, map),
             Edit::SetTimeSig(sig) => std::mem::swap(&mut p.time_sig, sig),
             Edit::SetLoop(range) => std::mem::swap(&mut p.loop_range, range),
+            Edit::SetRecord { id, record } => {
+                let t = p.track_mut(*id).ok_or(EditError::NoTrack)?;
+                std::mem::swap(&mut t.record, record);
+            }
+            Edit::SetPunch(range) => std::mem::swap(&mut p.punch_range, range),
             Edit::SetOutput { id, output } => {
                 let t = p.track_mut(*id).ok_or(EditError::NoTrack)?;
                 std::mem::swap(&mut t.output, output);

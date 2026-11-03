@@ -146,6 +146,7 @@ fn to_edit(p: &mut Project, op: Op) -> Option<Edit> {
                     gain_db: -3.5,
                     fade_in: Tick(10),
                     fade_out: Tick(20),
+                    muted: false,
                 })),
             }
         }

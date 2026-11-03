@@ -9,6 +9,6 @@ pub use file::{
     load, migrate, project_dir_for, save, write_file, ProjectError, CURRENT_VERSION, EXTENSION,
 };
 pub use model::{
-    Asset, AudioClip, ChannelStrip, Clip, Marker, MidiClip, Note, OutputRoute, Project, SendRoute,
-    Track, TrackKind,
+    Asset, AudioClip, ChannelStrip, Clip, InputRoute, Marker, MidiClip, MonitorMode, Note,
+    OutputRoute, Project, RecordSetup, SendRoute, Track, TrackKind,
 };

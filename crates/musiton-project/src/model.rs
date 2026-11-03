@@ -32,6 +32,10 @@ pub struct Project {
     pub loop_enabled: bool,
     /// Whether the metronome is switched on.
     pub metronome: bool,
+    /// Punch-in/out range for recording.
+    pub punch_range: Option<(Tick, Tick)>,
+    /// Whether recording is limited to the punch range.
+    pub punch_enabled: bool,
     /// Next free id (shared by all id types).
     pub next_id: u64,
 }
@@ -50,6 +54,8 @@ impl Default for Project {
             loop_range: Some((Tick(0), Tick(4 * TimeSig::default().ticks_per_bar()))),
             loop_enabled: false,
             metronome: true,
+            punch_range: None,
+            punch_enabled: false,
             next_id: 1,
         }
     }
@@ -155,6 +161,56 @@ pub enum TrackKind {
     Folder,
 }
 
+/// Which device inputs a track records from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputRoute {
+    /// One input channel (0-based).
+    Mono(u16),
+    /// Two input channels starting at this one (0-based).
+    Stereo(u16),
+}
+
+impl Default for InputRoute {
+    fn default() -> Self {
+        InputRoute::Mono(0)
+    }
+}
+
+/// When a track plays its live input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MonitorMode {
+    /// Never.
+    Off,
+    /// While the track is armed for recording.
+    #[default]
+    Auto,
+    /// Always.
+    On,
+}
+
+impl MonitorMode {
+    /// Whether the live input is heard for a track that is (not) armed.
+    pub fn active(self, armed: bool) -> bool {
+        match self {
+            MonitorMode::Off => false,
+            MonitorMode::Auto => armed,
+            MonitorMode::On => true,
+        }
+    }
+}
+
+/// Recording settings of a track.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordSetup {
+    /// Armed for recording.
+    pub armed: bool,
+    /// Input monitoring.
+    pub monitor: MonitorMode,
+    /// Device input(s).
+    pub input: InputRoute,
+}
+
 /// Where a track's output goes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputRoute {
@@ -183,6 +239,8 @@ pub struct Track {
     pub strip: ChannelStrip,
     /// Output routing.
     pub output: OutputRoute,
+    /// Input, arm and monitoring.
+    pub record: RecordSetup,
 }
 
 impl Default for Track {
@@ -195,6 +253,7 @@ impl Default for Track {
             clips: Vec::new(),
             strip: ChannelStrip::default(),
             output: OutputRoute::Master,
+            record: RecordSetup::default(),
         }
     }
 }
@@ -328,6 +387,8 @@ pub struct AudioClip {
     pub fade_in: Tick,
     /// Fade-out length.
     pub fade_out: Tick,
+    /// Muted clips are shown but not played (older recording takes).
+    pub muted: bool,
 }
 
 impl Default for AudioClip {
@@ -341,6 +402,7 @@ impl Default for AudioClip {
             gain_db: 0.0,
             fade_in: Tick(0),
             fade_out: Tick(0),
+            muted: false,
         }
     }
 }
