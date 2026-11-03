@@ -9,8 +9,11 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+cpal = "0.18"
 musiton-core.workspace = true
 musiton-engine.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
