@@ -472,3 +472,42 @@ fn routing_loops_are_detected_and_solo_follows_routing() {
     p.track_mut(TrackId(1)).unwrap().strip.mute = true;
     assert!(!p.audible(TrackId(1)));
 }
+
+#[test]
+fn device_params_undo_back_to_default() {
+    use musiton_core::ids::DeviceId;
+    use musiton_project::DeviceSlot;
+    let mut p = Project::default();
+    let mut u = UndoStack::new();
+    let mut t = Track {
+        id: TrackId(1),
+        kind: TrackKind::Instrument,
+        ..Track::default()
+    };
+    t.devices
+        .push(DeviceSlot::builtin(DeviceId(2), "polysynth"));
+    p.tracks.push(t);
+    let set = |v| Edit::SetDeviceParam {
+        track: TrackId(1),
+        device: DeviceId(2),
+        param: 8,
+        value: v,
+    };
+    u.perform(&mut p, set(Some(500.0)), false).unwrap();
+    u.perform(&mut p, set(Some(800.0)), true).unwrap();
+    assert_eq!(p.tracks[0].devices[0].param(8), Some(800.0));
+    u.undo(&mut p).unwrap();
+    assert_eq!(p.tracks[0].devices[0].param(8), None);
+    assert!(u
+        .perform(
+            &mut p,
+            Edit::SetDeviceParam {
+                track: TrackId(1),
+                device: DeviceId(9),
+                param: 1,
+                value: None
+            },
+            false
+        )
+        .is_err());
+}

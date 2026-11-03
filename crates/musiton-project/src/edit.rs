@@ -1,9 +1,11 @@
 //! Undoable edits. Every change to a [`Project`] made by the user goes through an [`Edit`].
 
-use musiton_core::ids::{ClipId, MarkerId, TrackId};
+use musiton_core::ids::{ClipId, DeviceId, MarkerId, TrackId};
 use musiton_core::{TempoMap, Tick, TimeSig};
 
-use crate::{Asset, ChannelStrip, Clip, Marker, OutputRoute, Project, RecordSetup, Track};
+use crate::{
+    Asset, ChannelStrip, Clip, DeviceSlot, Marker, OutputRoute, Project, RecordSetup, Track,
+};
 
 /// Most undo steps kept.
 const MAX_UNDO: usize = 1000;
@@ -17,6 +19,9 @@ pub enum EditError {
     /// No clip with this id.
     #[error("clip not found")]
     NoClip,
+    /// No device with this id.
+    #[error("device not found")]
+    NoDevice,
     /// No marker with this id.
     #[error("marker not found")]
     NoMarker,
@@ -146,6 +151,24 @@ pub enum Edit {
         /// New (after apply: old) settings.
         record: RecordSetup,
     },
+    /// Replace a track's whole device chain (add/remove/reorder devices, presets).
+    SetDevices {
+        /// Which track.
+        track: TrackId,
+        /// New (after apply: old) chain.
+        devices: Vec<DeviceSlot>,
+    },
+    /// Change one device parameter (`None` = back to the default).
+    SetDeviceParam {
+        /// Which track.
+        track: TrackId,
+        /// Which device.
+        device: DeviceId,
+        /// Parameter id.
+        param: u64,
+        /// New (after apply: old) value.
+        value: Option<f32>,
+    },
     /// Change the punch range.
     SetPunch(Option<(Tick, Tick)>),
     /// Add an audio file to the asset list.
@@ -177,6 +200,8 @@ impl Edit {
             Edit::AddAsset(_) => "Import audio",
             Edit::SetOutput { .. } => "Output routing",
             Edit::SetRecord { .. } => "Record setup",
+            Edit::SetDevices { .. } => "Devices",
+            Edit::SetDeviceParam { .. } => "Parameter change",
             Edit::SetPunch(_) => "Punch range",
             Edit::Batch(edits) => edits.last().map_or("Edit", Edit::label),
         }
@@ -188,6 +213,20 @@ impl Edit {
             (Edit::RenameTrack { id: a, .. }, Edit::RenameTrack { id: b, .. })
             | (Edit::SetTrackColor { id: a, .. }, Edit::SetTrackColor { id: b, .. }) => a == b,
             (Edit::SetStrip { track: a, .. }, Edit::SetStrip { track: b, .. }) => a == b,
+            (
+                Edit::SetDeviceParam {
+                    track: a,
+                    device: d1,
+                    param: p1,
+                    ..
+                },
+                Edit::SetDeviceParam {
+                    track: b,
+                    device: d2,
+                    param: p2,
+                    ..
+                },
+            ) => a == b && d1 == d2 && p1 == p2,
             (Edit::MoveClip { clip: a, .. }, Edit::MoveClip { clip: b, .. }) => a == b,
             (Edit::ReplaceClip { clip: a, .. }, Edit::ReplaceClip { clip: b, .. }) => {
                 a.id() == b.id()
@@ -389,6 +428,24 @@ impl Edit {
                 std::mem::swap(&mut t.record, record);
             }
             Edit::SetPunch(range) => std::mem::swap(&mut p.punch_range, range),
+            Edit::SetDevices { track, devices } => {
+                let t = p.track_mut(*track).ok_or(EditError::NoTrack)?;
+                std::mem::swap(&mut t.devices, devices);
+            }
+            Edit::SetDeviceParam {
+                track,
+                device,
+                param,
+                value,
+            } => {
+                let t = p.track_mut(*track).ok_or(EditError::NoTrack)?;
+                let d = t
+                    .devices
+                    .iter_mut()
+                    .find(|d| d.id == *device)
+                    .ok_or(EditError::NoDevice)?;
+                *value = d.set_param(*param, *value);
+            }
             Edit::SetOutput { id, output } => {
                 let t = p.track_mut(*id).ok_or(EditError::NoTrack)?;
                 std::mem::swap(&mut t.output, output);

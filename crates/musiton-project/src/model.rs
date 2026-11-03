@@ -1,6 +1,6 @@
 //! Serializable project data. Every field has a default so newer fields load from older files.
 
-use musiton_core::ids::{AssetId, ClipId, MarkerId, TrackId};
+use musiton_core::ids::{AssetId, ClipId, DeviceId, MarkerId, TrackId};
 use musiton_core::{SamplePos, TempoMap, Tick, TimeSig};
 use serde::{Deserialize, Serialize};
 
@@ -241,6 +241,103 @@ pub struct Track {
     pub output: OutputRoute,
     /// Input, arm and monitoring.
     pub record: RecordSetup,
+    /// Device chain: the instrument first (instrument tracks), then effects.
+    pub devices: Vec<DeviceSlot>,
+}
+
+/// One device in a track's chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceSlot {
+    /// Unique id.
+    pub id: DeviceId,
+    /// Bypassed devices pass audio through unchanged.
+    #[serde(default)]
+    pub bypass: bool,
+    /// What it is.
+    pub kind: DeviceKind,
+}
+
+/// Device types.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DeviceKind {
+    /// A built-in instrument or effect.
+    Builtin {
+        /// Type id, e.g. "polysynth".
+        type_id: String,
+        /// Changed parameters: (parameter id, value). Missing ones use the default.
+        #[serde(default)]
+        params: Vec<(u64, f32)>,
+        /// Samples (sampler): one root sample, or one per pad key in drum mode.
+        #[serde(default)]
+        samples: Vec<SampleZone>,
+    },
+}
+
+impl DeviceSlot {
+    /// A built-in device with default settings.
+    pub fn builtin(id: DeviceId, type_id: &str) -> Self {
+        Self {
+            id,
+            bypass: false,
+            kind: DeviceKind::Builtin {
+                type_id: type_id.to_owned(),
+                params: Vec::new(),
+                samples: Vec::new(),
+            },
+        }
+    }
+
+    /// The device's type id.
+    pub fn type_id(&self) -> &str {
+        match &self.kind {
+            DeviceKind::Builtin { type_id, .. } => type_id,
+        }
+    }
+
+    /// Changed parameter values.
+    pub fn params(&self) -> &[(u64, f32)] {
+        match &self.kind {
+            DeviceKind::Builtin { params, .. } => params,
+        }
+    }
+
+    /// Value of parameter `id`, if it was changed from the default.
+    pub fn param(&self, id: u64) -> Option<f32> {
+        self.params()
+            .iter()
+            .find(|(p, _)| *p == id)
+            .map(|(_, v)| *v)
+    }
+
+    /// Sets (`Some`) or resets to default (`None`) a parameter; returns the old value.
+    pub fn set_param(&mut self, id: u64, value: Option<f32>) -> Option<f32> {
+        let DeviceKind::Builtin { params, .. } = &mut self.kind;
+        let old = params
+            .iter()
+            .position(|(p, _)| *p == id)
+            .map(|i| params.remove(i).1);
+        if let Some(v) = value {
+            params.push((id, v));
+            params.sort_by_key(|(p, _)| *p);
+        }
+        old
+    }
+
+    /// Sample zones.
+    pub fn samples(&self) -> &[SampleZone] {
+        match &self.kind {
+            DeviceKind::Builtin { samples, .. } => samples,
+        }
+    }
+}
+
+/// A sample assigned to a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SampleZone {
+    /// Root key (melodic) or pad key (drum mode).
+    pub key: u8,
+    /// The audio file.
+    pub asset: AssetId,
 }
 
 impl Default for Track {
@@ -254,6 +351,7 @@ impl Default for Track {
             strip: ChannelStrip::default(),
             output: OutputRoute::Master,
             record: RecordSetup::default(),
+            devices: Vec::new(),
         }
     }
 }
