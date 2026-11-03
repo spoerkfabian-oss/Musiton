@@ -130,6 +130,7 @@ fn to_edit(p: &mut Project, op: Op) -> Option<Edit> {
                 pan,
                 mute,
                 solo,
+                ..ChannelStrip::default()
             },
         },
         Op::AddAudioClip(t, start, length) => {
@@ -412,4 +413,61 @@ fn failing_batch_rolls_back() {
     ]);
     assert!(u.perform(&mut p, batch, false).is_err());
     assert_eq!(p, before);
+}
+
+fn bus(id: u64) -> Track {
+    Track {
+        id: TrackId(id),
+        kind: TrackKind::Bus,
+        ..Track::default()
+    }
+}
+
+#[test]
+fn routing_loops_are_detected_and_solo_follows_routing() {
+    use musiton_project::{OutputRoute, SendRoute};
+    let mut p = Project::default();
+    let mut drums = Track {
+        id: TrackId(1),
+        output: OutputRoute::Bus(TrackId(10)),
+        ..Track::default()
+    };
+    drums.strip.sends.push(SendRoute {
+        target: TrackId(11),
+        ..SendRoute::default()
+    });
+    let mut drum_bus = bus(10);
+    drum_bus.output = OutputRoute::Bus(TrackId(12));
+    let mut reverb = bus(11);
+    reverb.strip.solo_safe = true;
+    p.tracks = vec![
+        drums,
+        drum_bus,
+        reverb,
+        bus(12),
+        Track {
+            id: TrackId(2),
+            ..Track::default()
+        },
+    ];
+
+    assert!(p.feeds(TrackId(1), TrackId(12)));
+    assert!(!p.feeds(TrackId(12), TrackId(1)));
+    // Bus 12 is downstream of bus 10, so 12 may not route back into 10.
+    assert!(!p.valid_bus_targets(TrackId(12)).contains(&TrackId(10)));
+    assert!(p.valid_bus_targets(TrackId(10)).contains(&TrackId(11)));
+    assert!(!p.valid_bus_targets(TrackId(10)).contains(&TrackId(10)));
+
+    // Solo the drums: the drum bus chain and the solo-safe reverb stay, track 2 goes silent.
+    p.track_mut(TrackId(1)).unwrap().strip.solo = true;
+    for (id, heard) in [(1, true), (10, true), (12, true), (11, true), (2, false)] {
+        assert_eq!(p.audible(TrackId(id)), heard, "track {id}");
+    }
+    // Solo the drum bus: its source (drums) stays audible.
+    p.track_mut(TrackId(1)).unwrap().strip.solo = false;
+    p.track_mut(TrackId(10)).unwrap().strip.solo = true;
+    assert!(p.audible(TrackId(1)));
+    assert!(!p.audible(TrackId(2)));
+    p.track_mut(TrackId(1)).unwrap().strip.mute = true;
+    assert!(!p.audible(TrackId(1)));
 }

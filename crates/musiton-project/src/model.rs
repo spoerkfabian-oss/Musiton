@@ -73,6 +73,68 @@ impl Project {
         self.tracks.iter().find(|t| t.id == id)
     }
 
+    /// Bus tracks that `from` sends or outputs to directly.
+    fn targets(&self, from: TrackId) -> Vec<TrackId> {
+        let Some(t) = self.track(from) else {
+            return Vec::new();
+        };
+        let mut out: Vec<TrackId> = t.strip.sends.iter().map(|s| s.target).collect();
+        if let OutputRoute::Bus(b) = t.output {
+            out.push(b);
+        }
+        out
+    }
+
+    /// `true` if `to` can be reached from `from` through outputs and sends
+    /// (so a new connection `to → from` would create a feedback loop).
+    pub fn feeds(&self, from: TrackId, to: TrackId) -> bool {
+        let mut stack = vec![from];
+        let mut seen = Vec::new();
+        while let Some(t) = stack.pop() {
+            if t == to {
+                return true;
+            }
+            if seen.contains(&t) {
+                continue;
+            }
+            seen.push(t);
+            stack.extend(self.targets(t));
+        }
+        false
+    }
+
+    /// Bus tracks `from` may route to (output or send) without creating a loop.
+    pub fn valid_bus_targets(&self, from: TrackId) -> Vec<TrackId> {
+        self.tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Bus && t.id != from && !self.feeds(t.id, from))
+            .map(|t| t.id)
+            .collect()
+    }
+
+    /// Whether each track is heard, given mute, solo and solo-safe. A soloed track keeps
+    /// the buses it feeds audible, and a soloed bus keeps the tracks feeding it audible.
+    pub fn audible(&self, id: TrackId) -> bool {
+        let Some(t) = self.track(id) else {
+            return false;
+        };
+        if t.strip.mute {
+            return false;
+        }
+        let soloed: Vec<TrackId> = self
+            .tracks
+            .iter()
+            .filter(|t| t.strip.solo)
+            .map(|t| t.id)
+            .collect();
+        if soloed.is_empty() || t.strip.solo || t.strip.solo_safe {
+            return true;
+        }
+        soloed
+            .iter()
+            .any(|&s| self.feeds(s, id) || self.feeds(id, s))
+    }
+
     /// The track with `id`, mutable.
     pub fn track_mut(&mut self, id: TrackId) -> Option<&mut Track> {
         self.tracks.iter_mut().find(|t| t.id == id)
@@ -149,6 +211,32 @@ pub struct ChannelStrip {
     pub mute: bool,
     /// Soloed.
     pub solo: bool,
+    /// Keeps playing while other tracks are soloed (typical for effect buses).
+    pub solo_safe: bool,
+    /// Sends to bus tracks.
+    pub sends: Vec<SendRoute>,
+}
+
+/// A send from a track to a bus (named so it doesn't clash with `std::marker::Send`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SendRoute {
+    /// Receiving bus track.
+    pub target: TrackId,
+    /// Send level in dB.
+    pub level_db: f32,
+    /// Taken before the fader (true) or after fader and pan (false).
+    pub pre_fader: bool,
+}
+
+impl Default for SendRoute {
+    fn default() -> Self {
+        Self {
+            target: TrackId(0),
+            level_db: -6.0,
+            pre_fader: false,
+        }
+    }
 }
 
 impl Default for ChannelStrip {
@@ -158,6 +246,8 @@ impl Default for ChannelStrip {
             pan: 0.0,
             mute: false,
             solo: false,
+            solo_safe: false,
+            sends: Vec::new(),
         }
     }
 }

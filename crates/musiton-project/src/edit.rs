@@ -3,7 +3,7 @@
 use musiton_core::ids::{ClipId, MarkerId, TrackId};
 use musiton_core::{TempoMap, Tick, TimeSig};
 
-use crate::{Asset, ChannelStrip, Clip, Marker, Project, Track};
+use crate::{Asset, ChannelStrip, Clip, Marker, OutputRoute, Project, Track};
 
 /// Most undo steps kept.
 const MAX_UNDO: usize = 1000;
@@ -132,6 +132,13 @@ pub enum Edit {
         /// Index in the old track (filled by apply).
         index: Option<usize>,
     },
+    /// Change where a track's output goes.
+    SetOutput {
+        /// Which track.
+        id: TrackId,
+        /// New (after apply: old) route.
+        output: OutputRoute,
+    },
     /// Add an audio file to the asset list.
     AddAsset(Option<Asset>),
     /// Several edits as one undo step (applied in order, reverted in reverse order).
@@ -159,6 +166,7 @@ impl Edit {
             Edit::ReplaceClip { .. } => "Edit clip",
             Edit::MoveClipToTrack { .. } => "Move clip",
             Edit::AddAsset(_) => "Import audio",
+            Edit::SetOutput { .. } => "Output routing",
             Edit::Batch(edits) => edits.last().map_or("Edit", Edit::label),
         }
     }
@@ -364,6 +372,10 @@ impl Edit {
             Edit::SetTempo(map) => std::mem::swap(&mut p.tempo, map),
             Edit::SetTimeSig(sig) => std::mem::swap(&mut p.time_sig, sig),
             Edit::SetLoop(range) => std::mem::swap(&mut p.loop_range, range),
+            Edit::SetOutput { id, output } => {
+                let t = p.track_mut(*id).ok_or(EditError::NoTrack)?;
+                std::mem::swap(&mut t.output, output);
+            }
             Edit::ReplaceClip { track, clip } => {
                 let t = p.track_mut(*track).ok_or(EditError::NoTrack)?;
                 let c = t
