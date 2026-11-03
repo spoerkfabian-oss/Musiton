@@ -2,22 +2,30 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Ticks per quarter note.
 pub const PPQ: i64 = 960;
 
 /// A musical position in ticks ([`PPQ`] per quarter note).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
 pub struct Tick(pub i64);
 
 /// An absolute position in samples.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
 pub struct SamplePos(pub u64);
 
 /// Lowest and highest tempo accepted (BPM).
 pub const BPM_RANGE: (f64, f64) = (10.0, 999.0);
 
 /// A tempo change (step, no ramp) at `tick`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TempoPoint {
     /// Where the tempo starts.
     pub tick: Tick,
@@ -28,7 +36,9 @@ pub struct TempoPoint {
 /// Tempo changes over time with tick ↔ seconds ↔ samples conversion.
 ///
 /// Lookups are binary searches over a cached table: no allocation, safe on the audio thread.
-#[derive(Debug, Clone, PartialEq)]
+/// Serialized as its list of points.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "Vec<TempoPoint>", into = "Vec<TempoPoint>")]
 pub struct TempoMap {
     points: Vec<TempoPoint>,
     /// Seconds elapsed at each point.
@@ -133,13 +143,25 @@ impl TempoMap {
     }
 }
 
+impl From<Vec<TempoPoint>> for TempoMap {
+    fn from(points: Vec<TempoPoint>) -> Self {
+        Self::from_points(points)
+    }
+}
+
+impl From<TempoMap> for Vec<TempoPoint> {
+    fn from(map: TempoMap) -> Self {
+        map.points
+    }
+}
+
 #[inline]
 fn secs_per_tick(bpm: f64) -> f64 {
     60.0 / (bpm * PPQ as f64)
 }
 
 /// A time signature such as 4/4 or 6/8.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TimeSig {
     /// Beats per bar (1..=32).
     pub num: u8,
