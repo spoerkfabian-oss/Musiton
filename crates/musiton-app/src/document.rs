@@ -19,6 +19,8 @@ pub struct Document {
     settings_dirty: bool,
     last_autosave: Instant,
     autosaved: Option<Project>,
+    /// Bumped on every project change (triggers engine graph rebuilds).
+    pub revision: u64,
 }
 
 impl Default for Document {
@@ -36,6 +38,7 @@ impl Document {
             undo: UndoStack::new(),
             settings_dirty: false,
             last_autosave: Instant::now(),
+            revision: 0,
         }
     }
 
@@ -67,16 +70,24 @@ impl Document {
 
     /// Applies an undoable edit.
     pub fn perform(&mut self, edit: Edit, merge: bool) -> Result<(), EditError> {
+        self.revision += 1;
         self.undo.perform(&mut self.project, edit, merge)
+    }
+
+    /// The project folder (where `audio/` lives), once saved.
+    pub fn dir(&self) -> Option<&Path> {
+        self.path.as_deref().and_then(Path::parent)
     }
 
     /// Undo; returns the label of what was undone.
     pub fn undo(&mut self) -> Result<Option<&'static str>, EditError> {
+        self.revision += 1;
         self.undo.undo(&mut self.project)
     }
 
     /// Redo; returns the label of what was redone.
     pub fn redo(&mut self) -> Result<Option<&'static str>, EditError> {
+        self.revision += 1;
         self.undo.redo(&mut self.project)
     }
 

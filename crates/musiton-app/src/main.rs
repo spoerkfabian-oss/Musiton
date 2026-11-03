@@ -2,8 +2,11 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assets;
 mod audio_dialog;
+mod browser;
 mod document;
+mod engine_graph;
 mod settings;
 mod transport;
 
@@ -14,11 +17,13 @@ use eframe::egui;
 use musiton_engine::EngineHandle;
 use musiton_io::audio::{self, AudioOutput, OutputRequest};
 use musiton_project::EXTENSION;
-use musiton_ui::arrange::Arrange;
+use musiton_ui::arrange::{Arrange, ArrangeInput};
 use musiton_ui::UiAction;
 use tracing_subscriber::EnvFilter;
 
+use assets::{AssetStore, ImportDone, ImportTarget, Importer};
 use audio_dialog::AudioDialog;
+use browser::{Browser, BrowserAction};
 use document::Document;
 use settings::{AudioSettings, Settings};
 use transport::{EngineSync, Transport};
@@ -81,6 +86,11 @@ struct App {
     arrange: Arrange,
     bottom_tab: BottomTab,
     show_shortcuts: bool,
+    assets: AssetStore,
+    importer: Importer,
+    /// (document revision, asset generation) the engine graph was built from.
+    graph_key: Option<(u64, u64)>,
+    browser: Browser,
 }
 
 /// Tabs of the bottom panel.
@@ -114,7 +124,14 @@ impl App {
             arrange: Arrange::new(),
             bottom_tab: BottomTab::default(),
             show_shortcuts: false,
+            assets: AssetStore::default(),
+            importer: Importer::default(),
+            graph_key: None,
+            browser: Browser::default(),
         };
+        if let Some(dir) = app.settings.browser_dir.clone() {
+            app.browser.set_dir(&dir);
+        }
         app.restart_audio();
         if let Some(path) = open {
             app.open_path(&path);
@@ -145,8 +162,9 @@ impl App {
             buffer_size: a.buffer_size,
         };
         match audio::start_output(&request) {
-            Ok((out, mut engine)) => {
-                self.sync.init_engine(&mut engine);
+            Ok((out, engine)) => {
+                self.sync.reset();
+                self.graph_key = None;
                 self.output = Some((out, engine));
                 self.audio_error = None;
             }
@@ -188,6 +206,7 @@ impl App {
             Pending::New => {
                 self.stop_and_rewind();
                 self.doc = Document::default();
+                self.load_assets();
             }
             Pending::Open(Some(path)) => self.open_path(&path),
             Pending::Open(None) => {
@@ -220,6 +239,7 @@ impl App {
                 self.settings.add_recent(path);
                 self.save_settings();
                 self.set_status(format!("Opened {}", path.display()));
+                self.load_assets();
             }
             Err(e) => {
                 tracing::error!("opening {} failed: {e}", path.display());
@@ -462,6 +482,140 @@ impl App {
         }
     }
 
+    /// Loads the audio files of the current project and resets clip selection.
+    fn load_assets(&mut self) {
+        self.arrange.selected_clips.clear();
+        self.arrange.selected = None;
+        let failed = self.assets.load_project(&self.doc.project, self.doc.dir());
+        if !failed.is_empty() {
+            self.set_status(format!(
+                "{} audio file(s) missing: {}",
+                failed.len(),
+                failed.join(", ")
+            ));
+        }
+    }
+
+    /// Starts importing `files`; the first goes to `track`, others onto new tracks.
+    fn import(
+        &mut self,
+        files: Vec<PathBuf>,
+        track: Option<musiton_core::ids::TrackId>,
+        at: musiton_core::Tick,
+    ) {
+        if self.doc.dir().is_none() {
+            self.set_status("Save the project first: imported audio is copied into its folder.");
+            if !self.save_as() {
+                return;
+            }
+        }
+        let Some(dir) = self.doc.dir().map(Path::to_path_buf) else {
+            return;
+        };
+        for (i, file) in files.into_iter().enumerate() {
+            if !musiton_io::file::is_audio_file(&file) {
+                self.set_status(format!("Not an audio file: {}", file.display()));
+                continue;
+            }
+            let target = ImportTarget {
+                track: if i == 0 { track } else { None },
+                at,
+            };
+            self.importer
+                .start(file, dir.clone(), self.doc.project.sample_rate, target);
+        }
+    }
+
+    /// Turns finished imports into clips (one undo step per file).
+    fn finish_imports(&mut self) {
+        for ImportDone {
+            source,
+            target,
+            result,
+        } in self.importer.finished()
+        {
+            let imported = match result {
+                Ok(i) => i,
+                Err(e) => {
+                    self.set_status(format!("Import of {} failed: {e}", source.display()));
+                    continue;
+                }
+            };
+            let p = &mut self.doc.project;
+            let asset = musiton_core::ids::AssetId(p.alloc_id());
+            let clip_id = musiton_core::ids::ClipId(p.alloc_id());
+            let sr = f64::from(imported.audio.sample_rate);
+            let end = musiton_ui::clip_edit::tick_after_frames(
+                &p.tempo,
+                target.at,
+                imported.audio.frames() as f64,
+                sr,
+            );
+            let mut edits = vec![musiton_project::Edit::AddAsset(Some(
+                musiton_project::Asset {
+                    id: asset,
+                    file: imported.rel_path.clone(),
+                },
+            ))];
+            let track = match target.track.filter(|t| p.track(*t).is_some()) {
+                Some(t) => t,
+                None => {
+                    let id = musiton_core::ids::TrackId(p.alloc_id());
+                    let name = source
+                        .file_stem()
+                        .map_or("Audio".to_owned(), |s| s.to_string_lossy().into_owned());
+                    let colors = musiton_ui::arrange::TRACK_COLORS;
+                    edits.push(musiton_project::Edit::AddTrack {
+                        index: p.tracks.len(),
+                        track: Some(musiton_project::Track {
+                            id,
+                            name,
+                            color: colors[p.tracks.len() % colors.len()],
+                            ..musiton_project::Track::default()
+                        }),
+                    });
+                    id
+                }
+            };
+            edits.push(musiton_project::Edit::AddClip {
+                track,
+                clip: Some(musiton_project::Clip::Audio(musiton_project::AudioClip {
+                    id: clip_id,
+                    asset,
+                    start: target.at,
+                    length: musiton_core::Tick((end.0 - target.at.0).max(1)),
+                    ..musiton_project::AudioClip::default()
+                })),
+            });
+            self.assets.insert(asset, imported.audio);
+            match self.doc.perform(musiton_project::Edit::Batch(edits), false) {
+                Ok(()) => self.set_status(format!("Imported {}", source.display())),
+                Err(e) => self.set_status(format!("Import failed: {e}")),
+            }
+        }
+    }
+
+    /// Rebuilds the engine graph when the project or the loaded audio changed.
+    fn update_graph(&mut self) {
+        let key = (self.doc.revision, self.assets.generation);
+        let Some((_, engine)) = &mut self.output else {
+            return;
+        };
+        if self.graph_key == Some(key) {
+            return;
+        }
+        self.graph_key = Some(key);
+        match engine_graph::build(
+            &self.doc.project,
+            &self.assets,
+            engine.sample_rate(),
+            engine.max_block(),
+        ) {
+            Ok(g) => engine.send_or_log(musiton_engine::EngineCommand::SwapGraph(Box::new(g))),
+            Err(e) => tracing::error!("building the engine graph failed: {e}"),
+        }
+    }
+
     fn apply_actions(&mut self, actions: Vec<UiAction>) {
         for action in actions {
             match action {
@@ -470,6 +624,7 @@ impl App {
                         self.set_status(format!("Edit failed: {e}"));
                     }
                 }
+                UiAction::Import { files, track, at } => self.import(files, track, at),
                 UiAction::Locate(tick) => {
                     if let Some((_, engine)) = &mut self.output {
                         let sr = f64::from(engine.sample_rate());
@@ -562,19 +717,34 @@ impl eframe::App for App {
             .resizable(true)
             .default_size(200.0)
             .min_size(120.0)
-            .show(ui, |ui| {
-                ui.strong("Browser");
-                ui.separator();
-                ui.weak("Audio files and devices will be listed here.");
+            .show(ui, |ui| match self.browser.ui(ui) {
+                Some(BrowserAction::FolderChanged(dir)) => {
+                    self.settings.browser_dir = Some(dir);
+                    self.save_settings();
+                }
+                Some(BrowserAction::Import(file)) => {
+                    let at = self.playhead().0.unwrap_or(0.0);
+                    let at = self.arrange.snap.floor(at, self.doc.project.time_sig);
+                    self.import(vec![file], None, at);
+                }
+                None => {}
             });
         let (playhead, playing) = self.playhead();
         let mut actions = Vec::new();
         egui::CentralPanel::default_margins().show(ui, |ui| {
-            actions = self
-                .arrange
-                .ui(ui, &mut self.doc.project, playhead, playing);
+            let input = ArrangeInput {
+                playhead,
+                playing,
+                peaks: self.assets.peaks(),
+            };
+            actions = self.arrange.ui(ui, &mut self.doc.project, &input);
         });
         self.apply_actions(actions);
+        self.finish_imports();
+        self.update_graph();
+        if self.importer.running() > 0 {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
         egui::Window::new("Keyboard shortcuts")
             .open(&mut self.show_shortcuts)
             .collapsible(false)

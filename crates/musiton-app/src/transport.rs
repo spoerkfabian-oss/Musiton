@@ -2,8 +2,6 @@
 
 use eframe::egui;
 use musiton_core::{BarBeatTick, SamplePos, TempoMap, Tick, TimeSig};
-use musiton_engine::graph::GraphBuilder;
-use musiton_engine::nodes::Metronome;
 use musiton_engine::{EngineCommand, EngineHandle};
 use musiton_project::{Edit, Project};
 
@@ -17,16 +15,9 @@ pub struct EngineSync {
 }
 
 impl EngineSync {
-    /// Installs the graph and forgets what was sent (call after starting a new engine).
-    pub fn init_engine(&mut self, engine: &mut EngineHandle) {
+    /// Forgets what was sent (call after starting a new engine).
+    pub fn reset(&mut self) {
         *self = Self::default();
-        let mut b = GraphBuilder::new();
-        let m = b.add(Box::new(Metronome::new()));
-        b.set_output(m);
-        match b.build(engine.sample_rate(), engine.max_block()) {
-            Ok(g) => engine.send_or_log(EngineCommand::SwapGraph(Box::new(g))),
-            Err(e) => tracing::error!("building graph failed: {e}"),
-        }
     }
 
     /// Sends whatever changed in `project` since the last call.

@@ -12,6 +12,8 @@ pub struct Settings {
     pub audio: AudioSettings,
     /// Recently opened projects, newest first.
     pub recent_projects: Vec<PathBuf>,
+    /// Folder shown in the browser panel.
+    pub browser_dir: Option<PathBuf>,
 }
 
 /// Most entries kept in [`Settings::recent_projects`].
@@ -105,6 +107,7 @@ mod tests {
                 buffer_size: Some(128),
             },
             recent_projects: vec![PathBuf::from("a/b.musiton")],
+            browser_dir: Some(PathBuf::from("samples")),
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
