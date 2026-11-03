@@ -54,3 +54,20 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues**
 - The transport bar is temporary (phase 4 builds the real UI); tempo is a single constant BPM in the UI for now (the engine supports tempo maps).
 - Space toggles play/stop; while a number field is being edited by keyboard, Space still toggles the transport.
+
+## Phase 3 — Project model
+**Built:** `Project` model (tracks, clips, notes, markers, tempo, time signature, loop, master strip, asset list), RON save/load with version check and migration hook, undo/redo for every edit, File menu (New, Open, Open recent, Save, Save as), Edit menu (Undo/Redo with labels), shortcuts (Ctrl+N/O/S, Ctrl+Shift+S, Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z), "Save changes?" dialog on New/Open/Quit, `*` in the title for unsaved changes, autosave every 2 minutes, opening a project given on the command line (for the later file association).
+
+**Decisions / deviations**
+- **File layout (owner decision):** `MySong/MySong.musiton` (RON text) plus `audio/`, `peaks/`, `plugins/`, `autosave/` next to it. "Save as" creates the song folder unless the chosen folder already has the song's name.
+- Version handling: files with a newer format are refused with a clear message; older ones go through `migrate(text, from_version)` (currently format 1, so nothing to do). Every struct uses `#[serde(default)]`, so adding fields later needs no migration; unknown fields are ignored.
+- Undo uses an `Edit` enum instead of `Box<dyn EditCommand>`: "set" edits swap the stored value with the project's (apply = revert), add/remove edits carry the moved object. Consecutive changes of the same value while dragging merge into one undo step. History is capped at 1000 steps.
+- The id counter (`next_id`) is deliberately *not* undone, so ids are never reused (an undone "add track" could otherwise collide with a new track).
+- Fields are added to the model only when a phase uses them (devices, sends, automation, input routing come later — additive, no migration).
+- Loop on/off and metronome are saved in the project but are not undo steps (they still mark the project as changed).
+- Autosave writes `autosave/<name>.musiton` inside the project folder (untitled songs: `%APPDATA%\Musiton\data\autosave\`). Crash recovery from it is phase 14.
+- Recent projects (max 10) are stored in `settings.json`.
+
+**Known issues**
+- The project's `sample_rate` is not yet linked to the device rate (matters from phase 5 on).
+- The transport bar only edits a single constant tempo.

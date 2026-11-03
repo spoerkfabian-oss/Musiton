@@ -135,7 +135,7 @@ pub enum EngineEvent { Playhead(SamplePos), Meters(MeterFrame), Xrun, RecordedCh
 6. Write meters into atomics / event ring; push recorded input to disk ring.
 
 ## 7. Project file format
-`MySong.musiton/` folder: `project.ron` (versioned, with `migrate()` per version), `audio/` (imported + recorded files, copied in), `peaks/` (cache, regenerable), `plugins/<device-id>.bin` (VST3 state), `autosave/`. Missing files → "relink" dialog, never a crash.
+`MySong/` folder: `MySong.musiton` (RON text, versioned, with `migrate()` per version; a file so that double-click/file association works), `audio/` (imported + recorded files, copied in), `peaks/` (cache, regenerable), `plugins/<device-id>.bin` (VST3 state), `autosave/`. Missing files → "relink" dialog, never a crash.
 
 ## 8. Testing
 - **Offline renderer** (`musiton_engine::render_offline(project, range) -> Vec<f32>`) is the backbone: same graph code, no device. Golden tests compare against stored reference renders (tolerance 1e-5 or RMS diff).

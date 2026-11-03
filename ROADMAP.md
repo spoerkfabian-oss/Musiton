@@ -21,8 +21,8 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** metronome plays at any BPM, loop works, changing tempo while playing doesn't glitch; golden test for 4 bars at 120 BPM passes.
 
 ## Phase 3 — Project model
-- [ ] `Project` structs, RON save/load, version field + migration hook, undo/redo stack
-- [ ] New/Open/Save/Save As, recent files, autosave every 2 min
+- [x] `Project` structs, RON save/load, version field + migration hook, undo/redo stack
+- [x] New/Open/Save/Save As, recent files, autosave every 2 min
 **Done when:** save → close → open restores everything; 100 random edits + undo all = original (proptest).
 
 ## Phase 4 — UI shell
