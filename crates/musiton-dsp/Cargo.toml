@@ -13,3 +13,6 @@ musiton-core.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+approx = "0.5"
