@@ -93,6 +93,8 @@ pub struct Arrange {
     drag: Option<ClipDrag>,
     /// Actions produced inside popups (collected, returned at the end of the frame).
     pending: Vec<UiAction>,
+    /// A MIDI clip to create (track, start, length) once the project is mutable again.
+    pending_clip: Option<(TrackId, Tick, Tick)>,
 }
 
 impl Arrange {
@@ -216,6 +218,23 @@ impl Arrange {
             });
         }
         self.update_drag(ui, project, &mut actions);
+        if let Some((track, start, length)) = self.pending_clip.take() {
+            let clip = ClipId(project.alloc_id());
+            actions.push(UiAction::Edit {
+                edit: Edit::AddClip {
+                    track,
+                    clip: Some(Clip::Midi(musiton_project::MidiClip {
+                        id: clip,
+                        start,
+                        length,
+                        notes: Vec::new(),
+                    })),
+                },
+                merge: false,
+            });
+            actions.push(UiAction::OpenEditor { track, clip });
+            self.selected_clips = [clip].into_iter().collect();
+        }
         actions.append(&mut self.pending);
         actions
     }
@@ -823,6 +842,14 @@ impl Arrange {
             self.selected = Some(track.id);
             self.selected_clips.clear();
         }
+        if resp.double_clicked() && track.kind == TrackKind::Instrument {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let sig = input.project.time_sig;
+                let bar = sig.ticks_per_bar();
+                let start = Snap::Bar.floor(self.view.tick(p.x - rect.left()).max(0.0), sig);
+                self.pending_clip = Some((track.id, start, Tick(bar)));
+            }
+        }
         let pointer_tick = |p: Pos2| {
             self.snap.round(
                 self.view.tick(p.x - rect.left()).max(0.0),
@@ -995,6 +1022,14 @@ impl Arrange {
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         if resp.clicked() {
             self.select_clip(clip.id(), additive);
+        }
+        if let (Clip::Midi(_), Some(t)) = (clip, input.project.tracks.get(input.index)) {
+            if resp.double_clicked() || resp.clicked() {
+                self.pending.push(UiAction::OpenEditor {
+                    track: t.id,
+                    clip: clip.id(),
+                });
+            }
         }
         if resp.drag_started() {
             if let Some(origin) = resp.interact_pointer_pos() {

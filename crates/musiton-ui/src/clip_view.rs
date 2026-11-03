@@ -63,6 +63,36 @@ pub fn paint_clip(painter: &Painter, p: &ClipPaint) {
         Color32::BLACK,
     );
 
+    if let Clip::Midi(m) = p.clip {
+        let area = Rect::from_min_max(
+            Pos2::new(rect.left(), title.bottom() + 2.0),
+            Pos2::new(rect.right(), rect.bottom() - 2.0),
+        );
+        let (lo, hi) = m.notes.iter().fold((127u8, 0u8), |(lo, hi), n| {
+            (lo.min(n.pitch), hi.max(n.pitch))
+        });
+        let range = f32::from(hi.saturating_sub(lo).max(11)) + 1.0;
+        let row = area.height() / range;
+        let note_painter = painter.with_clip_rect(rect.intersect(p.clip_to));
+        for n in &m.notes {
+            if n.start.0 >= m.length.0 {
+                continue;
+            }
+            let x0 = p.lane_left + p.view.x((m.start.0 + n.start.0) as f64);
+            let x1 = p.lane_left
+                + p.view
+                    .x((m.start.0 + (n.start.0 + n.length.0).min(m.length.0)) as f64);
+            let y = area.bottom() - f32::from(n.pitch - lo + 1) * row;
+            note_painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(x0, y),
+                    Pos2::new(x1.max(x0 + 1.0), y + row.max(1.5)),
+                ),
+                0.0,
+                Color32::from_white_alpha(200),
+            );
+        }
+    }
     if let Clip::Audio(a) = p.clip {
         let wave = Rect::from_min_max(Pos2::new(rect.left(), title.bottom() + 1.0), rect.max);
         if let Some(peaks) = p.peaks {

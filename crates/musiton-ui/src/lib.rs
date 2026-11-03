@@ -5,6 +5,8 @@ pub mod arrange;
 pub mod clip_edit;
 pub mod clip_view;
 pub mod mixer;
+pub mod note_edit;
+pub mod piano_roll;
 pub mod shortcuts;
 pub mod snap;
 pub mod view;
@@ -24,6 +26,20 @@ pub enum UiAction {
     },
     /// Move the playhead.
     Locate(Tick),
+    /// Play (or stop) a note on the live-MIDI track to hear it.
+    PreviewNote {
+        /// Start (true) or stop.
+        on: bool,
+        /// Key 0..127.
+        key: u8,
+    },
+    /// Open a MIDI clip in the piano roll.
+    OpenEditor {
+        /// Track of the clip.
+        track: musiton_core::ids::TrackId,
+        /// The clip.
+        clip: musiton_core::ids::ClipId,
+    },
     /// Import audio files as clips.
     Import {
         /// Files to import.
