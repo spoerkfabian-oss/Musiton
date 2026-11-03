@@ -14,6 +14,7 @@ cpal = "0.18"
 hound = "3.5"
 musiton-core.workspace = true
 musiton-engine.workspace = true
+rtrb = "0.4"
 rubato = "5"
 symphonia = { version = "0.6", features = ["all"] }
 thiserror.workspace = true
@@ -21,3 +22,6 @@ tracing.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+assert_no_alloc.workspace = true

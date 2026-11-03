@@ -7,7 +7,7 @@ use std::time::Instant;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, FromSample, SampleFormat, SizedSample, StreamConfig};
 use musiton_engine::rt::no_alloc;
-use musiton_engine::EngineHandle;
+use musiton_engine::{EngineHandle, InputSource};
 
 /// Sample rates offered in the settings dialog (filtered by what the device supports).
 pub const STANDARD_SAMPLE_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
@@ -138,6 +138,133 @@ pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>, AudioError> {
     Ok(list)
 }
 
+/// An input device as shown in the settings dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDeviceInfo {
+    /// Stable identifier (persist this).
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// `true` for the system default input.
+    pub is_default: bool,
+    /// Number of input channels.
+    pub channels: u16,
+}
+
+/// Lists all input devices of the default host.
+pub fn list_input_devices() -> Result<Vec<InputDeviceInfo>, AudioError> {
+    let host = cpal::default_host();
+    let default_id = host
+        .default_input_device()
+        .and_then(|d| d.id().ok())
+        .map(|id| id.to_string());
+    let mut list = Vec::new();
+    for device in host.input_devices()? {
+        let Ok(id) = device.id().map(|id| id.to_string()) else {
+            continue;
+        };
+        let name = device
+            .description()
+            .map(|d| d.name().to_owned())
+            .unwrap_or_else(|_| id.clone());
+        let channels = device.default_input_config().map_or(0, |c| c.channels());
+        list.push(InputDeviceInfo {
+            is_default: default_id.as_deref() == Some(id.as_str()),
+            id,
+            name,
+            channels,
+        });
+    }
+    Ok(list)
+}
+
+/// A running input stream. Recording input stops when this is dropped.
+pub struct AudioInputStream {
+    _stream: cpal::Stream,
+    /// Device name.
+    pub device_name: String,
+    /// Number of input channels.
+    pub channels: u16,
+    /// Samples that didn't fit into the ring (the engine fell behind).
+    pub overflows: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Opens an input device at `sample_rate` (must equal the output rate). The returned
+/// [`InputSource`] is handed to the engine with `EngineCommand::SetInput`.
+pub fn start_input(
+    device_id: Option<&str>,
+    sample_rate: u32,
+    buffer_size: Option<u32>,
+) -> Result<(AudioInputStream, InputSource), AudioError> {
+    let host = cpal::default_host();
+    let device = match device_id {
+        Some(id) => {
+            let parsed = id
+                .parse()
+                .map_err(|_| AudioError::DeviceNotFound(id.to_owned()))?;
+            host.device_by_id(&parsed)
+                .ok_or_else(|| AudioError::DeviceNotFound(id.to_owned()))?
+        }
+        None => host.default_input_device().ok_or(AudioError::NoDevice)?,
+    };
+    let device_name = device
+        .description()
+        .map(|d| d.name().to_owned())
+        .unwrap_or_else(|_| "Unknown device".to_owned());
+    let default = device.default_input_config()?;
+    let channels = default.channels();
+    let format = device
+        .supported_input_configs()?
+        .filter(|r| r.channels() == channels)
+        .filter(|r| (r.min_sample_rate()..=r.max_sample_rate()).contains(&sample_rate))
+        .map(|r| r.sample_format())
+        .max_by_key(|f| format_rank(*f))
+        .ok_or(AudioError::UnsupportedSampleRate(sample_rate))?;
+    let overflows = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let try_build =
+        |buffer_size: BufferSize| -> Result<(cpal::Stream, rtrb::Consumer<f32>), AudioError> {
+            let (tx, rx) =
+                rtrb::RingBuffer::new(sample_rate as usize * usize::from(channels).max(1));
+            let config = StreamConfig {
+                channels,
+                sample_rate,
+                buffer_size,
+            };
+            let o = overflows.clone();
+            let stream = match format {
+                SampleFormat::F32 => build_input::<f32>(&device, config, tx, o),
+                SampleFormat::I32 => build_input::<i32>(&device, config, tx, o),
+                SampleFormat::I16 => build_input::<i16>(&device, config, tx, o),
+                SampleFormat::U16 => build_input::<u16>(&device, config, tx, o),
+                other => Err(AudioError::UnsupportedFormat(other.to_string())),
+            }?;
+            Ok((stream, rx))
+        };
+    let requested = buffer_size.map_or(BufferSize::Default, BufferSize::Fixed);
+    let (stream, rx) = match try_build(requested) {
+        Ok(ok) => ok,
+        Err(e) if requested != BufferSize::Default => {
+            tracing::warn!("input buffer size rejected ({e}), using the device default");
+            try_build(BufferSize::Default)?
+        }
+        Err(e) => return Err(e),
+    };
+    stream.play()?;
+    tracing::info!(device = %device_name, channels, ?format, "audio input started");
+    Ok((
+        AudioInputStream {
+            _stream: stream,
+            device_name,
+            channels,
+            overflows,
+        },
+        InputSource {
+            samples: rx,
+            channels: usize::from(channels),
+        },
+    ))
+}
+
 /// Standard rates covered by any of the given `(min, max)` ranges.
 pub fn supported_sample_rates(ranges: &[(u32, u32)]) -> Vec<u32> {
     STANDARD_SAMPLE_RATES
@@ -217,6 +344,37 @@ pub fn start_output(request: &OutputRequest) -> Result<(AudioOutput, EngineHandl
         },
         handle,
     ))
+}
+
+fn build_input<T>(
+    device: &cpal::Device,
+    config: StreamConfig,
+    mut tx: rtrb::Producer<f32>,
+    overflows: Arc<std::sync::atomic::AtomicU64>,
+) -> Result<cpal::Stream, AudioError>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            no_alloc(|| {
+                let mut lost = 0;
+                for &s in data {
+                    if tx.push(<f32 as FromSample<T>>::from_sample_(s)).is_err() {
+                        lost += 1;
+                    }
+                }
+                if lost > 0 {
+                    overflows.fetch_add(lost, Ordering::Relaxed);
+                }
+            });
+        },
+        |_err: cpal::Error| {},
+        None,
+    )?;
+    Ok(stream)
 }
 
 /// Preference order for sample formats (higher is better).

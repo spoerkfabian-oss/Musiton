@@ -188,7 +188,7 @@ pub fn import_audio(
     })
 }
 
-fn free_name(dir: &Path, stem: &str) -> PathBuf {
+pub(crate) fn free_name(dir: &Path, stem: &str) -> PathBuf {
     let first = dir.join(format!("{stem}.wav"));
     if !first.exists() {
         return first;
