@@ -20,27 +20,9 @@ const SMOOTH_MS: f32 = 20.0;
 const RMS_MS: f32 = 300.0;
 
 const STRIP_PARAMS: [ParamInfo; 3] = [
-    ParamInfo {
-        id: STRIP_GAIN,
-        name: "Volume",
-        min: 0.0,
-        max: 4.0,
-        default: 1.0,
-    },
-    ParamInfo {
-        id: STRIP_PAN,
-        name: "Pan",
-        min: -1.0,
-        max: 1.0,
-        default: 0.0,
-    },
-    ParamInfo {
-        id: STRIP_AUDIBLE,
-        name: "Audible",
-        min: 0.0,
-        max: 1.0,
-        default: 1.0,
-    },
+    ParamInfo::new(STRIP_GAIN.0, "Volume", 0.0, 4.0, 1.0),
+    ParamInfo::new(STRIP_PAN.0, "Pan", -1.0, 1.0, 0.0),
+    ParamInfo::toggle(STRIP_AUDIBLE.0, "Audible", true),
 ];
 
 /// Constant-power pan with −3 dB in the centre: (left gain, right gain).
@@ -187,13 +169,7 @@ impl AudioNode for Strip {
     }
 }
 
-const SEND_PARAMS: [ParamInfo; 1] = [ParamInfo {
-    id: ParamId(0),
-    name: "Send level",
-    min: 0.0,
-    max: 4.0,
-    default: 1.0,
-}];
+const SEND_PARAMS: [ParamInfo; 1] = [ParamInfo::new(0, "Send level", 0.0, 4.0, 1.0)];
 
 /// Stereo send level (param 0 = linear gain, smoothed).
 #[derive(Debug)]

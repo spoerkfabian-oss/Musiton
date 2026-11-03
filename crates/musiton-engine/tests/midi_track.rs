@@ -225,3 +225,56 @@ fn live_notes_are_recorded_with_their_position() {
     assert_eq!((got[0].pos, got[0].kind), (1000, on.kind));
     assert_eq!((got[1].pos, got[1].kind), (1256, off.kind));
 }
+
+#[test]
+fn new_notes_replace_old_ones_without_resetting_and_release_held_notes() {
+    use musiton_engine::nodes::MidiNotes;
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut t = MidiTrack::new(vec![note(0, 4 * PPQ, 60)], Box::new(Spy(log.clone())), None);
+    run(
+        &mut t,
+        &[Run {
+            playing: true,
+            pos: 0,
+            frames: 512,
+            live: vec![],
+            recording: false,
+        }],
+        256,
+    );
+    // Note 60 is sounding; replace the notes with one at beat 2.
+    let old = t
+        .receive(Box::new(MidiNotes(vec![note(PPQ, PPQ, 67)])))
+        .unwrap();
+    assert!(old.downcast::<MidiNotes>().is_ok());
+    run(
+        &mut t,
+        &[Run {
+            playing: true,
+            pos: 512,
+            frames: 30_000,
+            live: vec![],
+            recording: false,
+        }],
+        256,
+    );
+    let kinds: Vec<EventKind> = log.lock().unwrap().iter().map(|e| e.1).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            EventKind::NoteOn {
+                ch: 0,
+                key: 60,
+                vel: 0.8
+            },
+            EventKind::NoteOff { ch: 0, key: 60 },
+            EventKind::NoteOn {
+                ch: 0,
+                key: 67,
+                vel: 0.8
+            },
+        ]
+    );
+    // Unknown data is handed back untouched.
+    assert!(t.receive(Box::new(5u32)).is_some());
+}

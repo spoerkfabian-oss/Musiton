@@ -1,6 +1,7 @@
 //! The [`AudioNode`] trait and what a node sees while processing.
 
 use musiton_core::ids::ParamId;
+pub use musiton_core::params::{ParamInfo, ParamKind};
 use musiton_core::{TempoMap, TimeSig};
 
 /// Everything a node may know about the current block. Positions refer to the first frame.
@@ -101,21 +102,6 @@ pub enum EventKind {
     },
 }
 
-/// Describes one parameter of a node.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ParamInfo {
-    /// Parameter id (unique within the node).
-    pub id: ParamId,
-    /// Display name.
-    pub name: &'static str,
-    /// Minimum value.
-    pub min: f32,
-    /// Maximum value.
-    pub max: f32,
-    /// Default value.
-    pub default: f32,
-}
-
 /// Input and output channel buffers of one node for one block.
 pub struct AudioIo<'a> {
     inputs: &'a [Vec<f32>],
@@ -198,4 +184,12 @@ pub trait AudioNode: Send {
     }
     /// Sets a parameter (audio thread).
     fn set_param(&mut self, _id: ParamId, _value: f32) {}
+    /// Receives new data on the audio thread (no allocation allowed: swap, don't copy).
+    /// Returns what has to be freed elsewhere — the replaced data, or `data` if unused.
+    fn receive(
+        &mut self,
+        data: Box<dyn std::any::Any + Send>,
+    ) -> Option<Box<dyn std::any::Any + Send>> {
+        Some(data)
+    }
 }

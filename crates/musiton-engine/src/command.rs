@@ -49,6 +49,14 @@ pub enum EngineCommand {
     },
     /// Replace the running graph (cross-faded, click-free).
     SwapGraph(Box<CompiledGraph>),
+    /// Hand new data to a node of the running graph (e.g. a MIDI track's notes) without
+    /// rebuilding the graph; the node keeps its state (sounding voices, filters).
+    NodeData {
+        /// Node in the running graph.
+        node: NodeIdx,
+        /// The data; the node decides what it accepts.
+        data: Box<dyn std::any::Any + Send>,
+    },
     /// Set a node parameter in the running graph.
     SetParam {
         /// Node in the running graph.
@@ -61,4 +69,4 @@ pub enum EngineCommand {
 }
 
 /// An object retired by the audio thread, freed on the GC thread.
-pub(crate) type Garbage = Box<dyn Send>;
+pub(crate) type Garbage = Box<dyn std::any::Any + Send>;

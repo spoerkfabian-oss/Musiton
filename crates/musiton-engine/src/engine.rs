@@ -354,6 +354,17 @@ impl Engine {
                     self.old_graph = self.graph.replace(new);
                     self.fade_pos = 0;
                 }
+                EngineCommand::NodeData { node, data } => {
+                    let rest = match self.graph.as_mut() {
+                        Some(g) => g.send_data(node, data),
+                        None => Some(data),
+                    };
+                    if let Some(old) = rest {
+                        if let Err(rtrb::PushError::Full(g)) = self.trash.push(old) {
+                            std::mem::forget(g);
+                        }
+                    }
+                }
                 EngineCommand::SetParam { node, id, val } => {
                     if let Some(g) = self.graph.as_mut() {
                         g.set_param(node, id, val);
@@ -365,7 +376,7 @@ impl Engine {
 
     /// Hands an object to the GC thread. If its queue is full the object is leaked
     /// rather than freed here (freeing on the audio thread is not allowed).
-    fn retire<T: Send + 'static>(&mut self, obj: Box<T>) {
+    fn retire<T: std::any::Any + Send>(&mut self, obj: Box<T>) {
         if let Err(rtrb::PushError::Full(g)) = self.trash.push(obj) {
             std::mem::forget(g);
         }

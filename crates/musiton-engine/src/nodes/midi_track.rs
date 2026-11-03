@@ -10,13 +10,7 @@ pub const MIDI_TRACK_LIVE: ParamId = ParamId(100);
 /// Most events passed to the instrument per block.
 const MAX_EVENTS: usize = 1024;
 
-const PARAMS: [ParamInfo; 1] = [ParamInfo {
-    id: MIDI_TRACK_LIVE,
-    name: "Live input",
-    min: 0.0,
-    max: 1.0,
-    default: 0.0,
-}];
+const PARAMS: [ParamInfo; 1] = [ParamInfo::toggle(MIDI_TRACK_LIVE.0, "Live input", false)];
 
 /// A note on the timeline (absolute ticks, already cut to its clip).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -52,7 +46,14 @@ pub struct MidiTrack {
     rec: Option<rtrb::Producer<RecMidi>>,
     /// Position the next block must start at to count as continuous playback.
     expected: Option<u64>,
+    /// Notes started by clips that are still sounding: bit `ch` of `sounding[key]`.
+    sounding: [u16; 128],
+    /// New notes arrived: release what clips are still holding.
+    release_clip_notes: bool,
 }
+
+/// New notes for a [`MidiTrack`] (sent with `EngineCommand::NodeData`).
+pub struct MidiNotes(pub Vec<MidiNote>);
 
 impl MidiTrack {
     /// Track playing `notes` into `instrument`; live MIDI is sent to `rec` while recording.
@@ -69,6 +70,8 @@ impl MidiTrack {
             live: false,
             rec,
             expected: None,
+            sounding: [0; 128],
+            release_clip_notes: false,
         }
     }
 
@@ -103,6 +106,18 @@ impl AudioNode for MidiTrack {
         let continuous = ctx.playing && self.expected == Some(pos);
         if self.expected.is_some() && !continuous {
             self.push(0, EventKind::AllNotesOff);
+            self.sounding = [0; 128];
+        }
+        if std::mem::take(&mut self.release_clip_notes) {
+            for key in 0..128u8 {
+                let bits = self.sounding.get(usize::from(key)).copied().unwrap_or(0);
+                for ch in 0..16u8 {
+                    if bits & (1 << ch) != 0 {
+                        self.push(0, EventKind::NoteOff { ch, key });
+                    }
+                }
+            }
+            self.sounding = [0; 128];
         }
         self.expected = ctx.playing.then_some(pos + n);
 
@@ -122,6 +137,9 @@ impl AudioNode for MidiTrack {
                     continue;
                 }
                 if (pos..pos + n).contains(&e) {
+                    if let Some(b) = self.sounding.get_mut(usize::from(note.key)) {
+                        *b &= !(1u16 << (note.ch & 15));
+                    }
                     self.push(
                         (e - pos) as usize,
                         EventKind::NoteOff {
@@ -130,6 +148,7 @@ impl AudioNode for MidiTrack {
                         },
                     );
                 }
+                let bit = 1u16 << (note.ch & 15);
                 if (pos..pos + n).contains(&s) {
                     self.push(
                         (s - pos) as usize,
@@ -139,6 +158,9 @@ impl AudioNode for MidiTrack {
                             vel: note.vel,
                         },
                     );
+                    if let Some(b) = self.sounding.get_mut(usize::from(note.key)) {
+                        *b |= bit;
+                    }
                 }
             }
         }
@@ -182,5 +204,20 @@ impl AudioNode for MidiTrack {
 
     fn latency(&self) -> u32 {
         self.instrument.latency()
+    }
+
+    fn receive(
+        &mut self,
+        data: Box<dyn std::any::Any + Send>,
+    ) -> Option<Box<dyn std::any::Any + Send>> {
+        match data.downcast::<MidiNotes>() {
+            Ok(mut new) => {
+                new.0.sort_unstable_by_key(|n| n.start);
+                std::mem::swap(&mut self.notes, &mut new.0);
+                self.release_clip_notes = true;
+                Some(new)
+            }
+            Err(other) => self.instrument.receive(other),
+        }
     }
 }

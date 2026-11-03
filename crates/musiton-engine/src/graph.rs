@@ -238,6 +238,20 @@ impl CompiledGraph {
         }
     }
 
+    /// Gives `data` to a node; returns whatever must be freed (old data, or `data` itself
+    /// if the node did not take it).
+    pub fn send_data(
+        &mut self,
+        node: NodeIdx,
+        data: Box<dyn std::any::Any + Send>,
+    ) -> Option<Box<dyn std::any::Any + Send>> {
+        let slot = self.slot_of.get(node.0 as usize).copied();
+        match slot.and_then(|i| self.slots.get_mut(i)) {
+            Some(s) => s.node.receive(data),
+            None => Some(data),
+        }
+    }
+
     /// Resets all nodes.
     pub fn reset(&mut self) {
         for s in &mut self.slots {
