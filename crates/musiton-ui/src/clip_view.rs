@@ -37,7 +37,12 @@ pub struct ClipPaint<'a> {
 /// Paints a clip.
 pub fn paint_clip(painter: &Painter, p: &ClipPaint) {
     let [r, g, b] = p.color;
-    let base = Color32::from_rgb(r, g, b);
+    let muted = matches!(p.clip, Clip::Audio(a) if a.muted);
+    let base = if muted {
+        Color32::from_rgb(r, g, b).gamma_multiply(0.35)
+    } else {
+        Color32::from_rgb(r, g, b)
+    };
     let body = base.gamma_multiply(0.35);
     let rect = p.rect;
     painter.rect_filled(rect, 3.0, body);

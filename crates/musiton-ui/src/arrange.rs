@@ -735,6 +735,29 @@ impl Arrange {
                     if m.clicked() || s.clicked() {
                         actions.push(set_strip(track.id, strip));
                     }
+                    if track.kind == TrackKind::Audio {
+                        let armed = track.record.armed;
+                        let text = egui::RichText::new("R").color(if armed {
+                            Color32::from_rgb(255, 70, 70)
+                        } else {
+                            ui.visuals().text_color()
+                        });
+                        if ui
+                            .selectable_label(armed, text)
+                            .on_hover_text("Arm for recording")
+                            .clicked()
+                        {
+                            let mut record = track.record;
+                            record.armed = !armed;
+                            actions.push(UiAction::Edit {
+                                edit: Edit::SetRecord {
+                                    id: track.id,
+                                    record,
+                                },
+                                merge: false,
+                            });
+                        }
+                    }
                 });
             });
         });
@@ -1027,6 +1050,21 @@ impl Arrange {
                         }
                     }
                 });
+                let label = if a.muted { "Unmute clip" } else { "Mute clip" };
+                if ui.button(label).clicked() {
+                    if let Some(t) = track_id {
+                        let mut c = a.clone();
+                        c.muted = !c.muted;
+                        self.pending.push(UiAction::Edit {
+                            edit: Edit::ReplaceClip {
+                                track: t,
+                                clip: Clip::Audio(c),
+                            },
+                            merge: false,
+                        });
+                    }
+                    ui.close();
+                }
                 ui.weak("Ctrl+D duplicate · S split at playhead · Del delete");
             });
         }

@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui};
 use musiton_core::ids::TrackId;
 use musiton_core::units::gain_to_db;
-use musiton_project::{ChannelStrip, Edit, OutputRoute, Project, SendRoute, Track, TrackKind};
+use musiton_project::{
+    ChannelStrip, Edit, InputRoute, MonitorMode, OutputRoute, Project, SendRoute, Track, TrackKind,
+};
 
 use crate::UiAction;
 
@@ -14,7 +16,7 @@ pub const FADER_MIN_DB: f32 = -60.0;
 /// Highest fader position in dB.
 pub const FADER_MAX_DB: f32 = 6.0;
 /// Height reserved for output routing and sends.
-const ROUTING_HEIGHT: f32 = 110.0;
+const ROUTING_HEIGHT: f32 = 136.0;
 /// Width of one strip.
 const STRIP_WIDTH: f32 = 96.0;
 /// Height of fader and meter.
@@ -37,6 +39,8 @@ struct MeterState {
 #[derive(Debug, Default)]
 pub struct Mixer {
     meters: HashMap<Option<TrackId>, MeterState>,
+    /// Channels of the audio input device (0 = no input).
+    pub input_channels: usize,
 }
 
 impl Mixer {
@@ -104,6 +108,9 @@ impl Mixer {
                 let ui = &mut child;
                 if let Some(t) = track {
                     self.output_combo(ui, project, t, actions);
+                    if t.kind == TrackKind::Audio {
+                        self.record_setup(ui, t, actions);
+                    }
                     egui::ScrollArea::vertical()
                         .id_salt(("sends", t.id))
                         .max_height(ROUTING_HEIGHT - 24.0)
@@ -195,16 +202,69 @@ impl Mixer {
         }
     }
 
+    fn record_setup(&self, ui: &mut Ui, t: &Track, actions: &mut Vec<UiAction>) {
+        let mut rec = t.record;
+        let label = |i: InputRoute| match i {
+            InputRoute::Mono(c) => format!("In {}", c + 1),
+            InputRoute::Stereo(c) => format!("In {}+{}", c + 1, c + 2),
+        };
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt(("input", t.id))
+                .width(52.0)
+                .selected_text(label(rec.input))
+                .show_ui(ui, |ui| {
+                    if self.input_channels == 0 {
+                        ui.weak("No input device");
+                    }
+                    for c in 0..self.input_channels as u16 {
+                        ui.selectable_value(
+                            &mut rec.input,
+                            InputRoute::Mono(c),
+                            label(InputRoute::Mono(c)),
+                        );
+                    }
+                    for c in (0..self.input_channels.saturating_sub(1) as u16).step_by(2) {
+                        let r = InputRoute::Stereo(c);
+                        ui.selectable_value(&mut rec.input, r, label(r));
+                    }
+                });
+            let mon = match rec.monitor {
+                MonitorMode::Off => "Mon off",
+                MonitorMode::Auto => "Mon auto",
+                MonitorMode::On => "Mon on",
+            };
+            if ui
+                .small_button(mon)
+                .on_hover_text("Input monitoring: off / auto (while armed) / on")
+                .clicked()
+            {
+                rec.monitor = match rec.monitor {
+                    MonitorMode::Off => MonitorMode::Auto,
+                    MonitorMode::Auto => MonitorMode::On,
+                    MonitorMode::On => MonitorMode::Off,
+                };
+            }
+        });
+        if rec != t.record {
+            actions.push(UiAction::Edit {
+                edit: Edit::SetRecord {
+                    id: t.id,
+                    record: rec,
+                },
+                merge: false,
+            });
+        }
+    }
+
     fn output_combo(&self, ui: &mut Ui, project: &Project, t: &Track, actions: &mut Vec<UiAction>) {
         let name_of = |o: OutputRoute| match o {
-            OutputRoute::Master => "→ Master".to_owned(),
-            OutputRoute::Bus(b) => {
-                format!("→ {}", project.track(b).map_or("?", |t| t.name.as_str()))
-            }
+            OutputRoute::Master => "Master".to_owned(),
+            OutputRoute::Bus(b) => project.track(b).map_or("?".to_owned(), |t| t.name.clone()),
         };
         let mut out = t.output;
         egui::ComboBox::from_id_salt(("output", t.id))
             .width(STRIP_WIDTH - 8.0)
+            .truncate()
             .selected_text(name_of(out))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut out, OutputRoute::Master, name_of(OutputRoute::Master));

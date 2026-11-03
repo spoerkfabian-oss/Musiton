@@ -7,6 +7,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Space", "Play / stop"),
     ("Home", "Return to start"),
     ("L", "Loop on/off"),
+    ("R", "Record on armed tracks"),
     ("Ctrl+N", "New project"),
     ("Ctrl+O", "Open project"),
     ("Ctrl+S", "Save"),
