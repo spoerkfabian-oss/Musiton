@@ -4,6 +4,7 @@
 pub mod arrange;
 pub mod clip_edit;
 pub mod clip_view;
+pub mod device_panel;
 pub mod mixer;
 pub mod note_edit;
 pub mod piano_roll;
@@ -32,6 +33,29 @@ pub enum UiAction {
         on: bool,
         /// Key 0..127.
         key: u8,
+    },
+    /// Replace a track's device chain; the app allocates ids for new devices.
+    NewDevice {
+        /// Which track.
+        track: musiton_core::ids::TrackId,
+        /// The new chain.
+        devices: Vec<musiton_project::DeviceSlot>,
+    },
+    /// Ask the user for a sample file and put it into the track's sampler.
+    LoadSample {
+        /// Which track.
+        track: musiton_core::ids::TrackId,
+        /// Pad key in drum mode; `None` = the melodic sample.
+        key: Option<u8>,
+    },
+    /// Save the current settings as a user preset.
+    SavePreset {
+        /// Device type.
+        type_id: String,
+        /// Preset name.
+        name: String,
+        /// Parameter values.
+        params: Vec<(u64, f32)>,
     },
     /// Open a MIDI clip in the piano roll.
     OpenEditor {
