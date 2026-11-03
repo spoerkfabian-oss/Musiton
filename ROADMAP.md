@@ -15,9 +15,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** you can choose your output device and hear a clean 440 Hz tone with no crackle at 256 samples.
 
 ## Phase 2 — Engine core
-- [ ] `AudioNode` trait, `CompiledGraph`, buffer pool, command/event rings, GC thread
-- [ ] Transport: play/stop/locate/loop; TempoMap tick↔sample; metronome (click node, accent on beat 1)
-- [ ] Graph hot-swap without clicks
+- [x] `AudioNode` trait, `CompiledGraph`, buffer pool, command/event rings, GC thread
+- [x] Transport: play/stop/locate/loop; TempoMap tick↔sample; metronome (click node, accent on beat 1)
+- [x] Graph hot-swap without clicks
 **Done when:** metronome plays at any BPM, loop works, changing tempo while playing doesn't glitch; golden test for 4 bars at 120 BPM passes.
 
 ## Phase 3 — Project model

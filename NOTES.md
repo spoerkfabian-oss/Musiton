@@ -35,3 +35,22 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues**
 - Dropout detection on WASAPI is only the "callback too slow" heuristic; missed device deadlines caused by other system load are not seen.
 - Not verified by ear in CI (no audio hardware): needs the owner's test on Windows.
+
+## Phase 2 — Engine core
+**Built:** `AudioNode` trait, `GraphBuilder` → `CompiledGraph` (topological sort, cycle detection, pre-allocated buffers, inputs summed), `rtrb` command ring UI→audio, GC thread that frees replaced graphs/tempo maps, transport (play/stop/locate/loop), `TempoMap` (step changes) with tick↔sample conversion, time signature, metronome node (accent on beat 1), click-free graph hot-swap (10 ms cross-fade), transport bar in the app.
+
+**Decisions / deviations from ARCHITECTURE.md**
+- `musiton_engine::create(sample_rate, max_block)` returns `(EngineHandle, Engine)`. The audio backend creates a fresh pair per stream (`start_output` returns the handle); the app re-sends its state + graph after every restart.
+- No `EngineEvent` ring yet: playhead, playing, CPU load and xruns are atomics in `EngineShared` (the UI only needs the latest value). The event ring will be added when lossless events are needed (recording, phase 7).
+- `TempoMap` is sent as `Box<TempoMap>` through the command ring instead of `arc-swap`: with `arc-swap` the audio thread could end up freeing the last reference. Old objects go to the GC thread (`Box<dyn Send>` ring); if that ring were ever full the object is leaked rather than freed on the audio thread.
+- Tempo change keeps the *musical* position (the sample position is recomputed), so the metronome stays on the beat.
+- Loop range is stored in ticks (follows tempo changes); the block is split exactly at the loop end. The loop only applies while the playhead is before the loop end.
+- Graph hot-swap cross-fades old and new graph for 10 ms (both run during the fade). Re-using node instances across graphs (so synths/plugins keep their state) is postponed until there are stateful nodes (phase 8/9).
+- `ProcessContext` carries the transport fields directly (`playing`, `sample_pos`, `tempo`, `time_sig`, `metronome`); `AudioNode` additionally declares `num_inputs`/`num_outputs` and `set_param`.
+- Engine block size (`max_block`) is 1024 frames; device buffers of any size are split.
+- Golden files: `crates/musiton-engine/tests/golden/*.wav` (mono f32). `MUSITON_BLESS=1 cargo test` rewrites them; tolerance 1e-5 per sample.
+- Metronome: 1760 Hz accent / 880 Hz beat, 8 ms decay, 50 ms long.
+
+**Known issues**
+- The transport bar is temporary (phase 4 builds the real UI); tempo is a single constant BPM in the UI for now (the engine supports tempo maps).
+- Space toggles play/stop; while a number field is being edited by keyboard, Space still toggles the transport.
