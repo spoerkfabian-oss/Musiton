@@ -2,6 +2,8 @@
 //! [`UiAction`]s that the app applies (edits go through the undo stack).
 
 pub mod arrange;
+pub mod clip_edit;
+pub mod clip_view;
 pub mod shortcuts;
 pub mod snap;
 pub mod view;
@@ -21,6 +23,15 @@ pub enum UiAction {
     },
     /// Move the playhead.
     Locate(Tick),
+    /// Import audio files as clips.
+    Import {
+        /// Files to import.
+        files: Vec<std::path::PathBuf>,
+        /// Track to put them on; `None` = new track(s).
+        track: Option<musiton_core::ids::TrackId>,
+        /// Start position.
+        at: Tick,
+    },
 }
 
 /// `true` while a text field (or a number field in typing mode) has keyboard focus,

@@ -5,7 +5,7 @@ use std::time::Instant;
 use egui::{Pos2, RawInput, Rect};
 use musiton_core::ids::TrackId;
 use musiton_project::{Edit, Project, Track, UndoStack};
-use musiton_ui::arrange::Arrange;
+use musiton_ui::arrange::{Arrange, ArrangeInput};
 use musiton_ui::UiAction;
 
 fn project_with_tracks(n: u64) -> Project {
@@ -38,7 +38,13 @@ fn frame(
     let mut actions = Vec::new();
     let mut out = ctx.run_ui(input(events), |ui| {
         egui::CentralPanel::default_margins().show(ui, |ui| {
-            actions = arrange.ui(ui, p, Some(1234.0), true);
+            let peaks = Default::default();
+            let input = ArrangeInput {
+                playhead: Some(1234.0),
+                playing: true,
+                peaks: &peaks,
+            };
+            actions = arrange.ui(ui, p, &input);
         });
     });
     out.textures_delta.clear();
@@ -59,7 +65,13 @@ fn fifty_tracks_render_well_within_a_60fps_frame() {
     for _ in 0..frames {
         let mut out = ctx.run_ui(input(vec![]), |ui| {
             egui::CentralPanel::default_margins().show(ui, |ui| {
-                arrange.ui(ui, &mut p, Some(1234.0), true);
+                let peaks = Default::default();
+                let input = ArrangeInput {
+                    playhead: Some(1234.0),
+                    playing: true,
+                    peaks: &peaks,
+                };
+                arrange.ui(ui, &mut p, &input);
             });
         });
         out.textures_delta.clear();

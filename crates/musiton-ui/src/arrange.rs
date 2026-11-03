@@ -1,10 +1,17 @@
 //! Arrangement view: toolbar, bar/beat ruler, track headers and timeline lanes.
 
-use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, UiBuilder};
-use musiton_core::ids::TrackId;
-use musiton_core::TimeSig;
-use musiton_project::{ChannelStrip, Edit, Project, Track, TrackKind};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, UiBuilder};
+use musiton_core::audio::Peaks;
+use musiton_core::ids::{AssetId, ClipId, TrackId};
+use musiton_core::{Tick, TimeSig};
+use musiton_project::{ChannelStrip, Clip, Edit, Project, Track, TrackKind};
+
+use crate::clip_edit;
+use crate::clip_view::{paint_clip, ClipPaint, TITLE_HEIGHT};
 use crate::snap::Snap;
 use crate::view::TimelineView;
 use crate::UiAction;
@@ -37,6 +44,38 @@ struct GridLine {
     bar: i64,
 }
 
+/// Per-frame inputs of the arrangement view.
+pub struct ArrangeInput<'a> {
+    /// Song position in ticks.
+    pub playhead: Option<f64>,
+    /// Whether the transport runs.
+    pub playing: bool,
+    /// Waveform peaks of loaded audio files.
+    pub peaks: &'a HashMap<AssetId, Arc<Peaks>>,
+}
+
+/// What a clip drag changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DragKind {
+    Move,
+    TrimStart,
+    TrimEnd,
+    FadeIn,
+    FadeOut,
+}
+
+/// A clip drag in progress (previewed; committed as one edit on release).
+#[derive(Debug)]
+struct ClipDrag {
+    kind: DragKind,
+    origin: Pos2,
+    /// Current pointer offset in ticks and rows.
+    delta_ticks: f64,
+    delta_rows: isize,
+    /// (track index, clip) of every dragged clip as it was when the drag started.
+    items: Vec<(usize, Clip)>,
+}
+
 /// State of the arrangement view.
 #[derive(Debug, Default)]
 pub struct Arrange {
@@ -48,7 +87,12 @@ pub struct Arrange {
     pub follow: bool,
     /// Selected track.
     pub selected: Option<TrackId>,
+    /// Selected clips.
+    pub selected_clips: HashSet<ClipId>,
     renaming: Option<(TrackId, String)>,
+    drag: Option<ClipDrag>,
+    /// Actions produced inside popups (collected, returned at the end of the frame).
+    pending: Vec<UiAction>,
 }
 
 impl Arrange {
@@ -67,11 +111,13 @@ impl Arrange {
         &mut self,
         ui: &mut Ui,
         project: &mut Project,
-        playhead: Option<f64>,
-        playing: bool,
+        input: &ArrangeInput,
     ) -> Vec<UiAction> {
+        let ArrangeInput {
+            playhead, playing, ..
+        } = *input;
         let mut actions = Vec::new();
-        self.shortcuts(ui, project, &mut actions);
+        self.shortcuts(ui, project, playhead, &mut actions);
         self.toolbar(ui, project, &mut actions);
 
         let full = ui.available_rect_before_wrap();
@@ -112,7 +158,9 @@ impl Arrange {
             &mut actions,
         );
 
+        let preview = self.preview(project);
         let n = project.tracks.len();
+        let mut new_track_drop = None;
         egui::ScrollArea::vertical()
             .id_salt("tracks")
             .auto_shrink([false, false])
@@ -130,17 +178,152 @@ impl Arrange {
                     let lane =
                         Rect::from_min_max(Pos2::new(header.right(), row.0.top()), row.0.max);
                     self.header(ui, i, track, header, &mut actions);
-                    self.lane(ui, track, lane, &grid, playhead);
+                    let lane_input = LaneInput {
+                        index: i,
+                        grid: &grid,
+                        playhead,
+                        preview: &preview,
+                        arrange: input,
+                        project,
+                    };
+                    self.lane(ui, track, lane, &lane_input, &mut actions);
                 }
                 let rest = ui.available_rect_before_wrap();
                 if rest.height() > 0.0 {
                     let r = ui.allocate_rect(rest, Sense::click());
                     if r.clicked() {
                         self.selected = None;
+                        self.selected_clips.clear();
+                    }
+                    if let Some(path) = r.dnd_release_payload::<PathBuf>() {
+                        new_track_drop = Some((vec![(*path).clone()], r.interact_pointer_pos()));
+                    }
+                    if r.contains_pointer() {
+                        new_track_drop = new_track_drop.take().or_else(|| {
+                            let files = dropped_files(ui);
+                            (!files.is_empty())
+                                .then(|| (files, ui.input(|i| i.pointer.latest_pos())))
+                        });
                     }
                 }
             });
+        if let Some((files, pos)) = new_track_drop {
+            let tick = pos.map_or(0.0, |p| self.view.tick(p.x - lane_left).max(0.0));
+            actions.push(UiAction::Import {
+                files,
+                track: None,
+                at: self.snap.round(tick, project.time_sig),
+            });
+        }
+        self.update_drag(ui, project, &mut actions);
+        actions.append(&mut self.pending);
         actions
+    }
+
+    /// Clips as they would be after the current drag: (track index, clip).
+    fn preview(&self, project: &Project) -> Vec<(usize, Clip)> {
+        let Some(d) = &self.drag else {
+            return Vec::new();
+        };
+        let sig = project.time_sig;
+        let last = project.tracks.len().saturating_sub(1) as isize;
+        d.items
+            .iter()
+            .map(|(ti, c)| {
+                let sr = f64::from(project.sample_rate);
+                let tempo = &project.tempo;
+                let at = c.start().0 as f64 + d.delta_ticks;
+                let clip = match d.kind {
+                    DragKind::Move => clip_edit::moved(c, d.delta_ticks, self.snap, sig),
+                    DragKind::TrimStart => {
+                        clip_edit::trimmed_start(c, d.delta_ticks, self.snap, sig, tempo, sr)
+                    }
+                    DragKind::TrimEnd => {
+                        clip_edit::trimmed_end(c, d.delta_ticks, self.snap, sig, tempo, sr, None)
+                    }
+                    DragKind::FadeIn => {
+                        let fade_end = match c {
+                            Clip::Audio(a) => (a.start.0 + a.fade_in.0) as f64,
+                            Clip::Midi(_) => at,
+                        };
+                        clip_edit::with_fade_in(c, fade_end + d.delta_ticks)
+                    }
+                    DragKind::FadeOut => {
+                        let fade_start = match c {
+                            Clip::Audio(a) => (a.start.0 + a.length.0 - a.fade_out.0) as f64,
+                            Clip::Midi(_) => at,
+                        };
+                        clip_edit::with_fade_out(c, fade_start + d.delta_ticks)
+                    }
+                };
+                let row = if d.kind == DragKind::Move {
+                    (*ti as isize + d.delta_rows).clamp(0, last.max(0)) as usize
+                } else {
+                    *ti
+                };
+                // Clips only move between tracks of the same kind.
+                let kind = |i: usize| project.tracks.get(i).map(|t| t.kind);
+                let row = if kind(row) == kind(*ti) { row } else { *ti };
+                (row, clip)
+            })
+            .collect()
+    }
+
+    /// Follows the pointer while a clip drag runs and commits it on release.
+    fn update_drag(&mut self, ui: &Ui, project: &Project, actions: &mut Vec<UiAction>) {
+        let Some(d) = &mut self.drag else {
+            return;
+        };
+        let (pos, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        if let Some(p) = pos {
+            d.delta_ticks = f64::from((p.x - d.origin.x) / self.view.px_per_tick);
+            d.delta_rows = ((p.y - d.origin.y) / ROW_HEIGHT).round() as isize;
+        }
+        if down {
+            return;
+        }
+        let preview = self.preview(project);
+        let Some(d) = self.drag.take() else {
+            return;
+        };
+        let mut edits = Vec::new();
+        for ((from_i, old), (to_i, new)) in d.items.iter().zip(preview) {
+            let (Some(from), Some(to)) = (project.tracks.get(*from_i), project.tracks.get(to_i))
+            else {
+                continue;
+            };
+            if from.id != to.id {
+                edits.push(Edit::MoveClipToTrack {
+                    clip: old.id(),
+                    from: from.id,
+                    to: to.id,
+                    index: None,
+                });
+            }
+            if new != *old {
+                edits.push(Edit::ReplaceClip {
+                    track: to.id,
+                    clip: new,
+                });
+            }
+        }
+        if !edits.is_empty() {
+            actions.push(UiAction::Edit {
+                edit: Edit::Batch(edits),
+                merge: false,
+            });
+        }
+    }
+
+    /// (track id, clip) of every selected clip.
+    fn selected_clip_list(&self, project: &Project) -> Vec<(TrackId, Clip)> {
+        project
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().map(move |c| (t.id, c)))
+            .filter(|(_, c)| self.selected_clips.contains(&c.id()))
+            .map(|(t, c)| (t, c.clone()))
+            .collect()
     }
 
     fn toolbar(&mut self, ui: &mut Ui, project: &mut Project, actions: &mut Vec<UiAction>) {
@@ -214,7 +397,13 @@ impl Arrange {
         }
     }
 
-    fn shortcuts(&mut self, ui: &mut Ui, project: &mut Project, actions: &mut Vec<UiAction>) {
+    fn shortcuts(
+        &mut self,
+        ui: &mut Ui,
+        project: &mut Project,
+        playhead: Option<f64>,
+        actions: &mut Vec<UiAction>,
+    ) {
         if crate::text_input_focused(ui.ctx()) {
             return;
         }
@@ -224,6 +413,61 @@ impl Arrange {
             actions.push(self.add_track(project, TrackKind::Instrument));
         } else if shortcut(Modifiers::COMMAND, Key::T) {
             actions.push(self.add_track(project, TrackKind::Audio));
+        }
+        let clips = self.selected_clip_list(project);
+        if !clips.is_empty() {
+            if shortcut(Modifiers::NONE, Key::Delete) {
+                let edits = clips
+                    .iter()
+                    .map(|(t, c)| Edit::RemoveClip {
+                        track: *t,
+                        clip: c.id(),
+                        removed: None,
+                    })
+                    .collect();
+                actions.push(batch(edits));
+                self.selected_clips.clear();
+                return;
+            }
+            if shortcut(Modifiers::COMMAND, Key::D) {
+                self.selected_clips.clear();
+                let edits = clips
+                    .into_iter()
+                    .map(|(t, mut c)| {
+                        let end = c.end();
+                        let id = ClipId(project.alloc_id());
+                        c.set_id(id);
+                        c.set_start(end);
+                        self.selected_clips.insert(id);
+                        Edit::AddClip {
+                            track: t,
+                            clip: Some(c),
+                        }
+                    })
+                    .collect();
+                actions.push(batch(edits));
+                return;
+            }
+            if shortcut(Modifiers::NONE, Key::S) {
+                let at = Tick(playhead.unwrap_or(0.0).round() as i64);
+                let sr = f64::from(project.sample_rate);
+                let mut edits = Vec::new();
+                for (t, c) in clips {
+                    let id = ClipId(project.next_id);
+                    if let Some((l, r)) = clip_edit::split(&c, at, id, &project.tempo, sr) {
+                        project.alloc_id();
+                        edits.push(Edit::ReplaceClip { track: t, clip: l });
+                        edits.push(Edit::AddClip {
+                            track: t,
+                            clip: Some(r),
+                        });
+                    }
+                }
+                if !edits.is_empty() {
+                    actions.push(batch(edits));
+                }
+                return;
+            }
         }
         let Some(sel) = self.selected.filter(|s| project.track(*s).is_some()) else {
             return;
@@ -548,24 +792,56 @@ impl Arrange {
         ui: &mut Ui,
         track: &Track,
         rect: Rect,
-        grid: &[GridLine],
-        playhead: Option<f64>,
+        input: &LaneInput,
+        actions: &mut Vec<UiAction>,
     ) {
         let resp = ui.interact(rect, ui.scope_id().with(("lane", track.id)), Sense::click());
         if resp.clicked() {
             self.selected = Some(track.id);
+            self.selected_clips.clear();
         }
+        let pointer_tick = |p: Pos2| {
+            self.snap.round(
+                self.view.tick(p.x - rect.left()).max(0.0),
+                input.project.time_sig,
+            )
+        };
+        if let Some(path) = resp.dnd_release_payload::<PathBuf>() {
+            actions.push(UiAction::Import {
+                files: vec![(*path).clone()],
+                track: Some(track.id),
+                at: resp.interact_pointer_pos().map_or(Tick(0), pointer_tick),
+            });
+        }
+        if resp.contains_pointer() {
+            let files = dropped_files(ui);
+            if !files.is_empty() {
+                let at = ui
+                    .input(|i| i.pointer.latest_pos())
+                    .map_or(Tick(0), pointer_tick);
+                actions.push(UiAction::Import {
+                    files,
+                    track: Some(track.id),
+                    at,
+                });
+            }
+        }
+
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals();
         let selected = self.selected == Some(track.id);
-        let bg = if selected {
+        let hovered_drop = resp.dnd_hover_payload::<PathBuf>().is_some()
+            || (resp.contains_pointer() && ui.input(|i| !i.raw.hovered_files.is_empty()));
+        let bg = if hovered_drop {
+            visuals.selection.bg_fill.gamma_multiply(0.4)
+        } else if selected {
             visuals.faint_bg_color.gamma_multiply(1.6)
         } else {
             visuals.extreme_bg_color
         };
         painter.rect_filled(rect.shrink2(egui::vec2(0.0, 1.0)), 0.0, bg);
         let base = visuals.weak_text_color();
-        for l in grid {
+        for l in input.grid {
             let alpha = match l.level {
                 3 | 2 => 0.35,
                 1 => 0.15,
@@ -578,12 +854,221 @@ impl Arrange {
                 Stroke::new(1.0, base.gamma_multiply(alpha)),
             );
         }
-        if let Some(t) = playhead {
+
+        let dragged: HashSet<ClipId> = self
+            .drag
+            .iter()
+            .flat_map(|d| d.items.iter().map(|(_, c)| c.id()))
+            .collect();
+        let clip_area = rect.shrink2(egui::vec2(0.0, 3.0));
+        for clip in &track.clips {
+            let crect = self.clip_rect(clip, clip_area);
+            if crect.right() < rect.left() || crect.left() > rect.right() {
+                continue;
+            }
+            if !dragged.contains(&clip.id()) {
+                self.paint(&painter, clip, crect, rect, track, input);
+            }
+            self.clip_interaction(ui, input, clip, crect);
+        }
+        for (_, clip) in input.preview.iter().filter(|(row, _)| *row == input.index) {
+            let crect = self.clip_rect(clip, clip_area);
+            self.paint(&painter, clip, crect, rect, track, input);
+        }
+
+        if let Some(t) = input.playhead {
             let x = rect.left() + self.view.x(t);
             if rect.x_range().contains(x) {
                 painter.vline(x, rect.y_range(), Stroke::new(1.0, playhead_color()));
             }
         }
+    }
+
+    fn clip_rect(&self, clip: &Clip, area: Rect) -> Rect {
+        let x0 = area.left() + self.view.x(clip.start().0 as f64);
+        let x1 = area.left() + self.view.x(clip.end().0 as f64);
+        Rect::from_x_y_ranges(x0..=x1.max(x0 + 2.0), area.y_range())
+    }
+
+    fn paint(
+        &self,
+        painter: &egui::Painter,
+        clip: &Clip,
+        crect: Rect,
+        lane: Rect,
+        track: &Track,
+        input: &LaneInput,
+    ) {
+        let (name, peaks) = match clip {
+            Clip::Audio(a) => {
+                let name = input
+                    .project
+                    .assets
+                    .iter()
+                    .find(|x| x.id == a.asset)
+                    .and_then(|x| std::path::Path::new(&x.file).file_stem())
+                    .map_or("audio".to_owned(), |s| s.to_string_lossy().into_owned());
+                (name, input.arrange.peaks.get(&a.asset).map(|p| p.as_ref()))
+            }
+            Clip::Midi(_) => ("MIDI".to_owned(), None),
+        };
+        paint_clip(
+            painter,
+            &ClipPaint {
+                clip,
+                rect: crect,
+                clip_to: lane,
+                color: track.color,
+                selected: self.selected_clips.contains(&clip.id()),
+                name: &name,
+                peaks,
+                view: &self.view,
+                lane_left: lane.left(),
+                tempo: &input.project.tempo,
+            },
+        );
+    }
+
+    fn clip_interaction(&mut self, ui: &mut Ui, input: &LaneInput, clip: &Clip, crect: Rect) {
+        let resp = ui.interact(
+            crect,
+            ui.scope_id().with(("clip", clip.id())),
+            Sense::click_and_drag(),
+        );
+        let px = self.view.px_per_tick;
+        let kind = |p: Pos2| {
+            let edge = 6.0_f32.min(crect.width() / 4.0);
+            let near_top =
+                p.y < crect.top() + TITLE_HEIGHT + 5.0 && p.y > crect.top() + TITLE_HEIGHT - 5.0;
+            if let Clip::Audio(a) = clip {
+                let fi = crect.left() + (a.fade_in.0 as f32) * px;
+                let fo = crect.right() - (a.fade_out.0 as f32) * px;
+                if near_top && (p.x - fi).abs() < 6.0 {
+                    return DragKind::FadeIn;
+                }
+                if near_top && (p.x - fo).abs() < 6.0 {
+                    return DragKind::FadeOut;
+                }
+            }
+            if p.x < crect.left() + edge {
+                DragKind::TrimStart
+            } else if p.x > crect.right() - edge {
+                DragKind::TrimEnd
+            } else {
+                DragKind::Move
+            }
+        };
+        if let Some(p) = resp.hover_pos() {
+            match kind(p) {
+                DragKind::TrimStart | DragKind::TrimEnd => {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                DragKind::FadeIn | DragKind::FadeOut => {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                }
+                DragKind::Move => {}
+            }
+        }
+        let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+        if resp.clicked() {
+            self.select_clip(clip.id(), additive);
+        }
+        if resp.drag_started() {
+            if let Some(origin) = resp.interact_pointer_pos() {
+                if !self.selected_clips.contains(&clip.id()) {
+                    self.select_clip(clip.id(), additive);
+                }
+                let kind = kind(origin);
+                let items = if kind == DragKind::Move {
+                    input
+                        .project
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, t)| t.clips.iter().map(move |c| (i, c)))
+                        .filter(|(_, c)| self.selected_clips.contains(&c.id()))
+                        .map(|(i, c)| (i, c.clone()))
+                        .collect()
+                } else {
+                    vec![(input.index, clip.clone())]
+                };
+                self.drag = Some(ClipDrag {
+                    kind,
+                    origin,
+                    delta_ticks: 0.0,
+                    delta_rows: 0,
+                    items,
+                });
+            }
+        }
+        if let Clip::Audio(a) = clip {
+            let track_id = input.project.tracks.get(input.index).map(|t| t.id);
+            resp.context_menu(|ui| {
+                let mut gain = a.gain_db;
+                ui.horizontal(|ui| {
+                    ui.label("Clip gain");
+                    let r = ui.add(
+                        egui::DragValue::new(&mut gain)
+                            .range(-60.0..=24.0)
+                            .speed(0.1)
+                            .suffix(" dB"),
+                    );
+                    if r.changed() {
+                        if let Some(t) = track_id {
+                            let mut c = a.clone();
+                            c.gain_db = gain;
+                            self.pending.push(UiAction::Edit {
+                                edit: Edit::ReplaceClip {
+                                    track: t,
+                                    clip: Clip::Audio(c),
+                                },
+                                merge: !r.drag_started(),
+                            });
+                        }
+                    }
+                });
+                ui.weak("Ctrl+D duplicate · S split at playhead · Del delete");
+            });
+        }
+    }
+
+    fn select_clip(&mut self, id: ClipId, additive: bool) {
+        if additive {
+            if !self.selected_clips.remove(&id) {
+                self.selected_clips.insert(id);
+            }
+        } else {
+            self.selected_clips.clear();
+            self.selected_clips.insert(id);
+        }
+    }
+}
+
+/// Inputs for drawing one lane.
+struct LaneInput<'a> {
+    index: usize,
+    grid: &'a [GridLine],
+    playhead: Option<f64>,
+    preview: &'a [(usize, Clip)],
+    arrange: &'a ArrangeInput<'a>,
+    project: &'a Project,
+}
+
+fn dropped_files(ui: &Ui) -> Vec<PathBuf> {
+    ui.input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .map(|f| f.path().to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect()
+    })
+}
+
+fn batch(edits: Vec<Edit>) -> UiAction {
+    UiAction::Edit {
+        edit: Edit::Batch(edits),
+        merge: false,
     }
 }
 
