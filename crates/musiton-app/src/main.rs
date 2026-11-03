@@ -14,6 +14,8 @@ use eframe::egui;
 use musiton_engine::EngineHandle;
 use musiton_io::audio::{self, AudioOutput, OutputRequest};
 use musiton_project::EXTENSION;
+use musiton_ui::arrange::Arrange;
+use musiton_ui::UiAction;
 use tracing_subscriber::EnvFilter;
 
 use audio_dialog::AudioDialog;
@@ -76,6 +78,17 @@ struct App {
     pending: Option<Pending>,
     allow_close: bool,
     title: String,
+    arrange: Arrange,
+    bottom_tab: BottomTab,
+    show_shortcuts: bool,
+}
+
+/// Tabs of the bottom panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BottomTab {
+    #[default]
+    Editor,
+    Mixer,
 }
 
 impl App {
@@ -98,6 +111,9 @@ impl App {
             pending: None,
             allow_close: false,
             title: String::new(),
+            arrange: Arrange::new(),
+            bottom_tab: BottomTab::default(),
+            show_shortcuts: false,
         };
         app.restart_audio();
         if let Some(path) = open {
@@ -352,6 +368,11 @@ impl App {
                     self.audio_dialog.open(&self.settings.audio);
                 }
             });
+            ui.menu_button("Help", |ui| {
+                if ui.button("Keyboard shortcuts").clicked() {
+                    self.show_shortcuts = true;
+                }
+            });
         });
     }
 
@@ -441,6 +462,55 @@ impl App {
         }
     }
 
+    fn apply_actions(&mut self, actions: Vec<UiAction>) {
+        for action in actions {
+            match action {
+                UiAction::Edit { edit, merge } => {
+                    if let Err(e) = self.doc.perform(edit, merge) {
+                        self.set_status(format!("Edit failed: {e}"));
+                    }
+                }
+                UiAction::Locate(tick) => {
+                    if let Some((_, engine)) = &mut self.output {
+                        let sr = f64::from(engine.sample_rate());
+                        let pos = self.doc.project.tempo.tick_to_sample(tick.0 as f64, sr);
+                        engine.send_or_log(musiton_engine::EngineCommand::Locate(
+                            musiton_core::SamplePos(pos.round().max(0.0) as u64),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Playhead in ticks and whether the transport runs.
+    fn playhead(&self) -> (Option<f64>, bool) {
+        match &self.output {
+            Some((_, e)) => {
+                let sr = f64::from(e.sample_rate());
+                let tick = self
+                    .doc
+                    .project
+                    .tempo
+                    .sample_to_tick(e.shared().playhead() as f64, sr);
+                (Some(tick), e.shared().playing())
+            }
+            None => (None, false),
+        }
+    }
+
+    fn bottom_panel(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Editor, "Editor");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Mixer, "Mixer");
+        });
+        ui.separator();
+        match self.bottom_tab {
+            BottomTab::Editor => ui.weak("Select a clip to edit it here."),
+            BottomTab::Mixer => ui.weak("The mixer arrives in phase 6."),
+        };
+    }
+
     fn update_title(&mut self, ctx: &egui::Context) {
         let dirty = if self.doc.is_dirty() { "*" } else { "" };
         let title = format!("{}{dirty} — {APP_NAME}", self.doc.name());
@@ -483,7 +553,32 @@ impl eframe::App for App {
             self.doc.settings_changed();
         }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::CentralPanel::default_margins().show(ui, |_ui| {});
+        egui::Panel::bottom("bottom")
+            .resizable(true)
+            .default_size(200.0)
+            .min_size(80.0)
+            .show(ui, |ui| self.bottom_panel(ui));
+        egui::Panel::left("browser")
+            .resizable(true)
+            .default_size(200.0)
+            .min_size(120.0)
+            .show(ui, |ui| {
+                ui.strong("Browser");
+                ui.separator();
+                ui.weak("Audio files and devices will be listed here.");
+            });
+        let (playhead, playing) = self.playhead();
+        let mut actions = Vec::new();
+        egui::CentralPanel::default_margins().show(ui, |ui| {
+            actions = self
+                .arrange
+                .ui(ui, &mut self.doc.project, playhead, playing);
+        });
+        self.apply_actions(actions);
+        egui::Window::new("Keyboard shortcuts")
+            .open(&mut self.show_shortcuts)
+            .collapsible(false)
+            .show(&ctx, musiton_ui::shortcuts::shortcuts_table);
 
         if let Some(new) = self.audio_dialog.show(&ctx) {
             self.apply_audio_settings(new);

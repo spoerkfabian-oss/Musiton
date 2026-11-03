@@ -80,9 +80,16 @@ impl Transport {
         let mut cmds = Vec::new();
 
         // Consumed here so a focused button doesn't also react to the same key press.
+        // Ignored while a text field has keyboard focus.
+        let typing = musiton_ui::text_input_focused(ui.ctx());
         let none = egui::Modifiers::NONE;
-        let space = ui.input_mut(|i| i.consume_key(none, egui::Key::Space));
-        let home = ui.input_mut(|i| i.consume_key(none, egui::Key::Home));
+        let key = |k| !typing && ui.input_mut(|i| i.consume_key(none, k));
+        let space = key(egui::Key::Space);
+        let home = key(egui::Key::Home);
+        if key(egui::Key::L) {
+            project.loop_enabled = !project.loop_enabled;
+            out.settings_changed = true;
+        }
         ui.horizontal(|ui| {
             if ui
                 .button("|<")
@@ -105,6 +112,8 @@ impl Transport {
                     EngineCommand::Play
                 });
             }
+            ui.add_enabled(false, egui::Button::new("Rec"))
+                .on_disabled_hover_text("Recording arrives in phase 7");
             ui.separator();
 
             ui.label("BPM");
