@@ -84,13 +84,24 @@ struct App {
     allow_close: bool,
     title: String,
     arrange: Arrange,
+    mixer: musiton_ui::mixer::Mixer,
     bottom_tab: BottomTab,
     show_shortcuts: bool,
     assets: AssetStore,
     importer: Importer,
-    /// (document revision, asset generation) the engine graph was built from.
-    graph_key: Option<(u64, u64)>,
+    graph: GraphState,
     browser: Browser,
+}
+
+/// What the running engine graph was built from.
+#[derive(Default)]
+struct GraphState {
+    revision: Option<u64>,
+    asset_gen: u64,
+    structure: Option<engine_graph::Structure>,
+    info: engine_graph::GraphInfo,
+    /// Parameter values already sent to the engine.
+    sent: std::collections::HashMap<engine_graph::ParamKey, f32>,
 }
 
 /// Tabs of the bottom panel.
@@ -122,11 +133,12 @@ impl App {
             allow_close: false,
             title: String::new(),
             arrange: Arrange::new(),
+            mixer: musiton_ui::mixer::Mixer::default(),
             bottom_tab: BottomTab::default(),
             show_shortcuts: false,
             assets: AssetStore::default(),
             importer: Importer::default(),
-            graph_key: None,
+            graph: GraphState::default(),
             browser: Browser::default(),
         };
         if let Some(dir) = app.settings.browser_dir.clone() {
@@ -164,7 +176,7 @@ impl App {
         match audio::start_output(&request) {
             Ok((out, engine)) => {
                 self.sync.reset();
-                self.graph_key = None;
+                self.graph = GraphState::default();
                 self.output = Some((out, engine));
                 self.audio_error = None;
             }
@@ -595,24 +607,48 @@ impl App {
         }
     }
 
-    /// Rebuilds the engine graph when the project or the loaded audio changed.
+    /// Rebuilds the engine graph when the project structure or the loaded audio changed,
+    /// and sends changed mixer values as parameter commands.
     fn update_graph(&mut self) {
-        let key = (self.doc.revision, self.assets.generation);
         let Some((_, engine)) = &mut self.output else {
             return;
         };
-        if self.graph_key == Some(key) {
-            return;
+        if self.graph.revision != Some(self.doc.revision)
+            || self.graph.asset_gen != self.assets.generation
+        {
+            self.graph.revision = Some(self.doc.revision);
+            let structure = engine_graph::structure(&self.doc.project);
+            if self.graph.structure.as_ref() != Some(&structure)
+                || self.graph.asset_gen != self.assets.generation
+            {
+                self.graph.asset_gen = self.assets.generation;
+                self.graph.structure = Some(structure);
+                match engine_graph::build(
+                    &self.doc.project,
+                    &self.assets,
+                    engine.sample_rate(),
+                    engine.max_block(),
+                ) {
+                    Ok(built) => {
+                        engine.send_or_log(musiton_engine::EngineCommand::SwapGraph(Box::new(
+                            built.graph,
+                        )));
+                        self.graph.sent = built.info.params(&self.doc.project);
+                        self.graph.info = built.info;
+                    }
+                    Err(e) => tracing::error!("building the engine graph failed: {e}"),
+                }
+            }
         }
-        self.graph_key = Some(key);
-        match engine_graph::build(
-            &self.doc.project,
-            &self.assets,
-            engine.sample_rate(),
-            engine.max_block(),
-        ) {
-            Ok(g) => engine.send_or_log(musiton_engine::EngineCommand::SwapGraph(Box::new(g))),
-            Err(e) => tracing::error!("building the engine graph failed: {e}"),
+        for (key, value) in self.graph.info.params(&self.doc.project) {
+            if self.graph.sent.get(&key) != Some(&value) {
+                self.graph.sent.insert(key, value);
+                engine.send_or_log(musiton_engine::EngineCommand::SetParam {
+                    node: key.0,
+                    id: key.1,
+                    val: value,
+                });
+            }
         }
     }
 
@@ -654,16 +690,29 @@ impl App {
         }
     }
 
-    fn bottom_panel(&mut self, ui: &mut egui::Ui) {
+    fn bottom_panel(&mut self, ui: &mut egui::Ui) -> Vec<UiAction> {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Editor, "Editor");
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Mixer, "Mixer");
         });
         ui.separator();
         match self.bottom_tab {
-            BottomTab::Editor => ui.weak("Select a clip to edit it here."),
-            BottomTab::Mixer => ui.weak("The mixer arrives in phase 6."),
-        };
+            BottomTab::Editor => {
+                ui.weak("Select a clip to edit it here.");
+                Vec::new()
+            }
+            BottomTab::Mixer => {
+                ui.ctx().request_repaint_after(Duration::from_millis(33));
+                let levels = self
+                    .graph
+                    .info
+                    .meters
+                    .iter()
+                    .map(|(k, m)| (*k, (m.take_peak(), m.rms())))
+                    .collect();
+                self.mixer.ui(ui, &self.doc.project, &levels)
+            }
+        }
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
@@ -708,11 +757,16 @@ impl eframe::App for App {
             self.doc.settings_changed();
         }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        let mut bottom_actions = Vec::new();
         egui::Panel::bottom("bottom")
             .resizable(true)
-            .default_size(200.0)
+            .default_size(340.0)
             .min_size(80.0)
-            .show(ui, |ui| self.bottom_panel(ui));
+            .show(ui, |ui| {
+                bottom_actions = self.bottom_panel(ui);
+                // Keep the panel at its (resizable) height even with little content.
+                ui.allocate_space(ui.available_size());
+            });
         egui::Panel::left("browser")
             .resizable(true)
             .default_size(200.0)
@@ -740,6 +794,7 @@ impl eframe::App for App {
             actions = self.arrange.ui(ui, &mut self.doc.project, &input);
         });
         self.apply_actions(actions);
+        self.apply_actions(bottom_actions);
         self.finish_imports();
         self.update_graph();
         if self.importer.running() > 0 {
