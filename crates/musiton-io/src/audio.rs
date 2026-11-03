@@ -7,14 +7,16 @@ use std::time::Instant;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, FromSample, SampleFormat, SizedSample, StreamConfig};
 use musiton_engine::rt::no_alloc;
-use musiton_engine::{Engine, EngineShared};
+use musiton_engine::EngineHandle;
 
 /// Sample rates offered in the settings dialog (filtered by what the device supports).
 pub const STANDARD_SAMPLE_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 /// Buffer sizes offered in the settings dialog (filtered by what the device supports).
 pub const STANDARD_BUFFER_SIZES: [u32; 6] = [64, 128, 256, 512, 1024, 2048];
-/// Largest block handed to the engine in one go; bigger device buffers are split.
-const MAX_BLOCK_FRAMES: usize = 4096;
+/// Size of the conversion buffer between engine (f32) and device format, in frames.
+const SCRATCH_FRAMES: usize = 4096;
+/// Largest block the engine processes at once (graphs are built for this size).
+pub const ENGINE_MAX_BLOCK: usize = 1024;
 
 /// Errors from the audio backend.
 #[derive(Debug, thiserror::Error)]
@@ -152,11 +154,9 @@ pub fn supported_buffer_sizes(range: Option<(u32, u32)>) -> Vec<u32> {
         .collect()
 }
 
-/// Opens the requested device and starts rendering `shared`'s engine into it.
-pub fn start_output(
-    request: &OutputRequest,
-    shared: Arc<EngineShared>,
-) -> Result<AudioOutput, AudioError> {
+/// Opens the requested device and starts a new engine on it.
+/// Returns the stream and the handle to control the engine.
+pub fn start_output(request: &OutputRequest) -> Result<(AudioOutput, EngineHandle), AudioError> {
     let host = cpal::default_host();
     let device = match &request.device_id {
         Some(id) => {
@@ -192,12 +192,12 @@ pub fn start_output(
             .buffer_size
             .map_or(BufferSize::Default, BufferSize::Fixed),
     };
-    let stream = match build_stream(&device, config, format, &shared, &failed) {
+    let (stream, handle) = match build_stream(&device, config, format, &failed) {
         Ok(s) => s,
         Err(e) if config.buffer_size != BufferSize::Default => {
             tracing::warn!("fixed buffer size rejected ({e}), using the device default");
             config.buffer_size = BufferSize::Default;
-            build_stream(&device, config, format, &shared, &failed)?
+            build_stream(&device, config, format, &failed)?
         }
         Err(e) => return Err(e),
     };
@@ -209,11 +209,14 @@ pub fn start_output(
         channels,
     };
     tracing::info!(?info, ?format, "audio output started");
-    Ok(AudioOutput {
-        _stream: stream,
-        info,
-        failed,
-    })
+    Ok((
+        AudioOutput {
+            _stream: stream,
+            info,
+            failed,
+        },
+        handle,
+    ))
 }
 
 /// Preference order for sample formats (higher is better).
@@ -231,14 +234,13 @@ fn build_stream(
     device: &cpal::Device,
     config: StreamConfig,
     format: SampleFormat,
-    shared: &Arc<EngineShared>,
     failed: &Arc<AtomicBool>,
-) -> Result<cpal::Stream, AudioError> {
+) -> Result<(cpal::Stream, EngineHandle), AudioError> {
     match format {
-        SampleFormat::F32 => build_typed::<f32>(device, config, shared, failed),
-        SampleFormat::I32 => build_typed::<i32>(device, config, shared, failed),
-        SampleFormat::I16 => build_typed::<i16>(device, config, shared, failed),
-        SampleFormat::U16 => build_typed::<u16>(device, config, shared, failed),
+        SampleFormat::F32 => build_typed::<f32>(device, config, failed),
+        SampleFormat::I32 => build_typed::<i32>(device, config, failed),
+        SampleFormat::I16 => build_typed::<i16>(device, config, failed),
+        SampleFormat::U16 => build_typed::<u16>(device, config, failed),
         other => Err(AudioError::UnsupportedFormat(other.to_string())),
     }
 }
@@ -246,16 +248,16 @@ fn build_stream(
 fn build_typed<T>(
     device: &cpal::Device,
     config: StreamConfig,
-    shared: &Arc<EngineShared>,
     failed: &Arc<AtomicBool>,
-) -> Result<cpal::Stream, AudioError>
+) -> Result<(cpal::Stream, EngineHandle), AudioError>
 where
     T: SizedSample + FromSample<f32>,
 {
     let channels = usize::from(config.channels);
     let sample_rate = config.sample_rate as f32;
-    let mut engine = Engine::new(shared.clone(), sample_rate, MAX_BLOCK_FRAMES);
-    let mut scratch = vec![0.0_f32; MAX_BLOCK_FRAMES * channels.max(1)];
+    let (handle, mut engine) = musiton_engine::create(sample_rate, ENGINE_MAX_BLOCK);
+    let shared = handle.shared();
+    let mut scratch = vec![0.0_f32; SCRATCH_FRAMES * channels.max(1)];
     let mut meter = LoadMeter::default();
     let cb_shared = shared.clone();
     let err_shared = shared.clone();
@@ -295,7 +297,7 @@ where
         },
         None,
     )?;
-    Ok(stream)
+    Ok((stream, handle))
 }
 
 /// Peak-hold style smoothing: rises instantly, falls slowly.
