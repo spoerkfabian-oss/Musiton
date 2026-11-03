@@ -4,6 +4,7 @@
 pub mod arrange;
 pub mod clip_edit;
 pub mod clip_view;
+pub mod mixer;
 pub mod shortcuts;
 pub mod snap;
 pub mod view;
