@@ -9,7 +9,7 @@ use musiton_dsp::smooth::LinearRamp;
 
 use crate::command::{EngineCommand, Garbage, InputSource};
 use crate::graph::CompiledGraph;
-use crate::node::ProcessContext;
+use crate::node::{Event, EventKind, ProcessContext};
 use crate::EngineShared;
 
 /// Test tone frequency in Hz.
@@ -26,6 +26,8 @@ const COMMAND_CAPACITY: usize = 1024;
 const GARBAGE_CAPACITY: usize = 256;
 /// Most commands handled per block (keeps the callback time bounded).
 const MAX_COMMANDS_PER_BLOCK: usize = 64;
+/// Most live MIDI events handled per callback.
+const MAX_LIVE_EVENTS: usize = 256;
 /// Most input channels the engine reads.
 pub const MAX_INPUT_CHANNELS: usize = 16;
 /// Input frames allowed to queue up before old ones are skipped (keeps latency bounded).
@@ -75,6 +77,8 @@ pub fn create(sample_rate: f32, max_block: usize) -> (EngineHandle, Engine) {
         punch: None,
         input_started: false,
         probe: None,
+        midi_in: None,
+        live: Vec::with_capacity(MAX_LIVE_EVENTS),
     };
     (handle, engine)
 }
@@ -163,6 +167,9 @@ pub struct Engine {
     input_started: bool,
     /// Frames since the latency-measurement click was played.
     probe: Option<u64>,
+    midi_in: Option<Box<rtrb::Consumer<[u8; 3]>>>,
+    /// Live MIDI for the next segment (cleared after it was handed to the graph).
+    live: Vec<Event>,
 }
 
 impl Engine {
@@ -179,6 +186,7 @@ impl Engine {
             return;
         }
         self.drain_commands();
+        self.read_midi();
         let frames = out.len() / channels;
         self.skip_input_backlog(frames);
         let (body, tail) = out.split_at_mut(frames * channels);
@@ -206,6 +214,37 @@ impl Engine {
         }
         self.shared.publish_transport(self.playing, self.pos);
         self.shared.publish_recording(self.recording);
+    }
+
+    fn push_live(&mut self, kind: EventKind) {
+        if self.live.len() < self.live.capacity() {
+            self.live.push(Event { offset: 0, kind });
+        }
+    }
+
+    /// Moves raw MIDI from the input ring into `live`.
+    fn read_midi(&mut self) {
+        let mut pending = [None; 32];
+        let mut n = 0;
+        if let Some(rx) = self.midi_in.as_mut() {
+            while n < pending.len() {
+                let Ok(bytes) = rx.pop() else {
+                    break;
+                };
+                if let Some(slot) = pending.get_mut(n) {
+                    *slot = Some(bytes);
+                }
+                n += 1;
+            }
+        }
+        for bytes in pending.into_iter().flatten() {
+            if let Some(kind) = EventKind::from_midi(bytes) {
+                if let EventKind::Cc { ch, cc, val } = kind {
+                    self.shared.set_last_cc(ch, cc, (val * 127.0).round() as u8);
+                }
+                self.push_live(kind);
+            }
+        }
     }
 
     /// Drops queued input beyond `frames + MAX_INPUT_BACKLOG` so input latency stays low.
@@ -293,6 +332,19 @@ impl Engine {
                     }
                 }
                 EngineCommand::SetRecording(on) => self.recording = on,
+                EngineCommand::SetMidiInput(new) => {
+                    if let Some(old) = std::mem::replace(&mut self.midi_in, new) {
+                        self.retire(old);
+                    }
+                }
+                EngineCommand::PreviewNote { on, key, vel } => {
+                    let key = key.min(127);
+                    self.push_live(if on {
+                        EventKind::NoteOn { ch: 0, key, vel }
+                    } else {
+                        EventKind::NoteOff { ch: 0, key }
+                    });
+                }
                 EngineCommand::SetPunch(range) => self.punch = range,
                 EngineCommand::SetMetronome(on) => self.metronome = on,
                 EngineCommand::SwapGraph(new) => {
@@ -337,6 +389,7 @@ impl Engine {
             inputs: self.input_buf.get(..in_ch).unwrap_or(&[]),
             recording: self.recording && self.playing,
             punch,
+            live_midi: &self.live,
         };
         out.fill(0.0);
         let fade_start = self.fade_pos;
@@ -358,6 +411,7 @@ impl Engine {
                 }
             }
         }
+        self.live.clear();
         self.mix_test_tone(out, channels);
         self.run_probe(out, channels, frames, in_ch > 0);
     }

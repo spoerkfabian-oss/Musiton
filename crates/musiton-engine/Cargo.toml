@@ -13,7 +13,6 @@ thiserror.workspace = true
 tracing.workspace = true
 musiton-core.workspace = true
 musiton-dsp.workspace = true
-musiton-devices.workspace = true
 assert_no_alloc.workspace = true
 rtrb = "0.4"
 

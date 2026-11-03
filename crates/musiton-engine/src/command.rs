@@ -36,6 +36,17 @@ pub enum EngineCommand {
     SetRecording(bool),
     /// Restrict recording to a range (punch in/out); `None` = record everywhere.
     SetPunch(Option<(Tick, Tick)>),
+    /// Use a new MIDI input (raw 3-byte messages) or none.
+    SetMidiInput(Option<Box<rtrb::Consumer<[u8; 3]>>>),
+    /// Play/stop a note on the live-MIDI track (keyboard preview in the editor).
+    PreviewNote {
+        /// Note on (true) or off.
+        on: bool,
+        /// Key 0..127.
+        key: u8,
+        /// Velocity 0..1.
+        vel: f32,
+    },
     /// Replace the running graph (cross-faded, click-free).
     SwapGraph(Box<CompiledGraph>),
     /// Set a node parameter in the running graph.

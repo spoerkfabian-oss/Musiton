@@ -47,6 +47,7 @@ fn run(
             inputs: &[],
             recording: false,
             punch: None,
+            live_midi: &[],
         };
         node.process(&ctx, &mut AudioIo::new(&ins, &mut outs, n), &[]);
         for (o, b) in out.iter_mut().zip(&outs) {

@@ -15,6 +15,8 @@ pub struct EngineShared {
     /// Last latency measurement: frames, or [`PROBE_NONE`] / [`PROBE_TIMEOUT`].
     probe_result: AtomicI64,
     recording: AtomicBool,
+    /// Last controller seen on the MIDI input: 1<<24 | ch<<16 | cc<<8 | value (0 = none).
+    last_cc: AtomicU32,
 }
 
 /// No latency measurement yet.
@@ -33,6 +35,7 @@ impl Default for EngineShared {
             probe_request: AtomicBool::new(false),
             probe_result: AtomicI64::new(PROBE_NONE),
             recording: AtomicBool::new(false),
+            last_cc: AtomicU32::new(0),
         }
     }
 }
@@ -65,6 +68,18 @@ impl EngineShared {
 
     pub(crate) fn publish_recording(&self, on: bool) {
         self.recording.store(on, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_last_cc(&self, ch: u8, cc: u8, value: u8) {
+        let v = 1 << 24 | u32::from(ch) << 16 | u32::from(cc) << 8 | u32::from(value);
+        self.last_cc.store(v, Ordering::Relaxed);
+    }
+
+    /// Last controller moved on the MIDI input: (channel, controller, value 0..127).
+    /// The groundwork for MIDI learn.
+    pub fn last_cc(&self) -> Option<(u8, u8, u8)> {
+        let v = self.last_cc.load(Ordering::Relaxed);
+        (v >> 24 == 1).then_some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
     }
 
     /// Whether recording is armed in the engine.

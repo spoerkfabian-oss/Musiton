@@ -57,6 +57,7 @@ fn render(
             inputs: &[],
             recording: false,
             punch: None,
+            live_midi: &[],
         };
         let mut io = AudioIo::new(&[], &mut outs, n);
         player.process(&ctx, &mut io, &[]);
@@ -148,6 +149,7 @@ fn stopped_transport_is_silent() {
         inputs: &[],
         recording: false,
         punch: None,
+        live_midi: &[],
     };
     p.process(&ctx, &mut AudioIo::new(&[], &mut outs, 64), &[]);
     assert!(outs.iter().flatten().all(|&s| s == 0.0));

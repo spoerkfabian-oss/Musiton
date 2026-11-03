@@ -20,6 +20,7 @@ fn ctx(tempo: &TempoMap, frames: usize) -> ProcessContext<'_> {
         inputs: &[],
         recording: false,
         punch: None,
+        live_midi: &[],
     }
 }
 

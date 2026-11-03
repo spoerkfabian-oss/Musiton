@@ -25,6 +25,32 @@ pub struct ProcessContext<'a> {
     pub recording: bool,
     /// Punch range in samples: recording only happens inside it.
     pub punch: Option<(u64, u64)>,
+    /// Live MIDI received since the last block (keyboard, note preview), offset 0.
+    pub live_midi: &'a [Event],
+}
+
+impl EventKind {
+    /// Parses a raw 3-byte MIDI channel message (note on/off, CC). Others → `None`.
+    pub fn from_midi(bytes: [u8; 3]) -> Option<Self> {
+        let [status, d1, d2] = bytes;
+        let ch = status & 0x0F;
+        let (key, val) = (d1 & 0x7F, d2 & 0x7F);
+        match status & 0xF0 {
+            0x90 if val > 0 => Some(EventKind::NoteOn {
+                ch,
+                key,
+                vel: f32::from(val) / 127.0,
+            }),
+            0x80 | 0x90 => Some(EventKind::NoteOff { ch, key }),
+            0xB0 if key == 123 => Some(EventKind::AllNotesOff),
+            0xB0 => Some(EventKind::Cc {
+                ch,
+                cc: key,
+                val: f32::from(val) / 127.0,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// A timed event inside a block.
@@ -55,6 +81,17 @@ pub enum EventKind {
         /// MIDI key 0..127.
         key: u8,
     },
+    /// Controller change; value 0..1.
+    Cc {
+        /// MIDI channel 0..15.
+        ch: u8,
+        /// Controller number 0..127.
+        cc: u8,
+        /// Value 0..1.
+        val: f32,
+    },
+    /// Release every sounding note (transport stopped or jumped).
+    AllNotesOff,
     /// Parameter change (normalized 0..1 or plain, per node).
     Param {
         /// Which parameter.
