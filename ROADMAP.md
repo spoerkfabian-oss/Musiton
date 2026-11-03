@@ -43,9 +43,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** a drum bus with reverb send works; meters match offline-computed levels.
 
 ## Phase 7 — Audio recording
-- [ ] Input device/channel selection per track, arm, input monitoring (off/auto/on)
-- [ ] Record to WAV via disk thread (no RT allocations), punch in/out, loop recording creates takes
-- [ ] Recording latency compensation (measured/manual offset)
+- [x] Input device/channel selection per track, arm, input monitoring (off/auto/on)
+- [x] Record to WAV via disk thread (no RT allocations), punch in/out, loop recording creates takes
+- [x] Recording latency compensation (measured/manual offset)
 **Done when:** 30 min recording of 2 tracks has zero dropouts; recorded clip lines up with the metronome.
 
 ## Phase 8 — MIDI + piano roll

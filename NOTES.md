@@ -124,3 +124,20 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues**
 - No meters in the track headers yet (only in the mixer).
 - Instrument tracks have a strip but no sound source until phase 9.
+
+## Phase 7 — Audio recording
+**Built:** Input device choice (Options → Audio settings, or "None"), per-track input (mono or stereo pair) and monitoring (off / auto = while armed / on) in the mixer strip, arm button "R" in the track header, Rec button and `R` key in the transport (starts playback if stopped), punch in/out range ("Punch" + bars), recording through a disk thread into `audio/<track name>.wav` takes, loop recording (every loop pass becomes its own take; a new take mutes the clips it covers — right-click → Unmute to bring an older take back), latency compensation: "Measure" (plays a click and times it back through input 1) or an estimate from the buffer sizes, plus a manual correction in ms.
+
+**Decisions**
+- Input and output are separate cpal streams. The input callback writes into a ring that the output callback reads frame-for-frame; backlog above 2048 frames is skipped to keep latency bounded. Different clocks of two devices drift slowly — use one interface for input and output.
+- Audio thread → disk: fixed-size 256-frame chunks carrying their song position (no allocation, ~5 s of buffer per track). A position jump (loop) or a stop ends a take; the disk thread starts a new WAV file. Lost chunks (disk too slow) are counted and shown in red in the status bar.
+- Takes are placed `latency` frames earlier (measured round trip, else 2× buffer size, plus the manual correction); if that would start before 0 the first frames are skipped.
+- Recording needs a saved project (files go into its `audio/` folder).
+- Recorded files are loaded fully into memory for playback, like imported audio (streaming from disk is a later optimisation for very long recordings).
+- `ProcessContext` gained `inputs`, `recording` and `punch`.
+
+**Tests:** `musiton-io/tests/recording.rs` (offline, with a simulated input device): sample-exact alignment of a straight take, one take per loop pass, punch in/out, 2 tracks × 60 s with zero lost chunks and no allocation on the audio thread, latency measurement through a simulated 700-frame loopback cable.
+
+**Known issues / needs the owner**
+- The 30-minute 2-track test and "recorded clip lines up with the metronome" need real hardware: arm a track, record a few bars clapping on the click, check the alignment; if it is off, use Measure (cable from output to input 1) or the manual correction.
+- Input gaps count as dropouts once the input is running.
