@@ -26,6 +26,10 @@ enum Op {
     Loop(Option<(i64, i64)>),
     AddMarker(i64, String),
     RemoveMarker(usize),
+    TrimClip(usize, usize, i64, f32),
+    ClipToTrack(usize, usize, usize),
+    AddAsset(String),
+    BatchMove(usize, i64),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -57,7 +61,12 @@ fn op() -> impl Strategy<Value = Op> {
         (1u8..16, 0u8..5).prop_map(|(n, d)| Op::TimeSig(n, 1 << d)),
         proptest::option::of((0i64..10_000, 1i64..10_000)).prop_map(Op::Loop),
         (0i64..100_000, "[a-z]{1,8}").prop_map(|(t, n)| Op::AddMarker(t, n)),
-        i.prop_map(Op::RemoveMarker),
+        i.clone().prop_map(Op::RemoveMarker),
+        (i.clone(), i.clone(), 0i64..5000, -24.0f32..6.0)
+            .prop_map(|(t, c, d, g)| Op::TrimClip(t, c, d, g)),
+        (i.clone(), i.clone(), i.clone()).prop_map(|(a, c, b)| Op::ClipToTrack(a, c, b)),
+        "[a-z]{1,8}".prop_map(Op::AddAsset),
+        (i, 0i64..10_000).prop_map(|(t, d)| Op::BatchMove(t, d)),
     ]
 }
 
@@ -189,6 +198,48 @@ fn to_edit(p: &mut Project, op: Op) -> Option<Edit> {
             tick: Tick(t),
             name,
         })),
+        Op::TrimClip(t, c, d, g) => {
+            let track = track_id(p, t)?;
+            let id = clip_id(p, track, c)?;
+            let mut clip = p.track(track)?.clips.iter().find(|x| x.id() == id)?.clone();
+            match &mut clip {
+                Clip::Audio(a) => {
+                    a.start = Tick(a.start.0 + d);
+                    a.source_offset = SamplePos(a.source_offset.0 + d as u64);
+                    a.gain_db = g;
+                }
+                Clip::Midi(m) => m.length = Tick(m.length.0 + d),
+            }
+            Edit::ReplaceClip { track, clip }
+        }
+        Op::ClipToTrack(a, c, b) => {
+            let from = track_id(p, a)?;
+            Edit::MoveClipToTrack {
+                clip: clip_id(p, from, c)?,
+                from,
+                to: track_id(p, b)?,
+                index: None,
+            }
+        }
+        Op::AddAsset(name) => Edit::AddAsset(Some(musiton_project::Asset {
+            id: AssetId(p.alloc_id()),
+            file: format!("audio/{name}.wav"),
+        })),
+        Op::BatchMove(t, d) => {
+            let track = track_id(p, t)?;
+            let edits: Vec<Edit> = p
+                .track(track)?
+                .clips
+                .iter()
+                .map(|c| Edit::MoveClip {
+                    track,
+                    clip: c.id(),
+                    start: Tick(c.start().0 + d),
+                })
+                .collect();
+            (!edits.is_empty()).then_some(())?;
+            Edit::Batch(edits)
+        }
         Op::RemoveMarker(i) => {
             let n = p.markers.len();
             (n > 0).then_some(())?;
@@ -329,4 +380,36 @@ fn file_layout_and_version_checks() {
     assert!(!p.metronome);
     assert_eq!(p.sample_rate, 48_000);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn failing_batch_rolls_back() {
+    let mut p = Project::default();
+    let mut u = UndoStack::new();
+    let id = TrackId(p.alloc_id());
+    u.perform(
+        &mut p,
+        Edit::AddTrack {
+            index: 0,
+            track: Some(Track {
+                id,
+                ..Track::default()
+            }),
+        },
+        false,
+    )
+    .unwrap();
+    let before = p.clone();
+    let batch = Edit::Batch(vec![
+        Edit::RenameTrack {
+            id,
+            name: "new".into(),
+        },
+        Edit::RenameTrack {
+            id: TrackId(999),
+            name: "x".into(),
+        },
+    ]);
+    assert!(u.perform(&mut p, batch, false).is_err());
+    assert_eq!(p, before);
 }

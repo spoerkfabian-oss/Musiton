@@ -188,6 +188,27 @@ impl Clip {
         }
     }
 
+    /// Length on the timeline.
+    pub fn length(&self) -> Tick {
+        match self {
+            Clip::Audio(c) => c.length,
+            Clip::Midi(c) => c.length,
+        }
+    }
+
+    /// End position on the timeline (exclusive).
+    pub fn end(&self) -> Tick {
+        Tick(self.start().0 + self.length().0)
+    }
+
+    /// Gives the clip a new id (for duplicates).
+    pub fn set_id(&mut self, id: ClipId) {
+        match self {
+            Clip::Audio(c) => c.id = id,
+            Clip::Midi(c) => c.id = id,
+        }
+    }
+
     /// Moves the clip to `start`.
     pub fn set_start(&mut self, start: Tick) {
         match self {

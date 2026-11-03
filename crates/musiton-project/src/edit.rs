@@ -3,7 +3,7 @@
 use musiton_core::ids::{ClipId, MarkerId, TrackId};
 use musiton_core::{TempoMap, Tick, TimeSig};
 
-use crate::{ChannelStrip, Clip, Marker, Project, Track};
+use crate::{Asset, ChannelStrip, Clip, Marker, Project, Track};
 
 /// Most undo steps kept.
 const MAX_UNDO: usize = 1000;
@@ -114,6 +114,28 @@ pub enum Edit {
         /// Where it was and the marker (filled by apply).
         removed: Option<(usize, Marker)>,
     },
+    /// Replace a clip with an edited version (same id): trim, fades, gain, position.
+    ReplaceClip {
+        /// Which track.
+        track: TrackId,
+        /// New (after apply: old) clip.
+        clip: Clip,
+    },
+    /// Move a clip to another track (appended there).
+    MoveClipToTrack {
+        /// Which clip.
+        clip: ClipId,
+        /// Current track.
+        from: TrackId,
+        /// New track.
+        to: TrackId,
+        /// Index in the old track (filled by apply).
+        index: Option<usize>,
+    },
+    /// Add an audio file to the asset list.
+    AddAsset(Option<Asset>),
+    /// Several edits as one undo step (applied in order, reverted in reverse order).
+    Batch(Vec<Edit>),
 }
 
 impl Edit {
@@ -134,6 +156,10 @@ impl Edit {
             Edit::SetLoop(_) => "Loop range",
             Edit::AddMarker(_) => "Add marker",
             Edit::RemoveMarker { .. } => "Delete marker",
+            Edit::ReplaceClip { .. } => "Edit clip",
+            Edit::MoveClipToTrack { .. } => "Move clip",
+            Edit::AddAsset(_) => "Import audio",
+            Edit::Batch(edits) => edits.last().map_or("Edit", Edit::label),
         }
     }
 
@@ -144,6 +170,12 @@ impl Edit {
             | (Edit::SetTrackColor { id: a, .. }, Edit::SetTrackColor { id: b, .. }) => a == b,
             (Edit::SetStrip { track: a, .. }, Edit::SetStrip { track: b, .. }) => a == b,
             (Edit::MoveClip { clip: a, .. }, Edit::MoveClip { clip: b, .. }) => a == b,
+            (Edit::ReplaceClip { clip: a, .. }, Edit::ReplaceClip { clip: b, .. }) => {
+                a.id() == b.id()
+            }
+            (Edit::Batch(a), Edit::Batch(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.merges_with(y))
+            }
             (Edit::SetTempo(_), Edit::SetTempo(_))
             | (Edit::SetTimeSig(_), Edit::SetTimeSig(_))
             | (Edit::SetLoop(_), Edit::SetLoop(_)) => true,
@@ -192,6 +224,41 @@ impl Edit {
                     .ok_or(EditError::NoMarker)?;
                 *removed = Some((i, p.markers.remove(i)));
             }
+            Edit::MoveClipToTrack {
+                clip,
+                from,
+                to,
+                index,
+            } => {
+                p.track(*to).ok_or(EditError::NoTrack)?;
+                let src = p.track_mut(*from).ok_or(EditError::NoTrack)?;
+                let i = src
+                    .clips
+                    .iter()
+                    .position(|c| c.id() == *clip)
+                    .ok_or(EditError::NoClip)?;
+                let c = src.clips.remove(i);
+                *index = Some(i);
+                p.track_mut(*to).ok_or(EditError::NoTrack)?.clips.push(c);
+            }
+            Edit::AddAsset(asset) => p.assets.push(asset.take().ok_or(EditError::State)?),
+            Edit::Batch(edits) => {
+                let mut applied = 0;
+                let mut failed = None;
+                for e in edits.iter_mut() {
+                    if let Err(err) = e.apply(p) {
+                        failed = Some(err);
+                        break;
+                    }
+                    applied += 1;
+                }
+                if let Some(err) = failed {
+                    for done in edits.iter_mut().take(applied).rev() {
+                        done.revert(p)?;
+                    }
+                    return Err(err);
+                }
+            }
             _ => self.swap(p)?,
         }
         Ok(())
@@ -234,6 +301,32 @@ impl Edit {
                 }
                 p.markers.insert(i, m);
             }
+            Edit::MoveClipToTrack {
+                clip,
+                from,
+                to,
+                index,
+            } => {
+                let dst = p.track_mut(*to).ok_or(EditError::NoTrack)?;
+                let i = dst
+                    .clips
+                    .iter()
+                    .position(|c| c.id() == *clip)
+                    .ok_or(EditError::NoClip)?;
+                let c = dst.clips.remove(i);
+                let src = p.track_mut(*from).ok_or(EditError::NoTrack)?;
+                let at = index.take().ok_or(EditError::State)?;
+                if at > src.clips.len() {
+                    return Err(EditError::BadIndex);
+                }
+                src.clips.insert(at, c);
+            }
+            Edit::AddAsset(asset) => *asset = Some(p.assets.pop().ok_or(EditError::State)?),
+            Edit::Batch(edits) => {
+                for e in edits.iter_mut().rev() {
+                    e.revert(p)?;
+                }
+            }
             _ => self.swap(p)?,
         }
         Ok(())
@@ -271,6 +364,15 @@ impl Edit {
             Edit::SetTempo(map) => std::mem::swap(&mut p.tempo, map),
             Edit::SetTimeSig(sig) => std::mem::swap(&mut p.time_sig, sig),
             Edit::SetLoop(range) => std::mem::swap(&mut p.loop_range, range),
+            Edit::ReplaceClip { track, clip } => {
+                let t = p.track_mut(*track).ok_or(EditError::NoTrack)?;
+                let c = t
+                    .clips
+                    .iter_mut()
+                    .find(|c| c.id() == clip.id())
+                    .ok_or(EditError::NoClip)?;
+                std::mem::swap(c, clip);
+            }
             _ => return Err(EditError::State),
         }
         Ok(())
