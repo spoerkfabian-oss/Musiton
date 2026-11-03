@@ -9,13 +9,12 @@ use std::sync::Arc;
 use musiton_core::ids::{ParamId, TrackId};
 use musiton_core::units::db_to_gain;
 use musiton_core::Tick;
-use musiton_devices::simple_synth::SimpleSynth;
 use musiton_engine::graph::{CompiledGraph, GraphBuilder, GraphError, NodeIdx};
 use musiton_engine::nodes::{
     AudioInput, ClipPlayer, Meter, Metronome, MidiNote, MidiTrack, Mix, PlayerClip, RecChunk,
     RecMidi, Recorder, SendGain, Strip, MIDI_TRACK_LIVE, STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
 };
-use musiton_project::{Clip, InputRoute, OutputRoute, Project, RecordSetup, TrackKind};
+use musiton_project::{Clip, InputRoute, OutputRoute, Project, RecordSetup, SampleZone, TrackKind};
 
 use crate::assets::AssetStore;
 
@@ -27,6 +26,9 @@ pub struct Structure {
 }
 
 /// Rebuild-relevant parts of one track: id, kind, output, sends (target, pre-fader), clips.
+/// Rebuild-relevant parts of one track: id, kind, output, sends (target, pre-fader),
+/// audio clips, record setup, instrument (type, samples). MIDI notes and parameter values
+/// are sent to the running graph instead.
 type TrackStructure = (
     TrackId,
     TrackKind,
@@ -34,7 +36,46 @@ type TrackStructure = (
     Vec<(TrackId, bool)>,
     Vec<Clip>,
     RecordSetup,
+    Option<(String, Vec<SampleZone>)>,
 );
+
+/// Type id and samples of a track's instrument (instrument tracks only).
+fn instrument_of(t: &musiton_project::Track) -> Option<(String, Vec<SampleZone>)> {
+    (t.kind == TrackKind::Instrument).then(|| match t.devices.first() {
+        Some(d) => (d.type_id().to_owned(), d.samples().to_vec()),
+        None => (musiton_devices::POLYSYNTH.to_owned(), Vec::new()),
+    })
+}
+
+/// The instrument's parameter values: device settings over type defaults.
+fn instrument_params(t: &musiton_project::Track) -> Vec<(u64, f32)> {
+    let Some((type_id, _)) = instrument_of(t) else {
+        return Vec::new();
+    };
+    let Some(info) = musiton_devices::instrument_type(&type_id) else {
+        return Vec::new();
+    };
+    let device = t.devices.first();
+    info.params
+        .iter()
+        .map(|p| {
+            (
+                p.id.0,
+                device.and_then(|d| d.param(p.id.0)).unwrap_or(p.default),
+            )
+        })
+        .collect()
+}
+
+/// Notes of every instrument track (what its `MidiTrack` node should play).
+pub fn all_notes(project: &Project) -> HashMap<TrackId, Vec<MidiNote>> {
+    project
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Instrument)
+        .map(|t| (t.id, midi_notes(t)))
+        .collect()
+}
 
 /// Extracts the rebuild-relevant parts of `project` (and the number of input channels).
 pub fn structure(project: &Project, input_channels: usize) -> Structure {
@@ -49,7 +90,21 @@ pub fn structure(project: &Project, input_channels: usize) -> Structure {
                     .iter()
                     .map(|s| (s.target, s.pre_fader))
                     .collect();
-                (t.id, t.kind, t.output, sends, t.clips.clone(), t.record)
+                let audio_clips = t
+                    .clips
+                    .iter()
+                    .filter(|c| matches!(c, Clip::Audio(_)))
+                    .cloned()
+                    .collect();
+                (
+                    t.id,
+                    t.kind,
+                    t.output,
+                    sends,
+                    audio_clips,
+                    t.record,
+                    instrument_of(t),
+                )
             })
             .collect(),
         input_channels,
@@ -138,6 +193,11 @@ fn params(
 }
 
 impl GraphInfo {
+    /// The `MidiTrack` node of an instrument track.
+    pub fn midi_node(&self, track: TrackId) -> Option<NodeIdx> {
+        self.midi.get(&track).copied()
+    }
+
     /// Current parameter values for this graph's nodes; `live` receives the live MIDI.
     pub fn params(&self, project: &Project, live: Option<TrackId>) -> HashMap<ParamKey, f32> {
         params(project, &self.strips, &self.sends, &self.midi, live)
@@ -216,11 +276,14 @@ pub fn build(
                     midi_taps.push((t.id, rx));
                     tx
                 });
-                let node = b.add(Box::new(MidiTrack::new(
-                    notes,
-                    Box::new(SimpleSynth::new()),
-                    rec,
-                )));
+                let (type_id, zones) = instrument_of(t).unwrap_or_default();
+                let samples: Vec<(u8, Arc<musiton_core::audio::AudioData>)> = zones
+                    .iter()
+                    .filter_map(|z| Some((z.key, assets.audio(z.asset)?.clone())))
+                    .collect();
+                let instrument =
+                    musiton_devices::create_instrument(&type_id, &instrument_params(t), &samples);
+                let node = b.add(Box::new(MidiTrack::new(notes, instrument, rec)));
                 midi.insert(t.id, node);
                 node
             }

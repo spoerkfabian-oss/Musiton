@@ -20,6 +20,7 @@ musiton-io.workspace = true
 musiton-project.workspace = true
 musiton-ui.workspace = true
 anyhow.workspace = true
+ron.workspace = true
 eframe.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

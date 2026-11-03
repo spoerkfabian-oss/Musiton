@@ -8,6 +8,7 @@ mod browser;
 mod document;
 mod engine_graph;
 mod midi_record;
+mod presets;
 mod settings;
 mod transport;
 
@@ -87,6 +88,9 @@ struct App {
     arrange: Arrange,
     mixer: musiton_ui::mixer::Mixer,
     piano_roll: musiton_ui::piano_roll::PianoRoll,
+    device_panel: musiton_ui::device_panel::DevicePanel,
+    /// User presets per device type: (name, values).
+    user_presets: presets::PresetMap,
     bottom_tab: BottomTab,
     show_shortcuts: bool,
     assets: AssetStore,
@@ -115,6 +119,11 @@ struct GraphState {
     sent: std::collections::HashMap<engine_graph::ParamKey, f32>,
     /// Recording chunks the disk could not keep up with.
     record_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Notes last sent to each instrument track's node.
+    sent_notes:
+        std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::MidiNote>>,
+    /// Document revision the notes were last checked at.
+    notes_rev: Option<u64>,
     /// Live MIDI captured by armed instrument tracks.
     midi_taps: Vec<(
         musiton_core::ids::TrackId,
@@ -127,6 +136,7 @@ struct GraphState {
 enum BottomTab {
     #[default]
     Editor,
+    Device,
     Mixer,
 }
 
@@ -153,6 +163,8 @@ impl App {
             arrange: Arrange::new(),
             mixer: musiton_ui::mixer::Mixer::default(),
             piano_roll: musiton_ui::piano_roll::PianoRoll::default(),
+            device_panel: musiton_ui::device_panel::DevicePanel::default(),
+            user_presets: presets::load_all(),
             bottom_tab: BottomTab::default(),
             show_shortcuts: false,
             assets: AssetStore::default(),
@@ -240,6 +252,110 @@ impl App {
                 tracing::error!("audio output failed: {e}");
                 self.audio_error = Some(e.to_string());
             }
+        }
+    }
+
+    /// Device types for the device panel (built-ins with factory + user presets).
+    fn device_types(&self) -> Vec<musiton_ui::device_panel::DeviceType> {
+        musiton_devices::INSTRUMENTS
+            .iter()
+            .map(|t| {
+                let mut presets: Vec<(String, Vec<(u64, f32)>)> = t
+                    .presets
+                    .iter()
+                    .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                    .collect();
+                presets.extend(
+                    self.user_presets
+                        .get(t.type_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                let sampler = t.type_id == musiton_devices::SAMPLER;
+                musiton_ui::device_panel::DeviceType {
+                    type_id: t.type_id,
+                    name: t.name,
+                    params: t.params,
+                    uses_samples: t.uses_samples,
+                    presets,
+                    drum_param: sampler.then_some(musiton_devices::sampler::id::DRUM),
+                    root_param: sampler.then_some(musiton_devices::sampler::id::ROOT),
+                }
+            })
+            .collect()
+    }
+
+    /// Asks for an audio file and puts it into the track's sampler (pad `key` in drum mode).
+    fn load_sample(&mut self, track: musiton_core::ids::TrackId, key: Option<u8>) {
+        if self.doc.dir().is_none() {
+            self.set_status("Save the project first: samples are copied into its folder.");
+            if !self.save_as() {
+                return;
+            }
+        }
+        let Some(dir) = self.doc.dir().map(Path::to_path_buf) else {
+            return;
+        };
+        let Some(src) = rfd::FileDialog::new()
+            .set_title("Load sample")
+            .add_filter("Audio", &musiton_io::file::AUDIO_EXTENSIONS)
+            .pick_file()
+        else {
+            return;
+        };
+        let imported =
+            match musiton_io::file::import_audio(&src, &dir, self.doc.project.sample_rate) {
+                Ok(i) => i,
+                Err(e) => {
+                    self.set_status(format!("Loading the sample failed: {e}"));
+                    return;
+                }
+            };
+        let p = &mut self.doc.project;
+        let Some(t) = p.track(track) else {
+            return;
+        };
+        let mut devices = t.devices.clone();
+        if devices
+            .first()
+            .is_none_or(|d| d.type_id() != musiton_devices::SAMPLER)
+        {
+            let d = musiton_project::DeviceSlot::builtin(
+                musiton_core::ids::DeviceId(p.alloc_id()),
+                musiton_devices::SAMPLER,
+            );
+            match devices.first_mut() {
+                Some(x) => *x = d,
+                None => devices.push(d),
+            }
+        }
+        let asset = musiton_core::ids::AssetId(p.alloc_id());
+        if let Some(musiton_project::DeviceSlot {
+            kind: musiton_project::DeviceKind::Builtin { samples, .. },
+            ..
+        }) = devices.first_mut()
+        {
+            let zone_key = key.unwrap_or(60);
+            match key {
+                Some(k) => samples.retain(|z| z.key != k),
+                None => samples.clear(),
+            }
+            samples.push(musiton_project::SampleZone {
+                key: zone_key,
+                asset,
+            });
+        }
+        let edits = vec![
+            musiton_project::Edit::AddAsset(Some(musiton_project::Asset {
+                id: asset,
+                file: imported.rel_path.clone(),
+            })),
+            musiton_project::Edit::SetDevices { track, devices },
+        ];
+        self.assets.insert(asset, imported.audio);
+        match self.doc.perform(musiton_project::Edit::Batch(edits), false) {
+            Ok(()) => self.set_status(format!("Loaded {}", src.display())),
+            Err(e) => self.set_status(format!("Loading the sample failed: {e}")),
         }
     }
 
@@ -1058,10 +1174,26 @@ impl App {
                             built.graph,
                         )));
                         self.graph.sent = built.info.params(&self.doc.project, live);
+                        self.graph.sent_notes = engine_graph::all_notes(&self.doc.project);
                         self.graph.midi_taps = built.midi_taps;
                         self.graph.info = built.info;
                     }
                     Err(e) => tracing::error!("building the engine graph failed: {e}"),
+                }
+            }
+        }
+        if self.graph.notes_rev != Some(self.doc.revision) {
+            self.graph.notes_rev = Some(self.doc.revision);
+            for (track, notes) in engine_graph::all_notes(&self.doc.project) {
+                if self.graph.sent_notes.get(&track) == Some(&notes) {
+                    continue;
+                }
+                if let Some(node) = self.graph.info.midi_node(track) {
+                    self.graph.sent_notes.insert(track, notes.clone());
+                    engine.send_or_log(musiton_engine::EngineCommand::NodeData {
+                        node,
+                        data: Box::new(musiton_engine::nodes::MidiNotes(notes)),
+                    });
                 }
             }
         }
@@ -1095,6 +1227,37 @@ impl App {
                         });
                     }
                 }
+                UiAction::NewDevice { track, mut devices } => {
+                    let existing: Vec<_> = self
+                        .doc
+                        .project
+                        .track(track)
+                        .map(|t| t.devices.iter().map(|d| d.id).collect())
+                        .unwrap_or_default();
+                    for d in &mut devices {
+                        if !existing.contains(&d.id) {
+                            d.id = musiton_core::ids::DeviceId(self.doc.project.alloc_id());
+                        }
+                    }
+                    if let Err(e) = self
+                        .doc
+                        .perform(musiton_project::Edit::SetDevices { track, devices }, false)
+                    {
+                        self.set_status(format!("Edit failed: {e}"));
+                    }
+                }
+                UiAction::LoadSample { track, key } => self.load_sample(track, key),
+                UiAction::SavePreset {
+                    type_id,
+                    name,
+                    params,
+                } => match presets::save(&type_id, &name, &params) {
+                    Ok(()) => {
+                        self.user_presets = presets::load_all();
+                        self.set_status(format!("Saved preset \"{name}\""));
+                    }
+                    Err(e) => self.set_status(format!("Saving the preset failed: {e}")),
+                },
                 UiAction::OpenEditor { track, clip } => {
                     self.piano_roll.open(track, clip);
                     self.arrange.selected = Some(track);
@@ -1132,11 +1295,30 @@ impl App {
     fn bottom_panel(&mut self, ui: &mut egui::Ui) -> Vec<UiAction> {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Editor, "Editor");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Device, "Device");
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Mixer, "Mixer");
         });
         ui.separator();
         match self.bottom_tab {
             BottomTab::Editor => self.piano_roll.ui(ui, &self.doc.project),
+            BottomTab::Device => {
+                let types = self.device_types();
+                let project = &self.doc.project;
+                let name = |id: musiton_core::ids::AssetId| {
+                    project
+                        .assets
+                        .iter()
+                        .find(|a| a.id == id)
+                        .and_then(|a| Path::new(&a.file).file_stem())
+                        .map_or("?".to_owned(), |s| s.to_string_lossy().into_owned())
+                };
+                egui::ScrollArea::vertical()
+                    .show(ui, |ui| {
+                        self.device_panel
+                            .ui(ui, project, self.arrange.selected, &types, &name)
+                    })
+                    .inner
+            }
             BottomTab::Mixer => {
                 ui.ctx().request_repaint_after(Duration::from_millis(33));
                 let levels = self
