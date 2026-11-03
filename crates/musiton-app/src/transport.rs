@@ -87,6 +87,8 @@ pub struct TransportOutput {
 #[derive(Default)]
 pub struct Transport {
     test_tone: bool,
+    /// MIDI recording adds to existing notes (true) or replaces them (false).
+    pub overdub: bool,
 }
 
 impl Transport {
@@ -222,6 +224,8 @@ impl Transport {
             }
             ui.separator();
 
+            ui.toggle_value(&mut self.overdub, "Overdub")
+                .on_hover_text("MIDI recording: add to existing notes instead of replacing them");
             ui.toggle_value(&mut self.test_tone, "Test tone");
         });
 

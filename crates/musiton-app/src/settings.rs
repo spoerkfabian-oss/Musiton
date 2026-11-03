@@ -37,6 +37,10 @@ pub struct AudioSettings {
     pub measured_latency: Option<u32>,
     /// Extra correction for recordings in milliseconds (positive = move earlier).
     pub record_offset_ms: f32,
+    /// Use a MIDI input.
+    pub midi_enabled: bool,
+    /// MIDI input port id (`None` = first available).
+    pub midi_input: Option<String>,
 }
 
 impl AudioSettings {
@@ -58,6 +62,8 @@ impl Default for AudioSettings {
             input_device: None,
             measured_latency: None,
             record_offset_ms: 0.0,
+            midi_enabled: true,
+            midi_input: None,
         }
     }
 }

@@ -12,6 +12,7 @@ pub struct AudioDialog {
     pub open: bool,
     devices: Vec<OutputDeviceInfo>,
     inputs: Vec<InputDeviceInfo>,
+    midi_ports: Vec<musiton_io::midi::MidiPortInfo>,
     list_error: Option<String>,
     draft: AudioSettings,
     /// Status text of the latency measurement, set by the app.
@@ -45,6 +46,7 @@ impl AudioDialog {
             Err(e) => self.list_error = Some(e.to_string()),
         }
         self.inputs = audio::list_input_devices().unwrap_or_default();
+        self.midi_ports = musiton_io::midi::list_midi_inputs();
     }
 
     /// Draws the window.
@@ -149,6 +151,45 @@ impl AudioDialog {
                             if ui.selectable_label(sel, label).clicked() {
                                 self.draft.input_enabled = true;
                                 self.draft.input_device = Some(d.id.clone());
+                            }
+                        }
+                    });
+                ui.end_row();
+
+                ui.label("MIDI input");
+                let midi_text = if !self.draft.midi_enabled {
+                    "None".to_owned()
+                } else {
+                    match &self.draft.midi_input {
+                        None => "First available".to_owned(),
+                        Some(id) => self
+                            .midi_ports
+                            .iter()
+                            .find(|p| &p.id == id)
+                            .map_or(format!("{id} (not connected)"), |p| p.name.clone()),
+                    }
+                };
+                egui::ComboBox::from_id_salt("midi")
+                    .selected_text(midi_text)
+                    .width(320.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(!self.draft.midi_enabled, "None")
+                            .clicked()
+                        {
+                            self.draft.midi_enabled = false;
+                        }
+                        let first = self.draft.midi_enabled && self.draft.midi_input.is_none();
+                        if ui.selectable_label(first, "First available").clicked() {
+                            self.draft.midi_enabled = true;
+                            self.draft.midi_input = None;
+                        }
+                        for p in &self.midi_ports {
+                            let sel = self.draft.midi_enabled
+                                && self.draft.midi_input.as_deref() == Some(p.id.as_str());
+                            if ui.selectable_label(sel, &p.name).clicked() {
+                                self.draft.midi_enabled = true;
+                                self.draft.midi_input = Some(p.id.clone());
                             }
                         }
                     });

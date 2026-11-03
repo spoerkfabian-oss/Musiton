@@ -9,10 +9,11 @@ use std::sync::Arc;
 use musiton_core::ids::{ParamId, TrackId};
 use musiton_core::units::db_to_gain;
 use musiton_core::Tick;
+use musiton_devices::simple_synth::SimpleSynth;
 use musiton_engine::graph::{CompiledGraph, GraphBuilder, GraphError, NodeIdx};
 use musiton_engine::nodes::{
-    AudioInput, ClipPlayer, Meter, Metronome, Mix, PlayerClip, RecChunk, Recorder, SendGain, Strip,
-    STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
+    AudioInput, ClipPlayer, Meter, Metronome, MidiNote, MidiTrack, Mix, PlayerClip, RecChunk,
+    RecMidi, Recorder, SendGain, Strip, MIDI_TRACK_LIVE, STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
 };
 use musiton_project::{Clip, InputRoute, OutputRoute, Project, RecordSetup, TrackKind};
 
@@ -79,6 +80,8 @@ pub struct BuiltGraph {
     pub info: GraphInfo,
     /// One tap per armed track (empty when nothing is armed or there is no input).
     pub record_taps: Vec<RecordTap>,
+    /// Recorded live MIDI of each armed instrument track.
+    pub midi_taps: Vec<(TrackId, rtrb::Consumer<RecMidi>)>,
     /// Chunks the disk thread could not take in time.
     pub record_dropped: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -92,6 +95,8 @@ pub struct GraphInfo {
     sends: HashMap<(TrackId, usize), NodeIdx>,
     /// Level meters per track (`None` = master).
     pub meters: HashMap<Option<TrackId>, Arc<Meter>>,
+    /// MIDI track node per instrument track.
+    midi: HashMap<TrackId, NodeIdx>,
 }
 
 /// Mixer parameter values of `project` for the given nodes.
@@ -99,8 +104,16 @@ fn params(
     project: &Project,
     strips: &HashMap<Option<TrackId>, NodeIdx>,
     sends: &HashMap<(TrackId, usize), NodeIdx>,
+    midi: &HashMap<TrackId, NodeIdx>,
+    live: Option<TrackId>,
 ) -> HashMap<ParamKey, f32> {
     let mut out = HashMap::new();
+    for (track, node) in midi {
+        out.insert(
+            (*node, MIDI_TRACK_LIVE),
+            if live == Some(*track) { 1.0 } else { 0.0 },
+        );
+    }
     let mut strip = |node: NodeIdx, s: &musiton_project::ChannelStrip, audible: bool| {
         out.insert((node, STRIP_GAIN), db_to_gain(s.gain_db));
         out.insert((node, STRIP_PAN), s.pan);
@@ -125,9 +138,9 @@ fn params(
 }
 
 impl GraphInfo {
-    /// Current parameter values for this graph's nodes.
-    pub fn params(&self, project: &Project) -> HashMap<ParamKey, f32> {
-        params(project, &self.strips, &self.sends)
+    /// Current parameter values for this graph's nodes; `live` receives the live MIDI.
+    pub fn params(&self, project: &Project, live: Option<TrackId>) -> HashMap<ParamKey, f32> {
+        params(project, &self.strips, &self.sends, &self.midi, live)
     }
 }
 
@@ -142,6 +155,8 @@ pub fn build(
 ) -> Result<BuiltGraph, GraphError> {
     let mut b = GraphBuilder::new();
     let mut record_taps = Vec::new();
+    let mut midi_taps = Vec::new();
+    let mut midi = HashMap::new();
     let record_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut strips = HashMap::new();
     let mut sends = HashMap::new();
@@ -193,6 +208,21 @@ pub fn build(
                     })
                     .collect();
                 b.add(Box::new(ClipPlayer::new(clips)))
+            }
+            TrackKind::Instrument => {
+                let notes = midi_notes(t);
+                let rec = t.record.armed.then(|| {
+                    let (tx, rx) = rtrb::RingBuffer::new(4096);
+                    midi_taps.push((t.id, rx));
+                    tx
+                });
+                let node = b.add(Box::new(MidiTrack::new(
+                    notes,
+                    Box::new(SimpleSynth::new()),
+                    rec,
+                )));
+                midi.insert(t.id, node);
+                node
             }
             _ => b.add(Box::new(Mix::new(2))),
         };
@@ -273,10 +303,38 @@ pub fn build(
             strips,
             sends,
             meters,
+            midi,
         },
         record_taps,
+        midi_taps,
         record_dropped,
     })
+}
+
+/// All notes of a track's (unmuted) MIDI clips on the timeline, cut to their clips.
+fn midi_notes(t: &musiton_project::Track) -> Vec<MidiNote> {
+    let mut out = Vec::new();
+    for c in &t.clips {
+        let Clip::Midi(m) = c else {
+            continue;
+        };
+        let clip_end = m.start.0 + m.length.0;
+        for n in &m.notes {
+            let start = m.start.0 + n.start.0;
+            let end = (start + n.length.0).min(clip_end);
+            if n.start.0 < 0 || start >= clip_end || end <= start {
+                continue;
+            }
+            out.push(MidiNote {
+                start: Tick(start),
+                end: Tick(end),
+                key: n.pitch.min(127),
+                vel: f32::from(n.velocity.min(127)) / 127.0,
+                ch: n.channel.min(15),
+            });
+        }
+    }
+    out
 }
 
 /// Connects output channels `first`, `first + 1` of `src` to inputs 0, 1 of `dst`.
@@ -499,5 +557,93 @@ mod tests {
             "{} vs {expected}",
             out[2 * 40_000]
         );
+    }
+
+    /// Plays notes live into an armed instrument track while recording, turns the recording
+    /// into a clip, plays the clip back and compares the audio sample by sample.
+    #[test]
+    fn recorded_midi_plays_back_identically() {
+        use musiton_project::{RecordSetup, TrackKind, UndoStack};
+        let assets = AssetStore::default();
+        let mut project = Project {
+            metronome: false,
+            tempo: TempoMap::constant(120.0),
+            ..Project::default()
+        };
+        project.tracks.push(Track {
+            id: TrackId(1),
+            kind: TrackKind::Instrument,
+            record: RecordSetup {
+                armed: true,
+                ..RecordSetup::default()
+            },
+            ..Track::default()
+        });
+        // 250 frames = exactly 10 ticks at 120 BPM / 48 kHz, so the live notes fall on
+        // ticks and the stored clip can reproduce them sample-exactly. (Notes are stored
+        // with tick resolution: 1 tick = 25 samples here.)
+        let block = 250;
+        let start = |project: &Project, live: bool| {
+            let mut built = build(project, &assets, 48_000.0, block, 0).unwrap();
+            let (mut h, mut e) = create(48_000.0, block);
+            let params = built.info.params(project, live.then_some(TrackId(1)));
+            h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
+            for ((node, id), val) in params {
+                h.send(EngineCommand::SetParam { node, id, val }).ok();
+            }
+            render_offline(&mut e, 2048, 2, block);
+            let taps = std::mem::take(&mut built.midi_taps);
+            (h, e, taps)
+        };
+
+        // Take 1: live playing while recording. Notes change on block boundaries.
+        let (mut h, mut e, mut taps) = start(&project, true);
+        h.send(EngineCommand::SetRecording(true)).ok();
+        h.send(EngineCommand::Play).ok();
+        let script = [
+            (10, true, 60),
+            (100, true, 64),
+            (180, false, 60),
+            (300, false, 64),
+            (320, true, 67),
+            (500, false, 67),
+        ];
+        let mut live = Vec::new();
+        for b in 0..600 {
+            for &(at, on, key) in &script {
+                if at == b {
+                    h.send(EngineCommand::PreviewNote { on, key, vel: 1.0 })
+                        .ok();
+                }
+            }
+            live.extend(render_offline(&mut e, block, 2, block));
+        }
+        let (_, rx) = &mut taps[0];
+        let events: Vec<_> = std::iter::from_fn(|| rx.pop().ok()).collect();
+        assert_eq!(events.len(), script.len());
+
+        // Turn it into a clip and play it back.
+        let edit = crate::midi_record::to_edit(
+            &mut project,
+            TrackId(1),
+            &events,
+            0,
+            600 * block as u64,
+            48_000.0,
+            true,
+        )
+        .unwrap();
+        UndoStack::new().perform(&mut project, edit, false).unwrap();
+        project.tracks[0].record.armed = false;
+        let (mut h, mut e, _) = start(&project, false);
+        h.send(EngineCommand::Play).ok();
+        let played = render_offline(&mut e, 600 * block, 2, block);
+
+        assert!(live.iter().any(|&s| s != 0.0));
+        let worst = live
+            .iter()
+            .zip(&played)
+            .fold(0.0_f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 1e-6, "playback differs by {worst}");
     }
 }

@@ -7,6 +7,7 @@ mod audio_dialog;
 mod browser;
 mod document;
 mod engine_graph;
+mod midi_record;
 mod settings;
 mod transport;
 
@@ -85,6 +86,7 @@ struct App {
     title: String,
     arrange: Arrange,
     mixer: musiton_ui::mixer::Mixer,
+    piano_roll: musiton_ui::piano_roll::PianoRoll,
     bottom_tab: BottomTab,
     show_shortcuts: bool,
     assets: AssetStore,
@@ -95,6 +97,11 @@ struct App {
     input_error: Option<String>,
     writers: Vec<musiton_io::recording::DiskWriter>,
     measuring: bool,
+    midi: Option<musiton_io::midi::MidiInputStream>,
+    midi_error: Option<String>,
+    /// Live MIDI recorded per track, waiting for recording to end.
+    midi_rec:
+        std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::RecMidi>>,
 }
 
 /// What the running engine graph was built from.
@@ -108,6 +115,11 @@ struct GraphState {
     sent: std::collections::HashMap<engine_graph::ParamKey, f32>,
     /// Recording chunks the disk could not keep up with.
     record_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Live MIDI captured by armed instrument tracks.
+    midi_taps: Vec<(
+        musiton_core::ids::TrackId,
+        rtrb::Consumer<musiton_engine::nodes::RecMidi>,
+    )>,
 }
 
 /// Tabs of the bottom panel.
@@ -140,6 +152,7 @@ impl App {
             title: String::new(),
             arrange: Arrange::new(),
             mixer: musiton_ui::mixer::Mixer::default(),
+            piano_roll: musiton_ui::piano_roll::PianoRoll::default(),
             bottom_tab: BottomTab::default(),
             show_shortcuts: false,
             assets: AssetStore::default(),
@@ -150,6 +163,9 @@ impl App {
             input_error: None,
             writers: Vec::new(),
             measuring: false,
+            midi: None,
+            midi_error: None,
+            midi_rec: std::collections::HashMap::new(),
         };
         if let Some(dir) = app.settings.browser_dir.clone() {
             app.browser.set_dir(&dir);
@@ -204,12 +220,204 @@ impl App {
                         }
                     }
                 }
+                self.midi = None;
+                self.midi_error = None;
+                if a.midi_enabled {
+                    match musiton_io::midi::start_midi_input(a.midi_input.as_deref()) {
+                        Ok((stream, rx)) => {
+                            engine.send_or_log(musiton_engine::EngineCommand::SetMidiInput(Some(
+                                Box::new(rx),
+                            )));
+                            self.midi = Some(stream);
+                        }
+                        Err(e) => self.midi_error = Some(e),
+                    }
+                }
                 self.output = Some((out, engine));
                 self.audio_error = None;
             }
             Err(e) => {
                 tracing::error!("audio output failed: {e}");
                 self.audio_error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Imports a .mid file: one instrument track with one clip per file track.
+    fn import_midi(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import MIDI file")
+            .add_filter("MIDI file", &["mid", "midi"])
+            .pick_file()
+        else {
+            return;
+        };
+        let (tracks, bpm) = match musiton_io::midi::read_smf(&path) {
+            Ok(r) => r,
+            Err(e) => {
+                self.set_status(format!("MIDI import failed: {e}"));
+                return;
+            }
+        };
+        let p = &mut self.doc.project;
+        let mut edits = Vec::new();
+        // An empty song takes over the file's tempo.
+        if let (Some(bpm), true) = (bpm, p.tracks.is_empty()) {
+            edits.push(musiton_project::Edit::SetTempo(
+                musiton_core::TempoMap::constant(bpm),
+            ));
+        }
+        let bar = p.time_sig.ticks_per_bar();
+        let stem = path
+            .file_stem()
+            .map_or("MIDI".to_owned(), |s| s.to_string_lossy().into_owned());
+        let colors = musiton_ui::arrange::TRACK_COLORS;
+        for (i, t) in tracks.iter().enumerate() {
+            let end = t
+                .notes
+                .iter()
+                .map(|n| n.start + n.length)
+                .max()
+                .unwrap_or(bar);
+            let id = musiton_core::ids::TrackId(p.alloc_id());
+            let clip = musiton_project::MidiClip {
+                id: musiton_core::ids::ClipId(p.alloc_id()),
+                start: musiton_core::Tick(0),
+                length: musiton_core::Tick((end + bar - 1) / bar * bar),
+                notes: t
+                    .notes
+                    .iter()
+                    .map(|n| musiton_project::Note {
+                        pitch: n.key,
+                        velocity: n.velocity,
+                        start: musiton_core::Tick(n.start),
+                        length: musiton_core::Tick(n.length),
+                        channel: n.channel,
+                    })
+                    .collect(),
+            };
+            edits.push(musiton_project::Edit::AddTrack {
+                index: p.tracks.len() + i,
+                track: Some(musiton_project::Track {
+                    id,
+                    name: if t.name.is_empty() {
+                        format!("{stem} {}", i + 1)
+                    } else {
+                        t.name.clone()
+                    },
+                    kind: musiton_project::TrackKind::Instrument,
+                    color: colors[(p.tracks.len() + i) % colors.len()],
+                    clips: vec![musiton_project::Clip::Midi(clip)],
+                    ..musiton_project::Track::default()
+                }),
+            });
+        }
+        if tracks.is_empty() {
+            self.set_status("The MIDI file contains no notes.");
+            return;
+        }
+        match self.doc.perform(musiton_project::Edit::Batch(edits), false) {
+            Ok(()) => self.set_status(format!(
+                "Imported {} track(s) from {}",
+                tracks.len(),
+                path.display()
+            )),
+            Err(e) => self.set_status(format!("MIDI import failed: {e}")),
+        }
+    }
+
+    /// Exports every instrument track's MIDI clips to a .mid file.
+    fn export_midi(&mut self) {
+        let p = &self.doc.project;
+        let tracks: Vec<musiton_io::midi::SmfTrack> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == musiton_project::TrackKind::Instrument)
+            .map(|t| musiton_io::midi::SmfTrack {
+                name: t.name.clone(),
+                notes: t
+                    .clips
+                    .iter()
+                    .filter_map(|c| match c {
+                        musiton_project::Clip::Midi(m) => Some(m),
+                        musiton_project::Clip::Audio(_) => None,
+                    })
+                    .flat_map(|m| {
+                        m.notes.iter().filter(|n| n.start.0 < m.length.0).map(|n| {
+                            musiton_io::midi::SmfNote {
+                                start: m.start.0 + n.start.0,
+                                length: n.length.0.min(m.length.0 - n.start.0),
+                                key: n.pitch,
+                                velocity: n.velocity,
+                                channel: n.channel,
+                            }
+                        })
+                    })
+                    .collect(),
+            })
+            .filter(|t| !t.notes.is_empty())
+            .collect();
+        if tracks.is_empty() {
+            self.set_status("There are no MIDI notes to export.");
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export MIDI file")
+            .add_filter("MIDI file", &["mid"])
+            .set_file_name(format!("{}.mid", self.doc.name()))
+            .save_file()
+        else {
+            return;
+        };
+        match musiton_io::midi::write_smf(&path, p.tempo.bpm_at(0.0), &tracks) {
+            Ok(()) => self.set_status(format!("Exported {}", path.display())),
+            Err(e) => self.set_status(format!("MIDI export failed: {e}")),
+        }
+    }
+
+    /// The track that plays live MIDI: the first armed instrument track, else the
+    /// selected track if it is an instrument track.
+    fn live_midi_track(&self) -> Option<musiton_core::ids::TrackId> {
+        let p = &self.doc.project;
+        let is_inst = |t: &musiton_project::Track| t.kind == musiton_project::TrackKind::Instrument;
+        p.tracks
+            .iter()
+            .find(|t| is_inst(t) && t.record.armed)
+            .or_else(|| {
+                self.arrange
+                    .selected
+                    .and_then(|id| p.track(id))
+                    .filter(|t| is_inst(t))
+            })
+            .map(|t| t.id)
+    }
+
+    /// Collects recorded live MIDI; when recording ends, turns it into MIDI clips.
+    fn finish_midi_recordings(&mut self) {
+        for (track, rx) in &mut self.graph.midi_taps {
+            while let Ok(ev) = rx.pop() {
+                self.midi_rec.entry(*track).or_default().push(ev);
+            }
+        }
+        let Some((out, engine)) = &self.output else {
+            return;
+        };
+        let shared = engine.shared();
+        if (shared.recording() && shared.playing()) || self.midi_rec.is_empty() {
+            return;
+        }
+        let latency = i64::from(out.info().buffer_size.unwrap_or(256));
+        let sr = f64::from(engine.sample_rate());
+        let stop = shared.playhead();
+        let overdub = self.transport.overdub;
+        for (track, events) in std::mem::take(&mut self.midi_rec) {
+            let p = &mut self.doc.project;
+            let Some(edit) = midi_record::to_edit(p, track, &events, latency, stop, sr, overdub)
+            else {
+                continue;
+            };
+            if let Err(e) = self.doc.perform(edit, false) {
+                self.set_status(format!("Adding the MIDI recording failed: {e}"));
             }
         }
     }
@@ -504,6 +712,15 @@ impl App {
                     self.save_as();
                 }
                 ui.separator();
+                if ui.button("Import MIDI file…").clicked() {
+                    self.import_midi();
+                    ui.close();
+                }
+                if ui.button("Export MIDI file…").clicked() {
+                    self.export_midi();
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Quit").clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -588,6 +805,19 @@ impl App {
             } else if let Some(input) = &self.input {
                 ui.separator();
                 ui.label(format!("In: {} ({} ch)", input.device_name, input.channels));
+            }
+            if let Some(err) = &self.midi_error {
+                ui.separator();
+                ui.weak(format!("MIDI: {err}"));
+            } else if let Some(m) = &self.midi {
+                ui.separator();
+                let cc = self.output.as_ref().and_then(|(_, e)| e.shared().last_cc());
+                match cc {
+                    Some((ch, cc, v)) => {
+                        ui.label(format!("MIDI: {} · CC{cc} ch{} = {v}", m.name, ch + 1))
+                    }
+                    None => ui.label(format!("MIDI: {}", m.name)),
+                };
             }
             let lost = self
                 .graph
@@ -765,6 +995,7 @@ impl App {
     /// Rebuilds the engine graph when the project structure or the loaded audio changed,
     /// and sends changed mixer values as parameter commands.
     fn update_graph(&mut self) {
+        let live = self.live_midi_track();
         let Some((_, engine)) = &mut self.output else {
             return;
         };
@@ -826,14 +1057,15 @@ impl App {
                         engine.send_or_log(musiton_engine::EngineCommand::SwapGraph(Box::new(
                             built.graph,
                         )));
-                        self.graph.sent = built.info.params(&self.doc.project);
+                        self.graph.sent = built.info.params(&self.doc.project, live);
+                        self.graph.midi_taps = built.midi_taps;
                         self.graph.info = built.info;
                     }
                     Err(e) => tracing::error!("building the engine graph failed: {e}"),
                 }
             }
         }
-        for (key, value) in self.graph.info.params(&self.doc.project) {
+        for (key, value) in self.graph.info.params(&self.doc.project, live) {
             if self.graph.sent.get(&key) != Some(&value) {
                 self.graph.sent.insert(key, value);
                 engine.send_or_log(musiton_engine::EngineCommand::SetParam {
@@ -854,6 +1086,20 @@ impl App {
                     }
                 }
                 UiAction::Import { files, track, at } => self.import(files, track, at),
+                UiAction::PreviewNote { on, key } => {
+                    if let Some((_, e)) = &mut self.output {
+                        e.send_or_log(musiton_engine::EngineCommand::PreviewNote {
+                            on,
+                            key,
+                            vel: 0.8,
+                        });
+                    }
+                }
+                UiAction::OpenEditor { track, clip } => {
+                    self.piano_roll.open(track, clip);
+                    self.arrange.selected = Some(track);
+                    self.bottom_tab = BottomTab::Editor;
+                }
                 UiAction::Locate(tick) => {
                     if let Some((_, engine)) = &mut self.output {
                         let sr = f64::from(engine.sample_rate());
@@ -890,10 +1136,7 @@ impl App {
         });
         ui.separator();
         match self.bottom_tab {
-            BottomTab::Editor => {
-                ui.weak("Select a clip to edit it here.");
-                Vec::new()
-            }
+            BottomTab::Editor => self.piano_roll.ui(ui, &self.doc.project),
             BottomTab::Mixer => {
                 ui.ctx().request_repaint_after(Duration::from_millis(33));
                 let levels = self
@@ -992,6 +1235,7 @@ impl eframe::App for App {
         self.apply_actions(bottom_actions);
         self.finish_imports();
         self.finish_recordings();
+        self.finish_midi_recordings();
         self.update_graph();
         if self.importer.running() > 0 {
             ctx.request_repaint_after(Duration::from_millis(50));
