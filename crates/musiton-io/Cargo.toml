@@ -9,9 +9,13 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+audioadapter-buffers = "5.1"
 cpal = "0.18"
+hound = "3.5"
 musiton-core.workspace = true
 musiton-engine.workspace = true
+rubato = "5"
+symphonia = { version = "0.6", features = ["all"] }
 thiserror.workspace = true
 tracing.workspace = true
 
