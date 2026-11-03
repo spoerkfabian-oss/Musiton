@@ -71,3 +71,20 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues**
 - The project's `sample_rate` is not yet linked to the device rate (matters from phase 5 on).
 - The transport bar only edits a single constant tempo.
+
+## Phase 4 — UI shell
+**Built:** Window layout (menu, transport bar, browser panel left, arrangement centre, Editor/Mixer tabs bottom, status bar). Arrangement view in `musiton-ui`: toolbar (+Audio/+Instrument/+Bus, snap grid, follow, zoom), bar/beat ruler (click/drag to move the playhead, loop range shown), track headers (colour, name, type, mute/solo), timeline lanes with bar/beat/snap grid and playhead. Zoom with Ctrl+wheel (around the mouse), Shift+wheel scrolls in time, wheel scrolls tracks. Snap 1/1…1/32 plus triplets and "Bar". Tracks: add, delete, rename (double-click or F2), recolour (right-click menu), reorder by dragging the header. Help → Keyboard shortcuts. `L` toggles the loop.
+
+**Decisions**
+- `musiton-ui` does not know the engine: widgets return `UiAction`s (undoable edits, locate) that the app applies.
+- Only visible track rows are laid out (`ScrollArea::show_rows`); grid lines are computed once per frame and shared by all rows.
+- Single-key shortcuts (Space, Home, L, Delete, F2) are ignored while a text field has keyboard focus.
+- New tracks are inserted below the selected track and get the next colour of an 8-colour palette.
+- Headless UI tests use `egui::Context::run_ui` directly instead of `egui_kittest` (no extra dependency needed yet).
+- The Rec button is shown but disabled until phase 7.
+
+**Performance:** 50 tracks: ~1.2 ms per frame for layout + tessellation in a debug build (test `fifty_tracks_render_well_within_a_60fps_frame` fails above 8 ms).
+
+**Known issues**
+- Browser panel and Editor/Mixer tabs are placeholders until phases 5, 6 and 8.
+- Folder tracks can be created only from files for now (no UI to nest tracks yet).

@@ -26,9 +26,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** save → close → open restores everything; 100 random edits + undo all = original (proptest).
 
 ## Phase 4 — UI shell
-- [ ] Layout: transport bar (play/stop/rec/loop/BPM/time sig/position), track headers, timeline, bottom panel (editor/mixer tabs), browser side panel
-- [ ] Timeline: zoom (Ctrl+wheel), scroll, bar/beat ruler, snap grid (1/1 … 1/32, triplets), playhead follow
-- [ ] Add/delete/rename/reorder/color tracks; keyboard shortcuts table
+- [x] Layout: transport bar (play/stop/rec/loop/BPM/time sig/position), track headers, timeline, bottom panel (editor/mixer tabs), browser side panel
+- [x] Timeline: zoom (Ctrl+wheel), scroll, bar/beat ruler, snap grid (1/1 … 1/32, triplets), playhead follow
+- [x] Add/delete/rename/reorder/color tracks; keyboard shortcuts table
 **Done when:** UI holds 60 fps with 50 empty tracks; all transport controls drive the engine.
 
 ## Phase 5 — Audio clips
