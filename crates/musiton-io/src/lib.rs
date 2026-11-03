@@ -2,4 +2,5 @@
 
 pub mod audio;
 pub mod file;
+pub mod midi;
 pub mod recording;
