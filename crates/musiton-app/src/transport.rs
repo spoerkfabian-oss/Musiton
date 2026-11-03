@@ -12,6 +12,7 @@ pub struct EngineSync {
     time_sig: Option<TimeSig>,
     loop_range: Option<Option<(Tick, Tick)>>,
     metronome: Option<bool>,
+    punch: Option<Option<(Tick, Tick)>>,
 }
 
 impl EngineSync {
@@ -39,7 +40,38 @@ impl EngineSync {
             self.metronome = Some(project.metronome);
             engine.send_or_log(EngineCommand::SetMetronome(project.metronome));
         }
+        let punch = project.punch_range.filter(|_| project.punch_enabled);
+        if self.punch != Some(punch) {
+            self.punch = Some(punch);
+            engine.send_or_log(EngineCommand::SetPunch(punch));
+        }
     }
+}
+
+/// Bar-based range editor ("from bar N, length M bars"). Returns the new range and
+/// whether it comes from an ongoing drag.
+fn bar_range(
+    ui: &mut egui::Ui,
+    range: Option<(Tick, Tick)>,
+    bar: i64,
+) -> Option<((Tick, Tick), bool)> {
+    let (start, end) = range.unwrap_or((Tick(0), Tick(4 * bar)));
+    let mut start_bar = start.0 / bar + 1;
+    let mut len_bars = ((end.0 - start.0) / bar).max(1);
+    ui.label("from bar");
+    let r1 = ui.add(egui::DragValue::new(&mut start_bar).range(1..=999));
+    ui.label("length");
+    let r2 = ui.add(
+        egui::DragValue::new(&mut len_bars)
+            .range(1..=64)
+            .suffix(" bars"),
+    );
+    if !(r1.changed() || r2.changed()) {
+        return None;
+    }
+    let s = (start_bar - 1) * bar;
+    let merge = (r1.dragged() && !r1.drag_started()) || (r2.dragged() && !r2.drag_started());
+    Some(((Tick(s), Tick(s + len_bars * bar)), merge))
 }
 
 /// What the transport bar wants the app to do.
@@ -68,6 +100,7 @@ impl Transport {
     ) -> TransportOutput {
         let mut out = TransportOutput::default();
         let playing = engine.as_ref().is_some_and(|e| e.shared().playing());
+        let recording = engine.as_ref().is_some_and(|e| e.shared().recording());
         let mut cmds = Vec::new();
 
         // Consumed here so a focused button doesn't also react to the same key press.
@@ -77,6 +110,7 @@ impl Transport {
         let key = |k| !typing && ui.input_mut(|i| i.consume_key(none, k));
         let space = key(egui::Key::Space);
         let home = key(egui::Key::Home);
+        let rec_key = key(egui::Key::R);
         if key(egui::Key::L) {
             project.loop_enabled = !project.loop_enabled;
             out.settings_changed = true;
@@ -97,14 +131,29 @@ impl Transport {
                 .clicked()
                 || space
             {
-                cmds.push(if playing {
-                    EngineCommand::Stop
+                if playing {
+                    cmds.push(EngineCommand::Stop);
+                    cmds.push(EngineCommand::SetRecording(false));
                 } else {
-                    EngineCommand::Play
-                });
+                    cmds.push(EngineCommand::Play);
+                }
             }
-            ui.add_enabled(false, egui::Button::new("Rec"))
-                .on_disabled_hover_text("Recording arrives in phase 7");
+            let rec_text = egui::RichText::new("Rec").color(if recording {
+                egui::Color32::from_rgb(255, 70, 70)
+            } else {
+                ui.visuals().text_color()
+            });
+            if ui
+                .add(egui::Button::new(rec_text).selected(recording))
+                .on_hover_text("Record on armed tracks (R)")
+                .clicked()
+                || rec_key
+            {
+                cmds.push(EngineCommand::SetRecording(!recording));
+                if !recording && !playing {
+                    cmds.push(EngineCommand::Play);
+                }
+            }
             ui.separator();
 
             ui.label("BPM");
@@ -152,25 +201,24 @@ impl Transport {
                 out.settings_changed = true;
             }
             let bar = project.time_sig.ticks_per_bar();
-            let (start, end) = project.loop_range.unwrap_or((Tick(0), Tick(4 * bar)));
-            let mut start_bar = start.0 / bar + 1;
-            let mut len_bars = ((end.0 - start.0) / bar).max(1);
-            ui.label("from bar");
-            let r1 = ui.add(egui::DragValue::new(&mut start_bar).range(1..=999));
-            ui.label("length");
-            let r2 = ui.add(
-                egui::DragValue::new(&mut len_bars)
-                    .range(1..=64)
-                    .suffix(" bars"),
-            );
-            if r1.changed() || r2.changed() {
-                let s = (start_bar - 1) * bar;
-                let merge =
-                    (r1.dragged() && !r1.drag_started()) || (r2.dragged() && !r2.drag_started());
-                out.edits.push((
-                    Edit::SetLoop(Some((Tick(s), Tick(s + len_bars * bar)))),
-                    merge,
-                ));
+            if let Some((r, merge)) = bar_range(ui, project.loop_range, bar) {
+                out.edits.push((Edit::SetLoop(Some(r)), merge));
+            }
+            ui.separator();
+            if ui
+                .toggle_value(&mut project.punch_enabled, "Punch")
+                .on_hover_text("Record only inside the punch range")
+                .changed()
+            {
+                out.settings_changed = true;
+            }
+            if project.punch_enabled {
+                if let Some((r, merge)) = bar_range(ui, project.punch_range, bar) {
+                    out.edits.push((Edit::SetPunch(Some(r)), merge));
+                }
+                if project.punch_range.is_none() {
+                    out.edits.push((Edit::SetPunch(project.loop_range), false));
+                }
             }
             ui.separator();
 

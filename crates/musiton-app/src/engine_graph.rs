@@ -11,10 +11,10 @@ use musiton_core::units::db_to_gain;
 use musiton_core::Tick;
 use musiton_engine::graph::{CompiledGraph, GraphBuilder, GraphError, NodeIdx};
 use musiton_engine::nodes::{
-    ClipPlayer, Meter, Metronome, Mix, PlayerClip, SendGain, Strip, STRIP_AUDIBLE, STRIP_GAIN,
-    STRIP_PAN,
+    AudioInput, ClipPlayer, Meter, Metronome, Mix, PlayerClip, RecChunk, Recorder, SendGain, Strip,
+    STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
 };
-use musiton_project::{Clip, OutputRoute, Project, TrackKind};
+use musiton_project::{Clip, InputRoute, OutputRoute, Project, RecordSetup, TrackKind};
 
 use crate::assets::AssetStore;
 
@@ -22,6 +22,7 @@ use crate::assets::AssetStore;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Structure {
     tracks: Vec<TrackStructure>,
+    input_channels: usize,
 }
 
 /// Rebuild-relevant parts of one track: id, kind, output, sends (target, pre-fader), clips.
@@ -31,10 +32,11 @@ type TrackStructure = (
     OutputRoute,
     Vec<(TrackId, bool)>,
     Vec<Clip>,
+    RecordSetup,
 );
 
-/// Extracts the rebuild-relevant parts of `project`.
-pub fn structure(project: &Project) -> Structure {
+/// Extracts the rebuild-relevant parts of `project` (and the number of input channels).
+pub fn structure(project: &Project, input_channels: usize) -> Structure {
     Structure {
         tracks: project
             .tracks
@@ -46,14 +48,28 @@ pub fn structure(project: &Project) -> Structure {
                     .iter()
                     .map(|s| (s.target, s.pre_fader))
                     .collect();
-                (t.id, t.kind, t.output, sends, t.clips.clone())
+                (t.id, t.kind, t.output, sends, t.clips.clone(), t.record)
             })
             .collect(),
+        input_channels,
     }
 }
 
 /// A parameter in the running graph: (node, parameter) → value.
 pub type ParamKey = (NodeIdx, ParamId);
+
+/// Capacity of each recording ring (chunks of 256 frames ≈ 5 s at 48 kHz).
+const RECORD_RING_CHUNKS: usize = 1024;
+
+/// The disk side of an armed track's recorder.
+pub struct RecordTap {
+    /// Which track.
+    pub track: TrackId,
+    /// Chunks from the recorder node.
+    pub rx: rtrb::Consumer<RecChunk>,
+    /// 1 = mono, 2 = stereo.
+    pub channels: u16,
+}
 
 /// A built graph plus where its mixer parameters and meters are.
 pub struct BuiltGraph {
@@ -61,6 +77,10 @@ pub struct BuiltGraph {
     pub graph: CompiledGraph,
     /// Where the mixer parameters and meters of this graph are.
     pub info: GraphInfo,
+    /// One tap per armed track (empty when nothing is armed or there is no input).
+    pub record_taps: Vec<RecordTap>,
+    /// Chunks the disk thread could not take in time.
+    pub record_dropped: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Mixer nodes and meters of a built graph.
@@ -112,13 +132,17 @@ impl GraphInfo {
 }
 
 /// Builds: track sources → strips → buses/master → master strip → output (+ metronome).
+/// `input_channels` is the number of channels of the input device (0 = no input).
 pub fn build(
     project: &Project,
     assets: &AssetStore,
     sample_rate: f32,
     max_block: usize,
+    input_channels: usize,
 ) -> Result<BuiltGraph, GraphError> {
     let mut b = GraphBuilder::new();
+    let mut record_taps = Vec::new();
+    let record_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut strips = HashMap::new();
     let mut sends = HashMap::new();
     let mut meters = HashMap::new();
@@ -156,7 +180,7 @@ pub fn build(
                     .clips
                     .iter()
                     .filter_map(|c| match c {
-                        Clip::Audio(a) => Some(PlayerClip {
+                        Clip::Audio(a) if !a.muted => Some(PlayerClip {
                             start: a.start,
                             end: Tick(a.start.0 + a.length.0),
                             source_offset: a.source_offset.0,
@@ -165,7 +189,7 @@ pub fn build(
                             fade_out: a.fade_out,
                             audio: assets.audio(a.asset)?.clone(),
                         }),
-                        Clip::Midi(_) => None,
+                        _ => None,
                     })
                     .collect();
                 b.add(Box::new(ClipPlayer::new(clips)))
@@ -181,6 +205,30 @@ pub fn build(
             meter.clone(),
         )));
         stereo(&mut b, input, 0, strip)?;
+        if t.kind == TrackKind::Audio && input_channels > 0 {
+            let rec = t.record;
+            let (left, right, channels) = match rec.input {
+                InputRoute::Mono(c) => (usize::from(c), None, 1),
+                InputRoute::Stereo(c) => (usize::from(c), Some(usize::from(c) + 1), 2),
+            };
+            let valid = left < input_channels && right.is_none_or(|r| r < input_channels);
+            if valid && (rec.armed || rec.monitor.active(rec.armed)) {
+                let live = b.add(Box::new(AudioInput::new(left, right)));
+                if rec.monitor.active(rec.armed) {
+                    stereo(&mut b, live, 0, strip)?;
+                }
+                if rec.armed {
+                    let (tx, rx) = rtrb::RingBuffer::new(RECORD_RING_CHUNKS);
+                    let recorder = b.add(Box::new(Recorder::new(tx, record_dropped.clone())));
+                    stereo(&mut b, live, 0, recorder)?;
+                    record_taps.push(RecordTap {
+                        track: t.id,
+                        rx,
+                        channels,
+                    });
+                }
+            }
+        }
         inputs.insert(t.id, input);
         track_strips.insert(t.id, strip);
         strips.insert(Some(t.id), strip);
@@ -226,6 +274,8 @@ pub fn build(
             sends,
             meters,
         },
+        record_taps,
+        record_dropped,
     })
 }
 
@@ -259,6 +309,7 @@ mod tests {
             gain_db: 0.0,
             fade_in: Tick(0),
             fade_out: Tick(0),
+            muted: false,
         })
     }
 
@@ -308,7 +359,7 @@ mod tests {
         });
 
         let (mut h, mut e) = create(48_000.0, 512);
-        let g = build(&project, &assets, 48_000.0, 512).unwrap().graph;
+        let g = build(&project, &assets, 48_000.0, 512, 0).unwrap().graph;
         h.send(EngineCommand::SwapGraph(Box::new(g))).ok();
         render_offline(&mut e, 2_048, 2, 512); // graph fade-in while stopped
         h.send(EngineCommand::SetTempoMap(Box::new(project.tempo.clone())))
@@ -364,7 +415,7 @@ mod tests {
         }
         let (mut h, mut e) = create(48_000.0, 256);
         h.send(EngineCommand::SwapGraph(Box::new(
-            build(&project, &assets, 48_000.0, 256).unwrap().graph,
+            build(&project, &assets, 48_000.0, 256, 0).unwrap().graph,
         )))
         .ok();
         render_offline(&mut e, 1024, 2, 256);
@@ -414,7 +465,7 @@ mod tests {
         project.tracks = vec![drums, bus(2), bus(3)];
 
         let run = |project: &Project| {
-            let built = build(project, &assets, 48_000.0, 256).unwrap();
+            let built = build(project, &assets, 48_000.0, 256, 0).unwrap();
             let (mut h, mut e) = create(48_000.0, 256);
             h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
             render_offline(&mut e, 1024, 2, 256);

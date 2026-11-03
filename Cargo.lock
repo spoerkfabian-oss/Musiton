@@ -1891,6 +1891,7 @@ dependencies = [
  "musiton-project",
  "musiton-ui",
  "rfd",
+ "rtrb",
  "serde",
  "serde_json",
  "tracing",
@@ -1940,11 +1941,13 @@ dependencies = [
 name = "musiton-io"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "audioadapter-buffers",
  "cpal",
  "hound",
  "musiton-core",
  "musiton-engine",
+ "rtrb",
  "rubato",
  "symphonia",
  "thiserror 2.0.21",

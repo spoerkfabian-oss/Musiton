@@ -69,7 +69,7 @@ impl Browser {
         ui.horizontal(|ui| {
             if let Some(parent) = dir.parent() {
                 if ui
-                    .small_button("↑")
+                    .small_button("Up")
                     .on_hover_text("Parent folder")
                     .clicked()
                 {
@@ -85,7 +85,7 @@ impl Browser {
             for (path, is_dir) in &self.entries {
                 if *is_dir {
                     if ui
-                        .selectable_label(false, format!("📁 {}", name(path)))
+                        .selectable_label(false, format!("{}/", name(path)))
                         .double_clicked()
                     {
                         go = Some(path.clone());

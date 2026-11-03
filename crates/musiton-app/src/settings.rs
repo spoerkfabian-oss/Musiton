@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// All persisted user settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Audio device settings.
@@ -20,7 +20,7 @@ pub struct Settings {
 const MAX_RECENT: usize = 10;
 
 /// Audio device settings; `None` means "device default".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioSettings {
     /// Output device id.
@@ -29,6 +29,23 @@ pub struct AudioSettings {
     pub sample_rate: Option<u32>,
     /// Buffer size in frames.
     pub buffer_size: Option<u32>,
+    /// Use an audio input (for recording and monitoring).
+    pub input_enabled: bool,
+    /// Input device id (`None` = system default).
+    pub input_device: Option<String>,
+    /// Measured round-trip latency in frames (from "Measure").
+    pub measured_latency: Option<u32>,
+    /// Extra correction for recordings in milliseconds (positive = move earlier).
+    pub record_offset_ms: f32,
+}
+
+impl AudioSettings {
+    /// How many frames recorded audio is moved earlier: the measured round trip if there
+    /// is one, else the buffer sizes (`estimate`), plus the manual correction.
+    pub fn record_latency(&self, estimate: u32, sample_rate: u32) -> i64 {
+        let base = i64::from(self.measured_latency.unwrap_or(estimate));
+        base + (f64::from(self.record_offset_ms) * f64::from(sample_rate) / 1000.0).round() as i64
+    }
 }
 
 impl Default for AudioSettings {
@@ -37,6 +54,10 @@ impl Default for AudioSettings {
             output_device: None,
             sample_rate: None,
             buffer_size: Some(256),
+            input_enabled: true,
+            input_device: None,
+            measured_latency: None,
+            record_offset_ms: 0.0,
         }
     }
 }
@@ -105,6 +126,9 @@ mod tests {
                 output_device: Some("wasapi:{abc}".into()),
                 sample_rate: Some(48_000),
                 buffer_size: Some(128),
+                measured_latency: Some(512),
+                record_offset_ms: -1.5,
+                ..AudioSettings::default()
             },
             recent_projects: vec![PathBuf::from("a/b.musiton")],
             browser_dir: Some(PathBuf::from("samples")),
@@ -140,6 +164,15 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn record_latency_prefers_measurement_and_adds_offset() {
+        let mut a = AudioSettings::default();
+        assert_eq!(a.record_latency(512, 48_000), 512);
+        a.measured_latency = Some(700);
+        a.record_offset_ms = 1.0;
+        assert_eq!(a.record_latency(512, 48_000), 748);
     }
 
     #[test]

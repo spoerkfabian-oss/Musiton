@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use musiton_core::audio::{AudioData, Peaks};
 use musiton_core::ids::{AssetId, TrackId};
-use musiton_core::Tick;
+use musiton_core::{TempoMap, Tick};
 use musiton_io::file::{import_audio, Imported};
 use musiton_project::Project;
 
@@ -133,5 +133,44 @@ impl Importer {
     /// Number of imports still running.
     pub fn running(&self) -> usize {
         self.running
+    }
+}
+
+/// Where a recorded take goes on the timeline: (start, end, frames to skip at the file
+/// start). The take was captured at song sample `start`; it is moved `latency` frames
+/// earlier. `None` if nothing remains after compensation.
+pub fn place_take(
+    tempo: &TempoMap,
+    start: u64,
+    frames: usize,
+    latency: i64,
+    sample_rate: f64,
+) -> Option<(Tick, Tick, u64)> {
+    let first = start as i64 - latency;
+    let skip = (-first).max(0) as u64;
+    let last = first + frames as i64;
+    if last <= 0 {
+        return None;
+    }
+    let at = |s: i64| Tick(tempo.sample_to_tick(s.max(0) as f64, sample_rate).round() as i64);
+    let (a, b) = (at(first), at(last));
+    (b.0 > a.0).then_some((a, b, skip))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use musiton_core::PPQ;
+
+    #[test]
+    fn takes_move_earlier_by_the_latency() {
+        let tempo = TempoMap::constant(120.0);
+        // Captured at beat 2 (24 000) plus 480 frames latency → placed exactly on beat 2.
+        let (a, b, skip) = place_take(&tempo, 24_480, 24_000, 480, 48_000.0).unwrap();
+        assert_eq!((a, b, skip), (Tick(PPQ), Tick(2 * PPQ), 0));
+        // A take that starts at 0 loses its first `latency` frames instead.
+        let (a, _, skip) = place_take(&tempo, 0, 1000, 300, 48_000.0).unwrap();
+        assert_eq!((a, skip), (Tick(0), 300));
+        assert!(place_take(&tempo, 0, 100, 300, 48_000.0).is_none());
     }
 }

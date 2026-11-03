@@ -91,6 +91,10 @@ struct App {
     importer: Importer,
     graph: GraphState,
     browser: Browser,
+    input: Option<musiton_io::audio::AudioInputStream>,
+    input_error: Option<String>,
+    writers: Vec<musiton_io::recording::DiskWriter>,
+    measuring: bool,
 }
 
 /// What the running engine graph was built from.
@@ -102,6 +106,8 @@ struct GraphState {
     info: engine_graph::GraphInfo,
     /// Parameter values already sent to the engine.
     sent: std::collections::HashMap<engine_graph::ParamKey, f32>,
+    /// Recording chunks the disk could not keep up with.
+    record_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Tabs of the bottom panel.
@@ -140,6 +146,10 @@ impl App {
             importer: Importer::default(),
             graph: GraphState::default(),
             browser: Browser::default(),
+            input: None,
+            input_error: None,
+            writers: Vec::new(),
+            measuring: false,
         };
         if let Some(dir) = app.settings.browser_dir.clone() {
             app.browser.set_dir(&dir);
@@ -173,16 +183,143 @@ impl App {
             sample_rate: a.sample_rate,
             buffer_size: a.buffer_size,
         };
+        self.input = None;
+        self.input_error = None;
         match audio::start_output(&request) {
-            Ok((out, engine)) => {
+            Ok((out, mut engine)) => {
                 self.sync.reset();
                 self.graph = GraphState::default();
+                if a.input_enabled {
+                    let rate = out.info().sample_rate;
+                    match audio::start_input(a.input_device.as_deref(), rate, a.buffer_size) {
+                        Ok((stream, source)) => {
+                            engine.send_or_log(musiton_engine::EngineCommand::SetInput(Some(
+                                Box::new(source),
+                            )));
+                            self.input = Some(stream);
+                        }
+                        Err(e) => {
+                            tracing::warn!("audio input failed: {e}");
+                            self.input_error = Some(e.to_string());
+                        }
+                    }
+                }
                 self.output = Some((out, engine));
                 self.audio_error = None;
             }
             Err(e) => {
                 tracing::error!("audio output failed: {e}");
                 self.audio_error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Picks up the result of a running latency measurement.
+    fn update_measurement(&mut self) {
+        if !self.measuring {
+            return;
+        }
+        let Some((_, e)) = &self.output else {
+            self.measuring = false;
+            return;
+        };
+        match e.shared().probe_result() {
+            musiton_engine::PROBE_NONE => {}
+            musiton_engine::PROBE_TIMEOUT => {
+                self.measuring = false;
+                self.audio_dialog.measure_status =
+                    "No click heard on input 1 — check the cable/microphone and input level."
+                        .into();
+            }
+            frames => {
+                self.measuring = false;
+                let frames = frames as u32;
+                self.settings.audio.measured_latency = Some(frames);
+                self.audio_dialog.set_measured(Some(frames));
+                self.save_settings();
+                self.audio_dialog.measure_status = format!("Round trip: {frames} samples");
+            }
+        }
+    }
+
+    /// Frames recorded audio is moved earlier to line up with what was heard.
+    fn record_latency(&self) -> i64 {
+        let Some((out, _)) = &self.output else {
+            return 0;
+        };
+        let info = out.info();
+        let estimate = info.buffer_size.unwrap_or(256) * 2;
+        self.settings
+            .audio
+            .record_latency(estimate, info.sample_rate)
+    }
+
+    /// Turns finished recording takes into clips. A new take mutes the clips it covers.
+    fn finish_recordings(&mut self) {
+        let mut takes = Vec::new();
+        for w in &self.writers {
+            takes.extend(w.poll());
+        }
+        self.writers.retain(|w| !w.finished());
+        let latency = self.record_latency();
+        for take in takes {
+            let take = match take {
+                Ok(t) => t,
+                Err(e) => {
+                    self.set_status(format!("Recording failed: {e}"));
+                    continue;
+                }
+            };
+            let track = musiton_core::ids::TrackId(take.key);
+            let p = &mut self.doc.project;
+            if p.track(track).is_none() {
+                continue;
+            }
+            let sr = f64::from(take.audio.sample_rate.max(1));
+            let Some((start, end, skip)) =
+                assets::place_take(&p.tempo, take.start, take.audio.frames(), latency, sr)
+            else {
+                continue;
+            };
+            let asset = musiton_core::ids::AssetId(p.alloc_id());
+            let clip_id = musiton_core::ids::ClipId(p.alloc_id());
+            let mut edits = vec![musiton_project::Edit::AddAsset(Some(
+                musiton_project::Asset {
+                    id: asset,
+                    file: format!("audio/{}", take.file_name),
+                },
+            ))];
+            // Mute what the new take covers (older takes stay available).
+            if let Some(t) = p.track(track) {
+                for c in &t.clips {
+                    if let musiton_project::Clip::Audio(a) = c {
+                        let overlaps = a.start.0 < end.0 && a.start.0 + a.length.0 > start.0;
+                        if overlaps && !a.muted {
+                            let mut m = a.clone();
+                            m.muted = true;
+                            edits.push(musiton_project::Edit::ReplaceClip {
+                                track,
+                                clip: musiton_project::Clip::Audio(m),
+                            });
+                        }
+                    }
+                }
+            }
+            edits.push(musiton_project::Edit::AddClip {
+                track,
+                clip: Some(musiton_project::Clip::Audio(musiton_project::AudioClip {
+                    id: clip_id,
+                    asset,
+                    start,
+                    length: musiton_core::Tick(end.0 - start.0),
+                    source_offset: musiton_core::SamplePos(skip),
+                    ..musiton_project::AudioClip::default()
+                })),
+            });
+            self.assets.insert(asset, take.audio);
+            match self.doc.perform(musiton_project::Edit::Batch(edits), false) {
+                Ok(()) => self.set_status(format!("Recorded {}", take.file_name)),
+                Err(e) => self.set_status(format!("Adding the recording failed: {e}")),
             }
         }
     }
@@ -416,7 +553,7 @@ impl App {
                 if out.has_failed() {
                     ui.colored_label(
                         ui.visuals().error_fg_color,
-                        "Audio device stopped working — check Options → Audio settings",
+                        "Audio device stopped working — check Options > Audio settings",
                     );
                 } else {
                     let info = out.info();
@@ -444,6 +581,24 @@ impl App {
                 }
             } else {
                 ui.label("Audio: off");
+            }
+            if let Some(err) = &self.input_error {
+                ui.separator();
+                ui.colored_label(ui.visuals().warn_fg_color, format!("Input: {err}"));
+            } else if let Some(input) = &self.input {
+                ui.separator();
+                ui.label(format!("In: {} ({} ch)", input.device_name, input.channels));
+            }
+            let lost = self
+                .graph
+                .record_dropped
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if lost > 0 {
+                ui.separator();
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!("Recording: {lost} chunk(s) lost (disk too slow)"),
+                );
             }
             if let Some((msg, at)) = &self.status {
                 if at.elapsed() < STATUS_TIME {
@@ -617,7 +772,8 @@ impl App {
             || self.graph.asset_gen != self.assets.generation
         {
             self.graph.revision = Some(self.doc.revision);
-            let structure = engine_graph::structure(&self.doc.project);
+            let input_channels = self.input.as_ref().map_or(0, |i| usize::from(i.channels));
+            let structure = engine_graph::structure(&self.doc.project, input_channels);
             if self.graph.structure.as_ref() != Some(&structure)
                 || self.graph.asset_gen != self.assets.generation
             {
@@ -628,8 +784,45 @@ impl App {
                     &self.assets,
                     engine.sample_rate(),
                     engine.max_block(),
+                    input_channels,
                 ) {
                     Ok(built) => {
+                        if !built.record_taps.is_empty() {
+                            match self.doc.dir() {
+                                Some(dir) => {
+                                    let sr = engine.sample_rate() as u32;
+                                    let jobs = built
+                                        .record_taps
+                                        .into_iter()
+                                        .map(|tap| {
+                                            let name = self
+                                                .doc
+                                                .project
+                                                .track(tap.track)
+                                                .map_or("Recording".to_owned(), |t| t.name.clone());
+                                            musiton_io::recording::RecordJob {
+                                                key: tap.track.0,
+                                                rx: tap.rx,
+                                                dir: dir.join("audio"),
+                                                name,
+                                                channels: tap.channels,
+                                                sample_rate: sr,
+                                            }
+                                        })
+                                        .collect();
+                                    self.writers
+                                        .push(musiton_io::recording::DiskWriter::spawn(jobs));
+                                }
+                                None => {
+                                    self.status = Some((
+                                        "Save the project before recording (audio goes into its folder)."
+                                            .into(),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                            }
+                        }
+                        self.graph.record_dropped = built.record_dropped;
                         engine.send_or_log(musiton_engine::EngineCommand::SwapGraph(Box::new(
                             built.graph,
                         )));
@@ -710,6 +903,8 @@ impl App {
                     .iter()
                     .map(|(k, m)| (*k, (m.take_peak(), m.rms())))
                     .collect();
+                self.mixer.input_channels =
+                    self.input.as_ref().map_or(0, |i| usize::from(i.channels));
                 self.mixer.ui(ui, &self.doc.project, &levels)
             }
         }
@@ -796,6 +991,7 @@ impl eframe::App for App {
         self.apply_actions(actions);
         self.apply_actions(bottom_actions);
         self.finish_imports();
+        self.finish_recordings();
         self.update_graph();
         if self.importer.running() > 0 {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -805,8 +1001,25 @@ impl eframe::App for App {
             .collapsible(false)
             .show(&ctx, musiton_ui::shortcuts::shortcuts_table);
 
-        if let Some(new) = self.audio_dialog.show(&ctx) {
-            self.apply_audio_settings(new);
+        self.update_measurement();
+        match self.audio_dialog.show(&ctx) {
+            Some(audio_dialog::DialogAction::Apply(new)) => self.apply_audio_settings(new),
+            Some(audio_dialog::DialogAction::Measure) => {
+                if let Some((_, e)) = &self.output {
+                    if self.input.is_some() {
+                        e.shared().request_latency_probe();
+                        self.measuring = true;
+                        self.audio_dialog.measure_status = "Measuring…".into();
+                    } else {
+                        self.audio_dialog.measure_status = "No input device is running.".into();
+                    }
+                }
+            }
+            Some(audio_dialog::DialogAction::Offset(ms)) => {
+                self.settings.audio.record_offset_ms = ms;
+                self.save_settings();
+            }
+            None => {}
         }
         self.unsaved_dialog(&ctx);
 
