@@ -1,5 +1,6 @@
 //! Built-in instruments and effects for Musiton (they implement `musiton_engine::node::AudioNode`).
 
+pub mod effects;
 pub mod polysynth;
 pub mod sampler;
 
@@ -48,6 +49,91 @@ pub const INSTRUMENTS: [InstrumentType; 2] = [
     },
 ];
 
+/// A built-in effect type.
+#[derive(Debug, Clone, Copy)]
+pub struct EffectType {
+    /// Stable id stored in projects.
+    pub type_id: &'static str,
+    /// Display name.
+    pub name: &'static str,
+    /// Its parameters.
+    pub params: &'static [ParamInfo],
+}
+
+/// All built-in effects.
+pub const EFFECTS: [EffectType; 7] = [
+    EffectType {
+        type_id: "eq",
+        name: "EQ",
+        params: &effects::eq::PARAMS,
+    },
+    EffectType {
+        type_id: "compressor",
+        name: "Compressor",
+        params: &effects::compressor::PARAMS,
+    },
+    EffectType {
+        type_id: "delay",
+        name: "Delay",
+        params: &effects::delay::PARAMS,
+    },
+    EffectType {
+        type_id: "reverb",
+        name: "Reverb",
+        params: &effects::reverb::PARAMS,
+    },
+    EffectType {
+        type_id: "saturation",
+        name: "Saturation",
+        params: &effects::saturation::PARAMS,
+    },
+    EffectType {
+        type_id: "limiter",
+        name: "Limiter",
+        params: &effects::limiter::PARAMS,
+    },
+    EffectType {
+        type_id: "utility",
+        name: "Utility",
+        params: &effects::utility::PARAMS,
+    },
+];
+
+/// Looks up an effect type.
+pub fn effect_type(type_id: &str) -> Option<&'static EffectType> {
+    EFFECTS.iter().find(|t| t.type_id == type_id)
+}
+
+/// Creates an effect (off the audio thread). The EQ also returns the analyzer its output
+/// feeds (for the spectrum display). Unknown types give a utility.
+pub fn create_effect(
+    type_id: &str,
+    params: &[(u64, f32)],
+) -> (
+    Box<dyn AudioNode>,
+    Option<Arc<musiton_engine::nodes::Analyzer>>,
+) {
+    use effects::*;
+    let mut analyzer = None;
+    let mut node: Box<dyn AudioNode> = match type_id {
+        "eq" => {
+            let a = musiton_engine::nodes::Analyzer::new();
+            analyzer = Some(a.clone());
+            Box::new(eq::Eq::new(a))
+        }
+        "compressor" => Box::<compressor::Compressor>::default(),
+        "delay" => Box::<delay::Delay>::default(),
+        "reverb" => Box::<reverb::Reverb>::default(),
+        "saturation" => Box::<saturation::Saturation>::default(),
+        "limiter" => Box::<limiter::Limiter>::default(),
+        _ => Box::<utility::Utility>::default(),
+    };
+    for &(id, value) in params {
+        node.set_param(ParamId(id), value);
+    }
+    (node, analyzer)
+}
+
 /// Looks up an instrument type.
 pub fn instrument_type(type_id: &str) -> Option<&'static InstrumentType> {
     INSTRUMENTS.iter().find(|t| t.type_id == type_id)
@@ -92,6 +178,14 @@ mod tests {
                     "{name}"
                 );
             }
+        }
+        for t in EFFECTS {
+            for (i, p) in t.params.iter().enumerate() {
+                assert_eq!(p.id.0, i as u64, "{} param {}", t.name, p.name);
+            }
+            let (n, a) = create_effect(t.type_id, &[]);
+            assert_eq!(n.num_outputs(), 2);
+            assert_eq!(a.is_some(), t.type_id == "eq");
         }
         assert!(instrument_type("nope").is_none());
         let n = create_instrument(SAMPLER, &[(sampler::id::DRUM, 1.0)], &[]);
