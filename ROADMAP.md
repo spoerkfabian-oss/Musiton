@@ -61,9 +61,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** both instruments are playable from the keyboard without clicks/aliasing artifacts at high notes.
 
 ## Phase 10 — Built-in effects
-- [ ] Utility (gain/pan/phase), 8-band parametric EQ with spectrum view, compressor (sidechain-ready), delay (tempo-sync), reverb (FDN), limiter, saturation
-- [ ] Device rack: add/remove/reorder/bypass, drag between tracks
-- [ ] Parameter smoothing everywhere (no zipper noise)
+- [x] Utility (gain/pan/phase), 8-band parametric EQ with spectrum view, compressor (sidechain-ready), delay (tempo-sync), reverb (FDN), limiter, saturation
+- [x] Device rack: add/remove/reorder/bypass, drag between tracks
+- [x] Parameter smoothing everywhere (no zipper noise)
 **Done when:** each effect has a golden test and a CPU bench; dragging any knob while playing is click-free.
 
 ## Phase 11 — Automation

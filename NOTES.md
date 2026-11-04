@@ -176,3 +176,19 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues**
 - Owner test on real hardware: play both instruments from the keyboard, especially high notes.
 - Not every polysynth parameter is smoothed yet (levels/resonance change per block); full smoothing is a phase-10 item.
+
+## Phase 10 — Built-in effects
+**Built:** Utility (gain, balance, width, phase invert), 8-band parametric EQ (bell, shelves, cuts, notch) with response curve and live spectrum, compressor (threshold, ratio, attack, release, knee, makeup, mix; sidechain inputs prepared), delay (free or tempo-synced incl. dotted/triplet, feedback with high-cut, ping-pong, mix), FDN reverb (8 lines, Hadamard matrix, decay, size, damping, pre-delay, width, mix), look-ahead limiter (ceiling, release, input gain; never exceeds the ceiling), saturation (soft/hard/tube, drive, tone, output, mix). Device rack in the "Device" tab for every track: "+ Add effect", On/off (bypass), `<`/`>` to reorder, `x` to remove, drag an effect's name onto another track's header to move it.
+
+**Decisions**
+- Every effect runs inside an `FxSlot` that handles bypass with a 10 ms cross-fade (a fully bypassed effect is not processed). Bypass and parameters are `SetParam` commands; adding/removing/reordering effects rebuilds the graph.
+- Track signal path: source (clips/instrument/bus input) + live input → effects → fader/pan/sends.
+- All continuous parameters are smoothed (one-pole ~20 ms; biquad coefficients glide; delay time ~80 ms → tape-style pitch glide instead of clicks; reverb size 1.5 s). Envelope sustain now glides too (was a jump in synth and sampler).
+- Compressor sidechain: the node has inputs 3/4 and a "Sidechain" switch; choosing a sidechain source in the UI is in "Later" (sidechain routing UI).
+- The limiter reports 72 samples of latency; latency compensation (PDC) arrives with phase 12.
+- Saturation is not oversampled (some aliasing at high drive on bright material).
+
+**Tests / benches:** golden render per effect (`crates/musiton-devices/tests/golden/*.wav`, tolerance 1e-4), behaviour tests (EQ gain, compressor ratio, delay time + tempo sync, reverb decay ≈ −60 dB/decay time, limiter ceiling + latency, saturation harmonics, utility), a generic **knob test**: for every continuous parameter of every effect and instrument, jumping between min and max every 2048 samples may not create steps larger than the parameter's own steady-state output (this found and fixed clicks in reverb decay/size and envelope sustain). Phase 6 acceptance completed: `drum_bus_with_reverb_send`. CPU (`cargo bench -p musiton-devices`, 1 s of audio, release build in this container): utility 0.17 ms, compressor 1.4 ms, EQ/delay/saturation ~1.8 ms, limiter 2.8 ms, reverb 5.8 ms, polysynth 8 voices 14 ms, sampler 8 voices 20 ms.
+
+**Fixed bugs**
+- `cargo build --release` failed: `musiton_engine::rt::AllocDisabler` only exists in debug builds of `assert_no_alloc`. Release builds now use the system allocator under the same name; CI additionally runs `cargo check --release`.
