@@ -11,8 +11,9 @@ use musiton_core::units::db_to_gain;
 use musiton_core::Tick;
 use musiton_engine::graph::{CompiledGraph, GraphBuilder, GraphError, NodeIdx};
 use musiton_engine::nodes::{
-    AudioInput, ClipPlayer, Meter, Metronome, MidiNote, MidiTrack, Mix, PlayerClip, RecChunk,
-    RecMidi, Recorder, SendGain, Strip, MIDI_TRACK_LIVE, STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
+    Analyzer, AudioInput, ClipPlayer, FxSlot, Meter, Metronome, MidiNote, MidiTrack, Mix,
+    PlayerClip, RecChunk, RecMidi, Recorder, SendGain, Strip, FX_BYPASS, MIDI_TRACK_LIVE,
+    STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
 };
 use musiton_project::{Clip, InputRoute, OutputRoute, Project, RecordSetup, SampleZone, TrackKind};
 
@@ -37,7 +38,28 @@ type TrackStructure = (
     Vec<Clip>,
     RecordSetup,
     Option<(String, Vec<SampleZone>)>,
+    Vec<(musiton_core::ids::DeviceId, String)>,
 );
+
+/// The effect devices of a track (everything after the instrument).
+fn effects_of(t: &musiton_project::Track) -> &[musiton_project::DeviceSlot] {
+    let skip = usize::from(t.kind == TrackKind::Instrument && !t.devices.is_empty());
+    t.devices.get(skip..).unwrap_or(&[])
+}
+
+/// Parameter values of an effect device (settings over defaults) plus its bypass state.
+fn effect_params(d: &musiton_project::DeviceSlot) -> Vec<(u64, f32)> {
+    let mut out: Vec<(u64, f32)> = musiton_devices::effect_type(d.type_id())
+        .map(|info| {
+            info.params
+                .iter()
+                .map(|p| (p.id.0, d.param(p.id.0).unwrap_or(p.default)))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.push((FX_BYPASS.0, if d.bypass { 1.0 } else { 0.0 }));
+    out
+}
 
 /// Type id and samples of a track's instrument (instrument tracks only).
 fn instrument_of(t: &musiton_project::Track) -> Option<(String, Vec<SampleZone>)> {
@@ -104,6 +126,10 @@ pub fn structure(project: &Project, input_channels: usize) -> Structure {
                     audio_clips,
                     t.record,
                     instrument_of(t),
+                    effects_of(t)
+                        .iter()
+                        .map(|d| (d.id, d.type_id().to_owned()))
+                        .collect(),
                 )
             })
             .collect(),
@@ -152,6 +178,10 @@ pub struct GraphInfo {
     pub meters: HashMap<Option<TrackId>, Arc<Meter>>,
     /// MIDI track node per instrument track.
     midi: HashMap<TrackId, NodeIdx>,
+    /// Effect slot node per effect device.
+    fx: HashMap<musiton_core::ids::DeviceId, NodeIdx>,
+    /// Spectrum taps of EQ devices.
+    pub analyzers: HashMap<musiton_core::ids::DeviceId, Arc<Analyzer>>,
 }
 
 /// Mixer parameter values of `project` for the given nodes.
@@ -160,9 +190,19 @@ fn params(
     strips: &HashMap<Option<TrackId>, NodeIdx>,
     sends: &HashMap<(TrackId, usize), NodeIdx>,
     midi: &HashMap<TrackId, NodeIdx>,
+    fx: &HashMap<musiton_core::ids::DeviceId, NodeIdx>,
     live: Option<TrackId>,
 ) -> HashMap<ParamKey, f32> {
     let mut out = HashMap::new();
+    for t in &project.tracks {
+        for d in effects_of(t) {
+            if let Some(&node) = fx.get(&d.id) {
+                for (id, v) in effect_params(d) {
+                    out.insert((node, ParamId(id)), v);
+                }
+            }
+        }
+    }
     for (track, node) in midi {
         out.insert(
             (*node, MIDI_TRACK_LIVE),
@@ -200,7 +240,14 @@ impl GraphInfo {
 
     /// Current parameter values for this graph's nodes; `live` receives the live MIDI.
     pub fn params(&self, project: &Project, live: Option<TrackId>) -> HashMap<ParamKey, f32> {
-        params(project, &self.strips, &self.sends, &self.midi, live)
+        params(
+            project,
+            &self.strips,
+            &self.sends,
+            &self.midi,
+            &self.fx,
+            live,
+        )
     }
 }
 
@@ -217,6 +264,8 @@ pub fn build(
     let mut record_taps = Vec::new();
     let mut midi_taps = Vec::new();
     let mut midi = HashMap::new();
+    let mut fx = HashMap::new();
+    let mut analyzers = HashMap::new();
     let record_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut strips = HashMap::new();
     let mut sends = HashMap::new();
@@ -297,7 +346,26 @@ pub fn build(
             project.audible(t.id),
             meter.clone(),
         )));
-        stereo(&mut b, input, 0, strip)?;
+        // Source (and live input) → head → effects → strip.
+        let head = if t.kind == TrackKind::Bus {
+            input
+        } else {
+            let head = b.add(Box::new(Mix::new(2)));
+            stereo(&mut b, input, 0, head)?;
+            head
+        };
+        let mut last = head;
+        for d in effects_of(t) {
+            let (effect, analyzer) = musiton_devices::create_effect(d.type_id(), &effect_params(d));
+            let node = b.add(Box::new(FxSlot::new(effect, d.bypass)));
+            stereo(&mut b, last, 0, node)?;
+            fx.insert(d.id, node);
+            if let Some(a) = analyzer {
+                analyzers.insert(d.id, a);
+            }
+            last = node;
+        }
+        stereo(&mut b, last, 0, strip)?;
         if t.kind == TrackKind::Audio && input_channels > 0 {
             let rec = t.record;
             let (left, right, channels) = match rec.input {
@@ -308,7 +376,7 @@ pub fn build(
             if valid && (rec.armed || rec.monitor.active(rec.armed)) {
                 let live = b.add(Box::new(AudioInput::new(left, right)));
                 if rec.monitor.active(rec.armed) {
-                    stereo(&mut b, live, 0, strip)?;
+                    stereo(&mut b, live, 0, head)?;
                 }
                 if rec.armed {
                     let (tx, rx) = rtrb::RingBuffer::new(RECORD_RING_CHUNKS);
@@ -367,6 +435,8 @@ pub fn build(
             sends,
             meters,
             midi,
+            fx,
+            analyzers,
         },
         record_taps,
         midi_taps,
@@ -708,5 +778,122 @@ mod tests {
             .zip(&played)
             .fold(0.0_f32, |m, (a, b)| m.max((a - b).abs()));
         assert!(worst < 1e-6, "playback differs by {worst}");
+    }
+
+    /// Phase 6/10 acceptance: a drum bus with a send to an FX bus that holds a reverb.
+    /// After the drum hit ends, the reverb tail keeps sounding; bypassing the reverb
+    /// (as a parameter, no rebuild) removes the tail.
+    #[test]
+    fn drum_bus_with_reverb_send() {
+        use musiton_core::ids::DeviceId;
+        use musiton_project::{DeviceSlot, OutputRoute, SendRoute};
+        let mut assets = AssetStore::default();
+        let hit: Vec<f32> = (0..2_000)
+            .map(|i| (i as f32 * 0.3).sin() * (1.0 - i as f32 / 2_000.0))
+            .collect();
+        assets.insert(
+            AssetId(1),
+            AudioData {
+                sample_rate: 48_000,
+                channels: vec![hit],
+            },
+        );
+        let mut project = Project {
+            metronome: false,
+            ..Project::default()
+        };
+        let mut drums = Track {
+            id: TrackId(1),
+            clips: vec![clip(5, 1, 0, PPQ)],
+            output: OutputRoute::Bus(TrackId(2)),
+            ..Track::default()
+        };
+        drums.strip.sends.push(SendRoute {
+            target: TrackId(3),
+            level_db: 0.0,
+            pre_fader: false,
+        });
+        let mut fx = Track {
+            id: TrackId(3),
+            kind: TrackKind::Bus,
+            ..Track::default()
+        };
+        let mut reverb = DeviceSlot::builtin(DeviceId(9), "reverb");
+        reverb.set_param(musiton_devices::effects::reverb::id::MIX, Some(1.0));
+        fx.devices.push(reverb);
+        project.tracks = vec![
+            drums,
+            Track {
+                id: TrackId(2),
+                kind: TrackKind::Bus,
+                ..Track::default()
+            },
+            fx,
+        ];
+
+        let built = build(&project, &assets, 48_000.0, 256, 0).unwrap();
+        let params = built.info.params(&project, None);
+        let (mut h, mut e) = create(48_000.0, 256);
+        h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
+        render_offline(&mut e, 1024, 2, 256);
+        h.send(EngineCommand::Play).ok();
+        let out = render_offline(&mut e, 24_000, 2, 256);
+        let tail = |x: &[f32]| x.chunks(2).map(|f| f[0].abs()).fold(0.0_f32, f32::max);
+        // The hit lasts 2 000 samples; the reverb is still audible well after it.
+        assert!(tail(&out[2 * 6_000..2 * 12_000]) > 1e-3, "no reverb tail");
+
+        // Bypass the reverb through its parameter and play again from the start.
+        let reverb_node = built.info.fx[&DeviceId(9)];
+        h.send(EngineCommand::SetParam {
+            node: reverb_node,
+            id: FX_BYPASS,
+            val: 1.0,
+        })
+        .ok();
+        h.send(EngineCommand::Locate(SamplePos(0))).ok();
+        render_offline(&mut e, 48_000, 2, 256);
+        h.send(EngineCommand::Locate(SamplePos(0))).ok();
+        let out = render_offline(&mut e, 24_000, 2, 256);
+        assert!(
+            tail(&out[2 * 6_000..2 * 12_000]) < 1e-6,
+            "bypassed reverb still sounds"
+        );
+        assert!(params.contains_key(&(reverb_node, FX_BYPASS)));
+    }
+
+    /// An EQ in an audio track's chain feeds its analyzer with what plays through it.
+    #[test]
+    fn eq_analyzer_sees_the_track_audio() {
+        use musiton_core::ids::DeviceId;
+        use musiton_project::DeviceSlot;
+        let mut assets = AssetStore::default();
+        let tone: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.1).sin() * 0.5).collect();
+        assets.insert(
+            AssetId(1),
+            AudioData {
+                sample_rate: 48_000,
+                channels: vec![tone],
+            },
+        );
+        let mut project = Project {
+            metronome: false,
+            ..Project::default()
+        };
+        let mut t = Track {
+            id: TrackId(1),
+            clips: vec![clip(5, 1, 0, 4 * PPQ)],
+            ..Track::default()
+        };
+        t.devices.push(DeviceSlot::builtin(DeviceId(9), "eq"));
+        project.tracks.push(t);
+        let built = build(&project, &assets, 48_000.0, 256, 0).unwrap();
+        let analyzer = built.info.analyzers[&DeviceId(9)].clone();
+        let (mut h, mut e) = create(48_000.0, 256);
+        h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
+        render_offline(&mut e, 1024, 2, 256);
+        h.send(EngineCommand::Play).ok();
+        render_offline(&mut e, 8192, 2, 256);
+        let latest = analyzer.latest(4096);
+        assert!(latest.iter().any(|s| s.abs() > 0.1), "analyzer is silent");
     }
 }

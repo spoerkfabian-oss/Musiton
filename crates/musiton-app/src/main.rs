@@ -108,6 +108,22 @@ struct App {
         std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::RecMidi>>,
 }
 
+/// Effect types for the device panel.
+fn effect_types() -> Vec<musiton_ui::device_panel::DeviceType> {
+    musiton_devices::EFFECTS
+        .iter()
+        .map(|t| musiton_ui::device_panel::DeviceType {
+            type_id: t.type_id,
+            name: t.name,
+            params: t.params,
+            uses_samples: false,
+            presets: Vec::new(),
+            drum_param: None,
+            root_param: None,
+        })
+        .collect()
+}
+
 /// What the running engine graph was built from.
 #[derive(Default)]
 struct GraphState {
@@ -252,6 +268,91 @@ impl App {
                 tracing::error!("audio output failed: {e}");
                 self.audio_error = Some(e.to_string());
             }
+        }
+    }
+
+    /// Curves and live spectra of the selected track's EQs.
+    fn eq_views(
+        &self,
+    ) -> std::collections::HashMap<musiton_core::ids::DeviceId, musiton_ui::device_panel::EqView>
+    {
+        use musiton_devices::effects::eq;
+        let mut out = std::collections::HashMap::new();
+        let Some(t) = self
+            .arrange
+            .selected
+            .and_then(|id| self.doc.project.track(id))
+        else {
+            return out;
+        };
+        let sr = self
+            .output
+            .as_ref()
+            .map_or(48_000.0, |(_, e)| e.sample_rate());
+        let freqs = eq::display_freqs(200);
+        for d in t.devices.iter().filter(|d| d.type_id() == "eq") {
+            let spectrum = self
+                .graph
+                .info
+                .analyzers
+                .get(&d.id)
+                .map(|a| eq::spectrum(a, &freqs, sr))
+                .unwrap_or_default();
+            let curve = eq::curve(d.params(), &freqs, sr);
+            out.insert(
+                d.id,
+                musiton_ui::device_panel::EqView {
+                    freqs: freqs.clone(),
+                    curve,
+                    spectrum,
+                },
+            );
+        }
+        out
+    }
+
+    /// Moves effect `device` from track `from` to the end of track `to`'s chain.
+    fn move_device(
+        &mut self,
+        from: musiton_core::ids::TrackId,
+        device: musiton_core::ids::DeviceId,
+        to: musiton_core::ids::TrackId,
+    ) {
+        let p = &mut self.doc.project;
+        let (Some(src), Some(dst)) = (p.track(from), p.track(to)) else {
+            return;
+        };
+        let mut src_devices = src.devices.clone();
+        let Some(i) = src_devices.iter().position(|d| d.id == device) else {
+            return;
+        };
+        // The instrument of an instrument track stays where it is.
+        if i == 0 && src.kind == musiton_project::TrackKind::Instrument {
+            return;
+        }
+        let slot = src_devices.remove(i);
+        let mut dst_devices = dst.devices.clone();
+        if dst.kind == musiton_project::TrackKind::Instrument && dst_devices.is_empty() {
+            let id = musiton_core::ids::DeviceId(p.alloc_id());
+            dst_devices.push(musiton_project::DeviceSlot::builtin(
+                id,
+                musiton_devices::POLYSYNTH,
+            ));
+        }
+        dst_devices.push(slot);
+        let edit = musiton_project::Edit::Batch(vec![
+            musiton_project::Edit::SetDevices {
+                track: from,
+                devices: src_devices,
+            },
+            musiton_project::Edit::SetDevices {
+                track: to,
+                devices: dst_devices,
+            },
+        ]);
+        match self.doc.perform(edit, false) {
+            Ok(()) => self.set_status("Effect moved"),
+            Err(e) => self.set_status(format!("Moving the effect failed: {e}")),
         }
     }
 
@@ -1247,6 +1348,7 @@ impl App {
                     }
                 }
                 UiAction::LoadSample { track, key } => self.load_sample(track, key),
+                UiAction::MoveDevice { from, device, to } => self.move_device(from, device, to),
                 UiAction::SavePreset {
                     type_id,
                     name,
@@ -1312,11 +1414,19 @@ impl App {
                         .and_then(|a| Path::new(&a.file).file_stem())
                         .map_or("?".to_owned(), |s| s.to_string_lossy().into_owned())
                 };
+                ui.ctx().request_repaint_after(Duration::from_millis(50));
+                let effects = effect_types();
+                let eq_views = self.eq_views();
+                let input = musiton_ui::device_panel::PanelInput {
+                    track: self.arrange.selected,
+                    instruments: &types,
+                    effects: &effects,
+                    asset_name: &name,
+                    eq_views: &eq_views,
+                };
+                let project = &self.doc.project;
                 egui::ScrollArea::vertical()
-                    .show(ui, |ui| {
-                        self.device_panel
-                            .ui(ui, project, self.arrange.selected, &types, &name)
-                    })
+                    .show(ui, |ui| self.device_panel.ui(ui, project, &input))
                     .inner
             }
             BottomTab::Mixer => {
