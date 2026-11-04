@@ -41,6 +41,15 @@ pub enum UiAction {
         /// The new chain.
         devices: Vec<musiton_project::DeviceSlot>,
     },
+    /// Move an effect to the end of another track's chain.
+    MoveDevice {
+        /// Track it comes from.
+        from: musiton_core::ids::TrackId,
+        /// The effect.
+        device: musiton_core::ids::DeviceId,
+        /// Track it goes to.
+        to: musiton_core::ids::TrackId,
+    },
     /// Ask the user for a sample file and put it into the track's sampler.
     LoadSample {
         /// Which track.

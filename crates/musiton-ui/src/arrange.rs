@@ -695,6 +695,26 @@ impl Arrange {
                 );
             }
         }
+        if let Some(fx) = resp.dnd_release_payload::<crate::device_panel::FxDrag>() {
+            if fx.track != track.id && track.kind != TrackKind::Folder {
+                actions.push(UiAction::MoveDevice {
+                    from: fx.track,
+                    device: fx.device,
+                    to: track.id,
+                });
+            }
+        }
+        if resp
+            .dnd_hover_payload::<crate::device_panel::FxDrag>()
+            .is_some()
+        {
+            painter.rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(2.0, visuals.selection.stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
         if let Some(from) = resp.dnd_release_payload::<usize>() {
             if *from != index {
                 actions.push(UiAction::Edit {
