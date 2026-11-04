@@ -1,6 +1,9 @@
 //! Pure DSP building blocks for Musiton (no threads, no I/O, no allocation in hot paths).
 
+pub mod biquad;
+pub mod delay;
 pub mod env;
+pub mod fft;
 pub mod filter;
 pub mod osc;
 pub mod resample;

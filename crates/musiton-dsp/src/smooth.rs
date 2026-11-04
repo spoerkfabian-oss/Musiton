@@ -108,3 +108,55 @@ mod tests {
         assert_eq!(n, 240);
     }
 }
+
+/// One-pole smoother: follows its target exponentially (~99 % after `ms`).
+#[derive(Debug, Clone, Copy)]
+pub struct OnePole {
+    value: f32,
+    target: f32,
+    coef: f32,
+}
+
+impl Default for OnePole {
+    fn default() -> Self {
+        Self {
+            value: 0.0,
+            target: 0.0,
+            coef: 1.0,
+        }
+    }
+}
+
+impl OnePole {
+    /// Smoother at `value` that settles in about `ms` milliseconds.
+    pub fn new(value: f32, ms: f32, sample_rate: f32) -> Self {
+        Self {
+            value,
+            target: value,
+            coef: 1.0 - (-4.6 / (ms.max(0.01) * 0.001 * sample_rate.max(1.0))).exp(),
+        }
+    }
+
+    /// Sets the target.
+    pub fn set(&mut self, target: f32) {
+        self.target = target;
+    }
+
+    /// Jumps to `value`.
+    pub fn reset(&mut self, value: f32) {
+        self.value = value;
+        self.target = value;
+    }
+
+    /// Current target.
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+
+    /// Next smoothed value.
+    #[inline]
+    pub fn next_value(&mut self) -> f32 {
+        self.value += (self.target - self.value) * self.coef;
+        self.value
+    }
+}

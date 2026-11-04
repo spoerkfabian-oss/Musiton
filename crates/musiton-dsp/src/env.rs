@@ -19,6 +19,8 @@ pub struct Adsr {
     decay_coef: f32,
     sustain: f32,
     release_coef: f32,
+    /// Glide towards a changed sustain level (~10 ms) instead of jumping.
+    sustain_coef: f32,
 }
 
 impl Default for Adsr {
@@ -30,6 +32,7 @@ impl Default for Adsr {
             decay_coef: 0.0,
             sustain: 1.0,
             release_coef: 0.0,
+            sustain_coef: 0.0,
         }
     }
 }
@@ -46,6 +49,7 @@ impl Adsr {
         self.decay_coef = coef(decay, sample_rate);
         self.sustain = sustain.clamp(0.0, 1.0);
         self.release_coef = coef(release, sample_rate);
+        self.sustain_coef = coef(0.01, sample_rate);
     }
 
     /// Starts (or restarts) the envelope.
@@ -94,7 +98,9 @@ impl Adsr {
                     self.stage = Stage::Sustain;
                 }
             }
-            Stage::Sustain => self.level = self.sustain,
+            Stage::Sustain => {
+                self.level = self.sustain + (self.level - self.sustain) * self.sustain_coef;
+            }
             Stage::Release => {
                 self.level *= self.release_coef;
                 if self.level < 1e-4 {
