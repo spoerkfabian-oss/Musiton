@@ -6,7 +6,8 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui};
 use musiton_core::ids::TrackId;
 use musiton_core::units::gain_to_db;
 use musiton_project::{
-    ChannelStrip, Edit, InputRoute, MonitorMode, OutputRoute, Project, SendRoute, Track, TrackKind,
+    AutoMode, ChannelStrip, Edit, InputRoute, MonitorMode, OutputRoute, ParamTarget, Project,
+    SendRoute, Track, TrackKind, PAN_PARAM, VOLUME_PARAM,
 };
 
 use crate::UiAction;
@@ -41,6 +42,8 @@ pub struct Mixer {
     meters: HashMap<Option<TrackId>, MeterState>,
     /// Channels of the audio input device (0 = no input).
     pub input_channels: usize,
+    /// Song position in ticks; volume/pan controls then show automated values.
+    pub playhead: Option<f64>,
 }
 
 impl Mixer {
@@ -85,9 +88,27 @@ impl Mixer {
         let id = track.map(|t| t.id);
         let strip = track.map_or(&project.master, |t| &t.strip);
         let mut edited = strip.clone();
+        // Automated volume/pan: the controls show the values the lanes set.
+        let lane_value = |target: ParamTarget| {
+            let t = track?;
+            let tick = self.playhead?;
+            t.automation
+                .iter()
+                .find(|l| l.target == target && l.mode != AutoMode::Off)
+                .and_then(|l| l.value_at(tick))
+        };
+        let auto_gain = lane_value(ParamTarget::Volume).map(|x| VOLUME_PARAM.from_normalized(x));
+        let auto_pan = lane_value(ParamTarget::Pan).map(|x| PAN_PARAM.from_normalized(x));
+        if let Some(g) = auto_gain {
+            edited.gain_db = g;
+        }
+        if let Some(p) = auto_pan {
+            edited.pan = p;
+        }
         edited.gain_db = edited.gain_db.max(FADER_MIN_DB);
         let mut merge = false;
         let mut changed = false;
+        let (mut gain_moved, mut pan_moved) = (false, false);
 
         ui.vertical(|ui| {
             ui.set_width(STRIP_WIDTH);
@@ -122,10 +143,16 @@ impl Mixer {
 
             // Pan.
             let r = ui.add(egui::Slider::new(&mut edited.pan, -1.0..=1.0).show_value(false));
+            let r = if auto_pan.is_some() {
+                r.on_hover_text("Automated – pan follows the automation lane")
+            } else {
+                r
+            };
             if r.double_clicked() {
                 edited.pan = 0.0;
             }
             if r.changed() || r.double_clicked() {
+                pan_moved = true;
                 changed = true;
                 merge = r.dragged() && !r.drag_started();
             }
@@ -139,10 +166,16 @@ impl Mixer {
                         .vertical()
                         .show_value(false),
                 );
+                let r = if auto_gain.is_some() {
+                    r.on_hover_text("Automated – volume follows the automation lane")
+                } else {
+                    r
+                };
                 if r.double_clicked() {
                     edited.gain_db = 0.0;
                 }
                 if r.changed() || r.double_clicked() {
+                    gain_moved = true;
                     changed = true;
                     merge = r.dragged() && !r.drag_started();
                 }
@@ -188,6 +221,13 @@ impl Mixer {
             });
         });
         if changed {
+            // Automated values that were only displayed keep their static setting.
+            if auto_gain.is_some() && !gain_moved {
+                edited.gain_db = strip.gain_db;
+            }
+            if auto_pan.is_some() && !pan_moved {
+                edited.pan = strip.pan;
+            }
             if edited.gain_db <= FADER_MIN_DB {
                 // Bottom of the fader = silence (db_to_gain gives 0 below −144 dB).
                 edited.gain_db = -200.0;

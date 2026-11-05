@@ -120,14 +120,14 @@ struct App {
     auto_rec: auto_record::AutoRecorder,
     export_dialog: export_dialog::ExportDialog,
     settings_dialog: settings_dialog::SettingsDialog,
-    /// Offered after a crash.
-    recovery: Option<session::Recovery>,
+    /// Offered after a crash (one at a time).
+    recovery: Vec<session::Recovery>,
     /// An error to show in a dialog.
     error: Option<String>,
     /// Set after an internal error: the UI only shows the error dialog.
     broken: bool,
-    /// Project path last written to the session lock.
-    locked_path: Option<Option<PathBuf>>,
+    /// This session's crash-detection lock.
+    session: Option<session::SessionLock>,
     export_task: Option<export::ExportTask>,
     /// Transport state of the previous frame.
     was_playing: bool,
@@ -224,10 +224,10 @@ impl App {
             auto_rec: auto_record::AutoRecorder::default(),
             export_dialog: export_dialog::ExportDialog::default(),
             settings_dialog: settings_dialog::SettingsDialog::default(),
-            recovery: None,
+            recovery: Vec::new(),
             error: None,
             broken: false,
-            locked_path: None,
+            session: None,
             export_task: None,
             was_playing: false,
         };
@@ -239,7 +239,8 @@ impl App {
                 let doc = Document::with_path(p.map(Path::to_path_buf));
                 doc.autosave_path(Some(&dir))
             };
-            app.recovery = session::find_recovery(&dir, &autosave_for);
+            app.recovery = session::find_recoveries(&dir, &autosave_for);
+            app.session = session::SessionLock::acquire(&dir);
         }
         app.restart_audio();
         if let Some(path) = open {
@@ -1757,6 +1758,7 @@ impl App {
                     effects: &effects,
                     asset_name: &name,
                     eq_views: &eq_views,
+                    playhead: self.playhead().0,
                 };
                 let project = &self.doc.project;
                 egui::ScrollArea::vertical()
@@ -1772,6 +1774,7 @@ impl App {
                     .iter()
                     .map(|(k, m)| (*k, (m.take_peak(), m.rms())))
                     .collect();
+                self.mixer.playhead = self.playhead().0;
                 self.mixer.input_channels =
                     self.input.as_ref().map_or(0, |i| usize::from(i.channels));
                 self.mixer.ui(ui, &self.doc.project, &levels)
@@ -1932,18 +1935,16 @@ impl App {
 
     /// Keeps the crash-detection lock file pointing at the open project.
     fn update_lock(&mut self) {
-        if self.locked_path.as_ref() == Some(&self.doc.path) {
-            return;
+        if let Some(lock) = &mut self.session {
+            lock.set_project(self.doc.path.as_deref());
         }
-        if let Some(dir) = Settings::data_dir() {
-            session::write_lock(&dir, self.doc.path.as_deref());
-        }
-        self.locked_path = Some(self.doc.path.clone());
     }
 
     /// Offers to restore the autosave left by a crashed session.
     fn recovery_dialog(&mut self, ctx: &egui::Context) {
-        let Some(r) = &self.recovery else { return };
+        let Some(r) = self.recovery.first() else {
+            return;
+        };
         let text = match r.project.as_deref().and_then(Path::file_stem) {
             Some(n) => format!(
                 "An automatic backup of {} is newer than the saved version. Restore it?",
@@ -1965,10 +1966,10 @@ impl App {
             });
         });
         let Some(restore) = choice else { return };
-        let Some(r) = self.recovery.take() else {
-            return;
-        };
+        let r = self.recovery.remove(0);
         if restore {
+            // Restoring replaces the open song, so further backups are not offered.
+            self.recovery.clear();
             match Document::recover(&r.autosave, r.project) {
                 Ok(doc) => {
                     self.stop_and_rewind();
@@ -2045,8 +2046,8 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // A broken session keeps its lock so the emergency save is offered next start.
         if !self.broken {
-            if let Some(dir) = Settings::data_dir() {
-                session::clear_lock(&dir);
+            if let Some(lock) = self.session.take() {
+                lock.release();
             }
         }
     }

@@ -11,5 +11,5 @@ pub use file::{
 pub use model::{
     Asset, AudioClip, AutoMode, AutoPoint, AutomationLane, ChannelStrip, Clip, DeviceKind,
     DeviceSlot, InputRoute, Marker, MidiClip, MonitorMode, Note, OutputRoute, ParamTarget, Project,
-    RecordSetup, SampleZone, SendRoute, Track, TrackKind,
+    RecordSetup, SampleZone, SendRoute, Track, TrackKind, PAN_PARAM, VOLUME_PARAM,
 };

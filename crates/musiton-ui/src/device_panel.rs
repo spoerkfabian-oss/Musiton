@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use egui::{Color32, Pos2, Sense, Stroke, Ui};
 use musiton_core::ids::{AssetId, DeviceId, TrackId};
 use musiton_core::params::{ParamInfo, ParamKind};
-use musiton_project::{DeviceKind, DeviceSlot, Edit, Project, Track, TrackKind};
+use musiton_project::{
+    AutoMode, DeviceKind, DeviceSlot, Edit, ParamTarget, Project, Track, TrackKind,
+};
 
 use crate::UiAction;
 
@@ -66,6 +68,8 @@ pub struct PanelInput<'a> {
     pub asset_name: &'a dyn Fn(AssetId) -> String,
     /// EQ displays per device.
     pub eq_views: &'a HashMap<DeviceId, EqView>,
+    /// Song position in ticks while playing (knobs then show automated values).
+    pub playhead: Option<f64>,
 }
 
 /// Panel state.
@@ -75,7 +79,13 @@ pub struct DevicePanel {
 }
 
 /// Draws a knob for `info`; returns the response and whether the value changed.
-pub fn knob(ui: &mut Ui, info: &ParamInfo, value: &mut f32) -> (egui::Response, bool) {
+/// An `automated` knob is drawn green and shows the value automation sets.
+pub fn knob(
+    ui: &mut Ui,
+    info: &ParamInfo,
+    value: &mut f32,
+    automated: bool,
+) -> (egui::Response, bool) {
     let size = egui::vec2(64.0, 70.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let mut changed = false;
@@ -116,6 +126,8 @@ pub fn knob(ui: &mut Ui, info: &ParamInfo, value: &mut f32) -> (egui::Response, 
     let x = info.to_normalized(*value);
     let accent = if resp.hovered() || resp.dragged() {
         Color32::from_rgb(255, 210, 80)
+    } else if automated {
+        Color32::from_rgb(110, 210, 130)
     } else {
         Color32::from_rgb(90, 170, 255)
     };
@@ -139,7 +151,11 @@ pub fn knob(ui: &mut Ui, info: &ParamInfo, value: &mut f32) -> (egui::Response, 
         egui::FontId::monospace(10.0),
         visuals.weak_text_color(),
     );
-    let resp = resp.on_hover_text("Drag up/down (Shift = fine), double-click = default");
+    let resp = resp.on_hover_text(if automated {
+        "Automated – the value follows the automation lane"
+    } else {
+        "Drag up/down (Shift = fine), double-click = default"
+    });
     (resp, changed)
 }
 
@@ -297,12 +313,12 @@ impl DevicePanel {
             });
         }
         match &slot {
-            Some(d) => param_knobs(ui, t.id, d, ty, actions),
+            Some(d) => param_knobs(ui, t, input.playhead, d, ty, actions),
             None => {
                 // No device yet: the first change creates it.
                 let d = DeviceSlot::builtin(slot_id, ty.type_id);
                 let mut pending = Vec::new();
-                param_knobs(ui, t.id, &d, ty, &mut pending);
+                param_knobs(ui, t, input.playhead, &d, ty, &mut pending);
                 for a in pending {
                     if let UiAction::Edit {
                         edit: Edit::SetDeviceParam { param, value, .. },
@@ -425,23 +441,42 @@ fn effects(
             if let Some(view) = input.eq_views.get(&d.id) {
                 eq_display(ui, view);
             }
-            param_knobs(ui, t.id, d, ty, actions);
+            param_knobs(ui, t, input.playhead, d, ty, actions);
         });
     }
+}
+
+/// The value automation sets for `param` of `device` at `tick` (lanes that are not Off).
+pub fn automated_value(t: &Track, device: DeviceId, p: &ParamInfo, tick: f64) -> Option<f32> {
+    t.automation
+        .iter()
+        .find(|l| {
+            l.mode != AutoMode::Off
+                && l.target
+                    == ParamTarget::Device {
+                        device,
+                        param: p.id.0,
+                    }
+        })
+        .and_then(|l| l.value_at(tick))
+        .map(|x| p.from_normalized(x))
 }
 
 /// Knobs (and switches/choices) for every parameter of device `d`.
 fn param_knobs(
     ui: &mut Ui,
-    track: TrackId,
+    t: &Track,
+    playhead: Option<f64>,
     d: &DeviceSlot,
     ty: &DeviceType,
     actions: &mut Vec<UiAction>,
 ) {
+    let track = t.id;
     ui.horizontal_wrapped(|ui| {
         for p in ty.params {
-            let mut v = d.param(p.id.0).unwrap_or(p.default);
-            let (changed, merge) = param_widget(ui, d.id, p, &mut v);
+            let auto = playhead.and_then(|tick| automated_value(t, d.id, p, tick));
+            let mut v = auto.unwrap_or_else(|| d.param(p.id.0).unwrap_or(p.default));
+            let (changed, merge) = param_widget(ui, d.id, p, &mut v, auto.is_some());
             if changed {
                 actions.push(UiAction::Edit {
                     edit: Edit::SetDeviceParam {
@@ -458,7 +493,13 @@ fn param_knobs(
 }
 
 /// One parameter control; returns (changed, part of an ongoing drag).
-fn param_widget(ui: &mut Ui, device: DeviceId, p: &ParamInfo, v: &mut f32) -> (bool, bool) {
+fn param_widget(
+    ui: &mut Ui,
+    device: DeviceId,
+    p: &ParamInfo,
+    v: &mut f32,
+    automated: bool,
+) -> (bool, bool) {
     match p.kind {
         ParamKind::Toggle => {
             let mut on = *v > 0.5;
@@ -484,7 +525,9 @@ fn param_widget(ui: &mut Ui, device: DeviceId, p: &ParamInfo, v: &mut f32) -> (b
             (idx != before, false)
         }
         _ => {
-            let (r, c) = ui.push_id((device, p.id), |ui| knob(ui, p, v)).inner;
+            let (r, c) = ui
+                .push_id((device, p.id), |ui| knob(ui, p, v, automated))
+                .inner;
             (c, r.dragged() && !r.drag_started())
         }
     }
@@ -563,5 +606,29 @@ mod tests {
         assert_eq!(key_name(60), "C4");
         assert_eq!(key_name(36), "C2");
         assert_eq!(key_name(61), "C#4");
+    }
+
+    #[test]
+    fn knobs_follow_automation_unless_the_lane_is_off() {
+        use musiton_core::Tick;
+        use musiton_project::{AutoPoint, AutomationLane};
+        let p = ParamInfo::new(3, "Cutoff", 0.0, 100.0, 50.0);
+        let device = DeviceId(9);
+        let point = |tick, value| AutoPoint {
+            tick: Tick(tick),
+            value,
+            curve: 0.0,
+        };
+        let mut t = Track::default();
+        t.automation.push(AutomationLane {
+            target: ParamTarget::Device { device, param: 3 },
+            points: vec![point(0, 0.0), point(960, 1.0)],
+            mode: AutoMode::Read,
+        });
+        assert_eq!(automated_value(&t, device, &p, 480.0), Some(50.0));
+        assert_eq!(automated_value(&t, device, &p, 2000.0), Some(100.0));
+        assert_eq!(automated_value(&t, DeviceId(1), &p, 480.0), None);
+        t.automation[0].mode = AutoMode::Off;
+        assert_eq!(automated_value(&t, device, &p, 480.0), None);
     }
 }

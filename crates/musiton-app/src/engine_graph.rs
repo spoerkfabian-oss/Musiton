@@ -232,12 +232,7 @@ fn params(
     out
 }
 
-/// Parameter scale used for track-volume automation (dB).
-pub const VOLUME_PARAM: musiton_core::params::ParamInfo =
-    musiton_core::params::ParamInfo::new(0, "Volume", -60.0, 6.0, 0.0).unit("dB");
-/// Parameter scale used for track-pan automation.
-pub const PAN_PARAM: musiton_core::params::ParamInfo =
-    musiton_core::params::ParamInfo::new(1, "Pan", -1.0, 1.0, 0.0);
+pub use musiton_project::{PAN_PARAM, VOLUME_PARAM};
 
 /// Everything a track's lanes can automate: (target, display name, parameter scale).
 pub fn automation_targets(

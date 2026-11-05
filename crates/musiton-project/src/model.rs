@@ -247,6 +247,13 @@ pub struct Track {
     pub automation: Vec<AutomationLane>,
 }
 
+/// Parameter scale of track-volume automation (−60…+6 dB).
+pub const VOLUME_PARAM: musiton_core::params::ParamInfo =
+    musiton_core::params::ParamInfo::new(0, "Volume", -60.0, 6.0, 0.0).unit("dB");
+/// Parameter scale of track-pan automation.
+pub const PAN_PARAM: musiton_core::params::ParamInfo =
+    musiton_core::params::ParamInfo::new(1, "Pan", -1.0, 1.0, 0.0);
+
 /// What an automation lane controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ParamTarget {
