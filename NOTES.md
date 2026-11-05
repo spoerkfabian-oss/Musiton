@@ -267,3 +267,9 @@ Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
 - After undoing a relink, the audio stays loaded until the project is reopened.
 - "Locate…" converts and copies on the UI thread (short freeze for long files).
 - The dropout counter rises in the cloud test machine even when idle (no real sound card); this needs checking on real hardware.
+
+**Owner decisions (later list)**
+- ASIO: not built (proprietary SDK). WASAPI stays the Windows backend.
+- Video track: build it with FFmpeg (LGPL, shipped as DLLs with the installer).
+- CLAP/LV2 hosting and the out-of-process sandbox are done together with VST3, at the very end.
+- Order: tempo ramps → MIDI CC lanes → step sequencer → sidechain routing UI → comping → time-stretch/warp → video track → VST3/CLAP/LV2/sandbox.
