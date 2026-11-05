@@ -122,6 +122,9 @@ pub struct Polysynth {
     last_pitch: Option<f32>,
     volume: LinearRamp,
     cutoff: LinearRamp,
+    /// Smoothed osc 1, osc 2 and noise levels and resonance (no zipper noise on knob moves).
+    levels: [LinearRamp; 3],
+    resonance: LinearRamp,
     dirty: bool,
     /// Samples rendered so far (filter updates happen on fixed song-relative samples, so
     /// output does not depend on block sizes).
@@ -147,6 +150,12 @@ impl Polysynth {
             last_pitch: None,
             volume: LinearRamp::new(0.7, 1),
             cutoff: LinearRamp::new(4_000.0, 1),
+            levels: [
+                LinearRamp::new(0.8, 1),
+                LinearRamp::new(0.0, 1),
+                LinearRamp::new(0.0, 1),
+            ],
+            resonance: LinearRamp::new(0.2, 1),
             dirty: true,
             counter: 0,
         }
@@ -234,14 +243,8 @@ impl Polysynth {
         let sr = self.sample_rate;
         let w1 = Wave::from_index(self.v(id::OSC1_WAVE));
         let w2 = Wave::from_index(self.v(id::OSC2_WAVE));
-        let (l1, l2, nl) = (
-            self.v(id::OSC1_LEVEL),
-            self.v(id::OSC2_LEVEL),
-            self.v(id::NOISE),
-        );
         let osc2_offset = self.v(id::OSC2_SEMI).round() + self.v(id::OSC2_DETUNE) / 100.0;
         let mode = FilterMode::from_index(self.v(id::FILTER_MODE));
-        let reso = self.v(id::RESONANCE);
         let env_amt = self.v(id::FILTER_ENV) * 6.0;
         let lfo_inc = self.v(id::LFO_RATE) / sr;
         let (lfo_pitch, lfo_cut) = (self.v(id::LFO_PITCH), self.v(id::LFO_CUTOFF) * 4.0);
@@ -253,12 +256,22 @@ impl Polysynth {
         };
         self.volume.set_target(self.v(id::VOLUME));
         self.cutoff.set_target(self.v(id::CUTOFF));
+        for (ramp, p) in self
+            .levels
+            .iter_mut()
+            .zip([id::OSC1_LEVEL, id::OSC2_LEVEL, id::NOISE])
+        {
+            ramp.set_target(self.values.get(p as usize).copied().unwrap_or(0.0));
+        }
+        self.resonance.set_target(self.v(id::RESONANCE));
 
         for i in from..to {
             let lfo = (self.lfo_phase * std::f32::consts::TAU).sin();
             self.lfo_phase = (self.lfo_phase + lfo_inc).fract();
             let base_cut = self.cutoff.next_value();
             let vol = self.volume.next_value() * HEADROOM;
+            let [l1, l2, nl] = self.levels.each_mut().map(LinearRamp::next_value);
+            let reso = self.resonance.next_value();
             let update = self.counter.is_multiple_of(FILTER_UPDATE as u64);
             self.counter += 1;
             let mut out = 0.0;
@@ -309,6 +322,18 @@ impl AudioNode for Polysynth {
         self.voices = vec![Voice::default(); VOICES];
         self.volume = LinearRamp::with_time(self.v(id::VOLUME), 20.0, sample_rate);
         self.cutoff = LinearRamp::with_time(self.v(id::CUTOFF), 20.0, sample_rate);
+        for (ramp, p) in self
+            .levels
+            .iter_mut()
+            .zip([id::OSC1_LEVEL, id::OSC2_LEVEL, id::NOISE])
+        {
+            *ramp = LinearRamp::with_time(
+                self.values.get(p as usize).copied().unwrap_or(0.0),
+                20.0,
+                sample_rate,
+            );
+        }
+        self.resonance = LinearRamp::with_time(self.v(id::RESONANCE), 20.0, sample_rate);
         self.dirty = true;
     }
 
