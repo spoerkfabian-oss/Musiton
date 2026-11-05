@@ -195,13 +195,16 @@ impl Arrange {
         );
 
         let preview = self.preview(project);
-        let n = project.tracks.len();
+        let rows = self.rows(project);
         let mut new_track_drop = None;
         egui::ScrollArea::vertical()
             .id_salt("tracks")
             .auto_shrink([false, false])
-            .show_rows(ui, ROW_HEIGHT, n, |ui, range| {
-                for i in range {
+            .show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
+                for r in range {
+                    let Some(&(i, extra)) = rows.get(r) else {
+                        continue;
+                    };
                     let Some(track) = project.tracks.get(i) else {
                         continue;
                     };
@@ -213,6 +216,20 @@ impl Arrange {
                         Rect::from_min_size(row.0.min, egui::vec2(HEADER_WIDTH, ROW_HEIGHT));
                     let lane =
                         Rect::from_min_max(Pos2::new(header.right(), row.0.top()), row.0.max);
+                    if let Some(target) = extra {
+                        let rects = (header, lane);
+                        self.extra_lane(
+                            ui,
+                            track,
+                            target,
+                            rects,
+                            &grid,
+                            playhead,
+                            project,
+                            &mut actions,
+                        );
+                        continue;
+                    }
                     self.header(ui, i, track, header, &mut actions);
                     let lane_input = LaneInput {
                         index: i,
@@ -989,7 +1006,8 @@ impl Arrange {
         }
 
         if self.automation_view && track.kind != TrackKind::Folder {
-            self.auto_lane(ui, track, rect, input.project, actions);
+            let target = self.shown_target(track.id);
+            self.auto_lane(ui, track, target, rect, input.project, actions);
         }
         if let Some(t) = input.playhead {
             let x = rect.left() + self.view.x(t);
@@ -1327,16 +1345,121 @@ impl Arrange {
         });
     }
 
+    /// Rows of the track list: (track index, extra automation lane). In automation view
+    /// every lane with points (other than the one shown over the clips) gets its own row
+    /// under its track.
+    fn rows(&self, project: &Project) -> Vec<(usize, Option<ParamTarget>)> {
+        let mut rows = Vec::with_capacity(project.tracks.len());
+        for (i, t) in project.tracks.iter().enumerate() {
+            rows.push((i, None));
+            if !self.automation_view || t.kind == TrackKind::Folder {
+                continue;
+            }
+            let shown = self.shown_target(t.id);
+            rows.extend(
+                t.automation
+                    .iter()
+                    .filter(|l| l.target != shown && !l.points.is_empty())
+                    .map(|l| (i, Some(l.target))),
+            );
+        }
+        rows
+    }
+
+    /// An extra automation row: name and mode on the left, the curve on the right.
+    #[allow(clippy::too_many_arguments)]
+    fn extra_lane(
+        &mut self,
+        ui: &mut Ui,
+        track: &Track,
+        target: ParamTarget,
+        (header, rect): (Rect, Rect),
+        grid: &[GridLine],
+        playhead: Option<f64>,
+        project: &Project,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let visuals = ui.visuals().clone();
+        let painter = ui.painter_at(header);
+        painter.rect_filled(
+            header.shrink2(egui::vec2(0.0, 1.0)),
+            2.0,
+            visuals.faint_bg_color,
+        );
+        let [r, g, b] = track.color;
+        painter.rect_filled(
+            Rect::from_min_size(header.min, egui::vec2(6.0, header.height())),
+            0.0,
+            Color32::from_rgb(r, g, b).gamma_multiply(0.5),
+        );
+        let name = self
+            .targets
+            .get(&track.id)
+            .and_then(|v| v.iter().find(|t| t.0 == target))
+            .map_or("?".to_owned(), |t| t.1.clone());
+        let lane = track.automation.iter().find(|l| l.target == target);
+        ui.scope_builder(
+            UiBuilder::new().max_rect(header.shrink2(egui::vec2(16.0, 6.0))),
+            |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(name).small()).truncate());
+                ui.horizontal(|ui| {
+                    let mut mode = lane.map_or(AutoMode::Read, |l| l.mode);
+                    let before = mode;
+                    egui::ComboBox::from_id_salt(("auto_mode", track.id, target))
+                        .width(54.0)
+                        .selected_text(AUTO_MODES.iter().find(|m| m.0 == mode).map_or("", |m| m.1))
+                        .show_ui(ui, |ui| {
+                            for (m, n) in AUTO_MODES {
+                                ui.selectable_value(&mut mode, m, n);
+                            }
+                        });
+                    if mode != before {
+                        actions.push(Self::auto_edit(track, target, |l| l.mode = mode));
+                    }
+                    if ui
+                        .small_button("Show")
+                        .on_hover_text("Show this lane over the clips")
+                        .clicked()
+                    {
+                        self.auto_target.insert(track.id, target);
+                    }
+                });
+            },
+        );
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(
+            rect.shrink2(egui::vec2(0.0, 1.0)),
+            0.0,
+            visuals.extreme_bg_color,
+        );
+        let base = visuals.weak_text_color();
+        for l in grid.iter().filter(|l| l.level >= 2) {
+            painter.vline(
+                rect.left() + l.x,
+                rect.y_range(),
+                Stroke::new(1.0, base.gamma_multiply(0.25)),
+            );
+        }
+        self.auto_lane(ui, track, target, rect, project, actions);
+        if let Some(t) = playhead {
+            let x = rect.left() + self.view.x(t);
+            if rect.x_range().contains(x) {
+                ui.painter_at(rect)
+                    .vline(x, rect.y_range(), Stroke::new(1.0, playhead_color()));
+            }
+        }
+    }
+
     /// Automation curve over a track lane, with point editing.
     fn auto_lane(
         &mut self,
         ui: &mut Ui,
         track: &Track,
+        target: ParamTarget,
         rect: Rect,
         project: &Project,
         actions: &mut Vec<UiAction>,
     ) {
-        let target = self.shown_target(track.id);
         let info = self
             .targets
             .get(&track.id)
@@ -1413,7 +1536,7 @@ impl Arrange {
         // Hover value.
         let resp = ui.interact(
             rect,
-            ui.scope_id().with(("auto", track.id)),
+            ui.scope_id().with(("auto", track.id, target)),
             Sense::click_and_drag(),
         );
         let hit = |p: Pos2| {

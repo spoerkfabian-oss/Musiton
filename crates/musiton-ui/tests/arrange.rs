@@ -223,3 +223,62 @@ fn clicking_a_lane_in_automation_view_adds_a_point() {
     // Snap is "Bar": two bars in → tick 7680.
     assert_eq!(lanes[0].points[0].tick, musiton_core::Tick(7680));
 }
+
+#[test]
+fn other_lanes_with_points_get_their_own_editable_row() {
+    use musiton_core::Tick;
+    use musiton_project::{AutoMode, AutoPoint, AutomationLane, ParamTarget};
+    let ctx = egui::Context::default();
+    let mut p = project_with_tracks(1);
+    let point = |tick| AutoPoint {
+        tick: Tick(tick),
+        value: 0.5,
+        curve: 0.0,
+    };
+    p.tracks[0].automation.push(AutomationLane {
+        target: ParamTarget::Pan,
+        points: vec![point(0), point(960)],
+        mode: AutoMode::Read,
+    });
+    let mut arrange = Arrange::new();
+    arrange.automation_view = true;
+    frame(&ctx, &mut arrange, &mut p, vec![]);
+    let x = 8.0 + musiton_ui::arrange::HEADER_WIDTH + 2.0 * 120.0;
+    let mut pan_edit_y = None;
+    let mut volume_edit_y = None;
+    for y in (60..200).step_by(6) {
+        let pos = Pos2::new(x, y as f32);
+        let mk = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            &ctx,
+            &mut arrange,
+            &mut p,
+            vec![egui::Event::PointerMoved(pos), mk(true)],
+        );
+        for a in frame(&ctx, &mut arrange, &mut p, vec![mk(false)]) {
+            if let UiAction::Edit {
+                edit: Edit::SetAutomation { lanes, .. },
+                ..
+            } = a
+            {
+                let pan = lanes.iter().find(|l| l.target == ParamTarget::Pan).unwrap();
+                if pan.points.len() == 3 {
+                    pan_edit_y.get_or_insert(y);
+                } else if lanes.iter().any(|l| l.target == ParamTarget::Volume) {
+                    volume_edit_y.get_or_insert(y);
+                }
+            }
+        }
+    }
+    // The volume lane is drawn over the clips, the pan lane in the row below it.
+    let (v, pan) = (
+        volume_edit_y.expect("volume row"),
+        pan_edit_y.expect("pan row"),
+    );
+    assert!(pan > v, "pan row {pan} should be below volume row {v}");
+}

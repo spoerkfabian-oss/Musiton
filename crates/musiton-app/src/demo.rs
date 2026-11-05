@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use musiton_core::ids::{ClipId, DeviceId, TrackId};
 use musiton_core::{TempoMap, Tick, PPQ};
-use musiton_devices::effects::{compressor, delay, reverb};
+use musiton_devices::effects::{compressor, delay, reverb, utility};
 use musiton_devices::polysynth::id;
 use musiton_project::{
     Clip, DeviceSlot, MidiClip, Note, Project, ProjectError, Track, TrackKind, EXTENSION,
@@ -20,7 +20,8 @@ const STEP: i64 = PPQ / 4;
 struct Part {
     name: &'static str,
     color: [u8; 3],
-    gain_db: f32,
+    /// Level correction (dB) by a utility device at the end of the chain.
+    trim_db: f32,
     synth: &'static [(u64, f32)],
     effects: Vec<(&'static str, Vec<(u64, f32)>)>,
     notes: Vec<Note>,
@@ -58,7 +59,7 @@ fn chord(bar: usize) -> [u8; 3] {
 
 fn parts() -> Vec<Part> {
     let kick = pattern(36, 120, &[0, 4, 8, 12], STEP);
-    let snare = pattern(38, 100, &[4, 12], STEP);
+    let snare = pattern(50, 100, &[4, 12], STEP);
     let hats = pattern(42, 70, &[0, 2, 4, 6, 8, 10, 12, 14], STEP / 2);
     let bass: Vec<Note> = (0..BARS as usize)
         .flat_map(|bar| {
@@ -86,7 +87,7 @@ fn parts() -> Vec<Part> {
         Part {
             name: "Kick",
             color: [220, 90, 80],
-            gain_db: 0.0,
+            trim_db: 11.0,
             synth: &[
                 (id::OSC1_WAVE, 3.0),
                 (id::OSC1_LEVEL, 1.0),
@@ -102,12 +103,12 @@ fn parts() -> Vec<Part> {
         Part {
             name: "Snare",
             color: [230, 160, 70],
-            gain_db: -6.0,
+            trim_db: 15.0,
             synth: &[
-                (id::OSC1_LEVEL, 0.0),
+                (id::OSC1_WAVE, 2.0),
+                (id::OSC1_LEVEL, 0.5),
                 (id::NOISE, 1.0),
-                (id::FILTER_MODE, 2.0),
-                (id::CUTOFF, 2_500.0),
+                (id::CUTOFF, 7_000.0),
                 (id::FILTER_ENV, 0.0),
                 (id::AMP_D, 0.15),
                 (id::AMP_S, 0.0),
@@ -119,7 +120,7 @@ fn parts() -> Vec<Part> {
         Part {
             name: "Hi-hat",
             color: [230, 210, 90],
-            gain_db: -14.0,
+            trim_db: 12.0,
             synth: &[
                 (id::OSC1_LEVEL, 0.0),
                 (id::NOISE, 1.0),
@@ -136,7 +137,7 @@ fn parts() -> Vec<Part> {
         Part {
             name: "Bass",
             color: [90, 170, 230],
-            gain_db: -4.0,
+            trim_db: 2.0,
             synth: preset("Bass"),
             effects: vec![("eq", Vec::new())],
             notes: bass,
@@ -144,7 +145,7 @@ fn parts() -> Vec<Part> {
         Part {
             name: "Pad",
             color: [150, 110, 220],
-            gain_db: -12.0,
+            trim_db: -5.0,
             synth: preset("Warm pad"),
             effects: vec![("reverb", vec![(reverb::id::MIX, 0.35)])],
             notes: pad,
@@ -152,7 +153,7 @@ fn parts() -> Vec<Part> {
         Part {
             name: "Lead",
             color: [100, 200, 140],
-            gain_db: -10.0,
+            trim_db: 7.0,
             synth: preset("Pluck"),
             effects: vec![("delay", vec![(delay::id::MIX, 0.25)])],
             notes: lead,
@@ -185,6 +186,8 @@ fn build(copies: usize) -> Project {
                 synth.set_param(p, Some(v));
             }
             let mut devices = vec![synth];
+            let mut trim = DeviceSlot::builtin(DeviceId(project.alloc_id()), "utility");
+            trim.set_param(utility::id::GAIN, Some(part.trim_db));
             for (type_id, params) in &part.effects {
                 let mut fx = DeviceSlot::builtin(DeviceId(project.alloc_id()), type_id);
                 for &(p, v) in params {
@@ -192,6 +195,7 @@ fn build(copies: usize) -> Project {
                 }
                 devices.push(fx);
             }
+            devices.push(trim);
             let mut track = Track {
                 id: track_id,
                 name: if copies == 1 {
@@ -210,7 +214,7 @@ fn build(copies: usize) -> Project {
                 })],
                 ..Track::default()
             };
-            track.strip.gain_db = part.gain_db - 10.0 * (copies as f32).log10();
+            track.strip.gain_db = -10.0 * (copies as f32).log10();
             project.tracks.push(track);
         }
     }
