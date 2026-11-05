@@ -71,7 +71,14 @@ pub fn decode_file(path: &Path) -> Result<AudioData, AudioFileError> {
 
     let mut out = AudioData::default();
     let mut interleaved: Vec<f32> = Vec::new();
-    while let Some(packet) = format.next_packet().map_err(dec)? {
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            // Some formats (e.g. FLAC) report the end of the file as an I/O error.
+            Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(dec(e)),
+        };
         if packet.track_id != track_id {
             continue;
         }
