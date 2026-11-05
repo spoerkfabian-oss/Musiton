@@ -511,3 +511,42 @@ fn device_params_undo_back_to_default() {
         )
         .is_err());
 }
+
+#[test]
+fn automation_values_interpolate_with_curves() {
+    use musiton_project::{AutoMode, AutoPoint, AutomationLane, ParamTarget};
+    let lane = AutomationLane {
+        target: ParamTarget::Volume,
+        mode: AutoMode::Read,
+        points: vec![
+            AutoPoint {
+                tick: Tick(0),
+                value: 0.0,
+                curve: 0.0,
+            },
+            AutoPoint {
+                tick: Tick(1000),
+                value: 1.0,
+                curve: 1.0,
+            },
+            AutoPoint {
+                tick: Tick(2000),
+                value: 0.0,
+                curve: 0.0,
+            },
+        ],
+    };
+    assert_eq!(lane.value_at(-5.0), Some(0.0));
+    assert!((lane.value_at(500.0).unwrap() - 0.5).abs() < 1e-6);
+    // Curve 1 → x^4 on the second segment going down from 1 to 0.
+    assert!((lane.value_at(1500.0).unwrap() - (1.0 - 0.5f32.powi(4))).abs() < 1e-5);
+    assert_eq!(lane.value_at(9999.0), Some(0.0));
+    assert_eq!(
+        AutomationLane {
+            points: vec![],
+            ..lane
+        }
+        .value_at(0.0),
+        None
+    );
+}

@@ -4,7 +4,8 @@ use musiton_core::ids::{ClipId, DeviceId, MarkerId, TrackId};
 use musiton_core::{TempoMap, Tick, TimeSig};
 
 use crate::{
-    Asset, ChannelStrip, Clip, DeviceSlot, Marker, OutputRoute, Project, RecordSetup, Track,
+    Asset, AutomationLane, ChannelStrip, Clip, DeviceSlot, Marker, OutputRoute, Project,
+    RecordSetup, Track,
 };
 
 /// Most undo steps kept.
@@ -169,6 +170,13 @@ pub enum Edit {
         /// New (after apply: old) value.
         value: Option<f32>,
     },
+    /// Replace a track's automation lanes.
+    SetAutomation {
+        /// Which track.
+        track: TrackId,
+        /// New (after apply: old) lanes.
+        lanes: Vec<AutomationLane>,
+    },
     /// Change the punch range.
     SetPunch(Option<(Tick, Tick)>),
     /// Add an audio file to the asset list.
@@ -201,6 +209,7 @@ impl Edit {
             Edit::SetOutput { .. } => "Output routing",
             Edit::SetRecord { .. } => "Record setup",
             Edit::SetDevices { .. } => "Devices",
+            Edit::SetAutomation { .. } => "Automation",
             Edit::SetDeviceParam { .. } => "Parameter change",
             Edit::SetPunch(_) => "Punch range",
             Edit::Batch(edits) => edits.last().map_or("Edit", Edit::label),
@@ -213,6 +222,7 @@ impl Edit {
             (Edit::RenameTrack { id: a, .. }, Edit::RenameTrack { id: b, .. })
             | (Edit::SetTrackColor { id: a, .. }, Edit::SetTrackColor { id: b, .. }) => a == b,
             (Edit::SetStrip { track: a, .. }, Edit::SetStrip { track: b, .. }) => a == b,
+            (Edit::SetAutomation { track: a, .. }, Edit::SetAutomation { track: b, .. }) => a == b,
             (
                 Edit::SetDeviceParam {
                     track: a,
@@ -428,6 +438,10 @@ impl Edit {
                 std::mem::swap(&mut t.record, record);
             }
             Edit::SetPunch(range) => std::mem::swap(&mut p.punch_range, range),
+            Edit::SetAutomation { track, lanes } => {
+                let t = p.track_mut(*track).ok_or(EditError::NoTrack)?;
+                std::mem::swap(&mut t.automation, lanes);
+            }
             Edit::SetDevices { track, devices } => {
                 let t = p.track_mut(*track).ok_or(EditError::NoTrack)?;
                 std::mem::swap(&mut t.devices, devices);

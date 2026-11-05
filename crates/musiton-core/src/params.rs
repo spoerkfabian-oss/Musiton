@@ -142,6 +142,17 @@ impl ParamInfo {
     }
 }
 
+/// Shapes `x` (0..1) of an automation segment by `curve` (−1..1): 0 = straight,
+/// positive bends late, negative bends early.
+pub fn curve_shape(x: f32, curve: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if curve >= 0.0 {
+        x.powf(1.0 + curve * 3.0)
+    } else {
+        1.0 - (1.0 - x).powf(1.0 - curve * 3.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -243,6 +243,82 @@ pub struct Track {
     pub record: RecordSetup,
     /// Device chain: the instrument first (instrument tracks), then effects.
     pub devices: Vec<DeviceSlot>,
+    /// Automation lanes.
+    pub automation: Vec<AutomationLane>,
+}
+
+/// What an automation lane controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ParamTarget {
+    /// Track volume (fader, dB).
+    Volume,
+    /// Track pan.
+    Pan,
+    /// A parameter of a device on the track.
+    Device {
+        /// The device.
+        device: DeviceId,
+        /// Parameter id.
+        param: u64,
+    },
+}
+
+/// How a lane behaves during playback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AutoMode {
+    /// Ignored.
+    Off,
+    /// Plays back.
+    #[default]
+    Read,
+    /// While playing, records the control continuously (overwrites).
+    Write,
+    /// Records only while the control is being moved.
+    Touch,
+    /// Starts recording when the control is moved and keeps the last value until stop.
+    Latch,
+}
+
+/// A point on an automation lane.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AutoPoint {
+    /// Position.
+    pub tick: Tick,
+    /// Value, normalized 0..1 (knob position).
+    pub value: f32,
+    /// Shape of the segment to the next point: 0 = straight, >0 bends late, <0 bends early.
+    #[serde(default)]
+    pub curve: f32,
+}
+
+/// Automation of one parameter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutomationLane {
+    /// What it controls.
+    pub target: ParamTarget,
+    /// Points sorted by tick.
+    pub points: Vec<AutoPoint>,
+    /// Playback/recording mode.
+    #[serde(default)]
+    pub mode: AutoMode,
+}
+
+impl AutomationLane {
+    /// Normalized value at `tick` (`None` without points).
+    pub fn value_at(&self, tick: f64) -> Option<f32> {
+        let first = self.points.first()?;
+        let i = self.points.partition_point(|p| (p.tick.0 as f64) <= tick);
+        if i == 0 {
+            return Some(first.value);
+        }
+        let a = self.points.get(i - 1)?;
+        let Some(b) = self.points.get(i) else {
+            return Some(a.value);
+        };
+        let span = (b.tick.0 - a.tick.0).max(1) as f64;
+        let x = ((tick - a.tick.0 as f64) / span) as f32;
+        Some(a.value + (b.value - a.value) * musiton_core::params::curve_shape(x, a.curve))
+    }
 }
 
 /// One device in a track's chain.
@@ -352,6 +428,7 @@ impl Default for Track {
             output: OutputRoute::Master,
             record: RecordSetup::default(),
             devices: Vec::new(),
+            automation: Vec::new(),
         }
     }
 }
