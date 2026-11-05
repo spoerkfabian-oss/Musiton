@@ -86,10 +86,10 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** a 32-bit float export (no dither, no normalize) is bit-identical to the offline golden render of the same project.
 
 ## Phase 14 — Polish & release
-- [ ] Settings page, themes, full shortcut list, tooltips
-- [ ] Crash recovery from autosave; error dialogs instead of panics
-- [ ] Performance pass (profile with 32 tracks + plugins on the test PC); optional: parallel graph processing
-- [ ] Windows installer via `cargo-packager`, `.musiton` file association, app icon
+- [x] Settings page, themes, full shortcut list, tooltips
+- [x] Crash recovery from autosave; error dialogs instead of panics
+- [x] Performance pass (profile with 32 tracks + plugins on the test PC); optional: parallel graph processing
+- [x] Windows installer via `cargo-packager`, `.musiton` file association, app icon
 **Done when:** fresh Windows install → installer → open demo project → plays without dropouts.
 
 ## Later (not v1)

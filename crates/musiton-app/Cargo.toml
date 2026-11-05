@@ -34,5 +34,32 @@ musiton-devices.workspace = true
 [lints]
 workspace = true
 
+# Windows installer: `cargo packager --release -p musiton-app` (see .github/workflows/installer.yml).
+[package.metadata.packager]
+product-name = "Musiton"
+identifier = "org.musiton.daw"
+publisher = "Musiton"
+description = "Musiton – a digital audio workstation"
+category = "Music"
+icons = ["assets/icon.ico", "assets/icon-256.png"]
+formats = ["nsis"]
+before-packaging-command = "cargo build --release -p musiton-app"
+binaries-dir = "../../target/release"
+out-dir = "../../target/packages"
+binaries = [{ path = "musiton", main = true }]
+
+[package.metadata.packager.nsis]
+installer-icon = "assets/icon.ico"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["musiton"]
+name = "Musiton project"
+description = "Musiton project"
+mime-type = "application/x-musiton"
+role = "Editor"
+
 [dev-dependencies]
 hound = "3.5"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

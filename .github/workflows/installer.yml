@@ -1,0 +1,30 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: installer
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+      - name: Build installer
+        working-directory: crates/musiton-app
+        run: cargo packager --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Musiton-setup
+          path: target/packages/*.exe
+          if-no-files-found: error

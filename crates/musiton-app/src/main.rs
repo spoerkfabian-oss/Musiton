@@ -6,6 +6,7 @@ mod assets;
 mod audio_dialog;
 mod auto_record;
 mod browser;
+mod demo;
 mod document;
 mod engine_graph;
 mod export;
@@ -57,7 +58,11 @@ fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
-            .with_inner_size([1280.0, 800.0]),
+            .with_inner_size([1280.0, 800.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
+                    .unwrap_or_default(),
+            ),
         ..Default::default()
     };
     eframe::run_native(
@@ -928,6 +933,21 @@ impl App {
         recent.parent()?.parent().map(Path::to_path_buf)
     }
 
+    /// Copies the demo song to the Documents folder (first time) and opens it.
+    fn open_demo(&mut self) {
+        let parent = directories::UserDirs::new()
+            .and_then(|d| d.document_dir().map(Path::to_path_buf))
+            .or_else(Settings::data_dir);
+        let Some(parent) = parent else {
+            self.error = Some("No folder found to put the demo song in.".into());
+            return;
+        };
+        match demo::install(&parent) {
+            Ok(path) => self.request(Pending::Open(Some(path))),
+            Err(e) => self.error = Some(format!("Could not create the demo song: {e}")),
+        }
+    }
+
     fn open_path(&mut self, path: &Path) {
         match Document::open(path) {
             Ok(doc) => {
@@ -1105,6 +1125,9 @@ impl App {
                 }
             });
             ui.menu_button("Help", |ui| {
+                if ui.button("Open demo song").clicked() {
+                    self.open_demo();
+                }
                 if ui.button("Keyboard shortcuts").clicked() {
                     self.show_shortcuts = true;
                 }

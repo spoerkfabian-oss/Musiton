@@ -195,11 +195,16 @@ impl Transport {
 
             if ui
                 .toggle_value(&mut project.metronome, "Metronome")
+                .on_hover_text("Click track while playing and recording")
                 .changed()
             {
                 out.settings_changed = true;
             }
-            if ui.toggle_value(&mut project.loop_enabled, "Loop").changed() {
+            if ui
+                .toggle_value(&mut project.loop_enabled, "Loop")
+                .on_hover_text("Repeat the loop range (L)")
+                .changed()
+            {
                 out.settings_changed = true;
             }
             let bar = project.time_sig.ticks_per_bar();
@@ -226,7 +231,8 @@ impl Transport {
 
             ui.toggle_value(&mut self.overdub, "Overdub")
                 .on_hover_text("MIDI recording: add to existing notes instead of replacing them");
-            ui.toggle_value(&mut self.test_tone, "Test tone");
+            ui.toggle_value(&mut self.test_tone, "Test tone")
+                .on_hover_text("Play a quiet 440 Hz sine to check the audio output");
         });
 
         if let Some(e) = engine {

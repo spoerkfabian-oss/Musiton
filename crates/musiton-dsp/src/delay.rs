@@ -22,7 +22,10 @@ impl DelayLine {
         if let Some(s) = self.buf.get_mut(self.write) {
             *s = x;
         }
-        self.write = (self.write + 1) % self.buf.len().max(1);
+        self.write += 1;
+        if self.write >= self.buf.len() {
+            self.write = 0;
+        }
     }
 
     /// Reads `delay` samples back (fractional, linear interpolation; ≥ 1).
@@ -32,10 +35,13 @@ impl DelayLine {
         let d = delay.clamp(1.0, (len - 2) as f32);
         let pos = self.write as f32 - d;
         let pos = if pos < 0.0 { pos + len as f32 } else { pos };
-        let i = pos.floor() as usize % len;
-        let frac = pos - pos.floor();
+        // `pos` is never negative here, so truncating is flooring (and avoids a libm call).
+        let whole = pos as usize;
+        let frac = pos - whole as f32;
+        let i = if whole >= len { whole - len } else { whole };
+        let j = if i + 1 >= len { 0 } else { i + 1 };
         let a = self.buf.get(i).copied().unwrap_or(0.0);
-        let b = self.buf.get((i + 1) % len).copied().unwrap_or(0.0);
+        let b = self.buf.get(j).copied().unwrap_or(0.0);
         a + (b - a) * frac
     }
 

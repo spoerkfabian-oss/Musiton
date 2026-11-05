@@ -224,3 +224,24 @@ Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
 
 **Fixed bugs**
 - Importing some FLAC files failed: symphonia reports the end of a FLAC stream as an I/O "unexpected end of file"; the decoder now treats that as the end.
+
+## Phase 14 — Polish & release
+**Built**
+- Options → Settings…: theme (dark/light/system), interface size, autosave interval (0 = off), and a link to the audio/MIDI devices.
+- Crash recovery: a lock file (`session.lock` in the data folder) exists while Musiton runs. If it is still there at the next start and the autosave is newer than the saved project, a dialog offers to restore it.
+- Error dialogs instead of panics: a panic in the interface is caught. Musiton then makes an emergency save to the autosave file and shows a dialog with a "Quit" button. The lock is kept, so the next start offers the backup. Errors when opening a project now appear in a dialog.
+- Help → Open demo song: a generated 8-bar song (drums, bass, pad and lead made with the built-in synth and effects) is written to `Documents/Musiton Demo/` on first use and opened. It needs no audio files.
+- App icon: in the window, in the exe (`build.rs` + `winresource`) and in the installer.
+- Windows installer: `cargo-packager` (NSIS) config in `crates/musiton-app/Cargo.toml`, with a `.musiton` file association. The GitHub workflow "Windows installer" builds it on every push to `main` and offers it as the download artifact "Musiton-setup".
+- Full shortcut list (now including the piano roll) and more tooltips.
+
+**Performance**
+- `demo::tests::perf_32_tracks` (ignored; run with `cargo test --release -p musiton-app perf -- --ignored --nocapture`) renders 36 synth tracks with effects (12 reverbs, 6 delays, 6 EQs, 6 compressors). The 2.8 GHz Xeon cloud machine used about 39 % of one core for real-time playback, so the i7-3770 should be in the same range.
+- Profiling (callgrind): reverb ≈ 25 %, polysynth ≈ 25 %, EQ ≈ 6 %. Integer divisions and `floorf` library calls were removed from the delay line.
+- Builds for x86-64 now target `x86-64-v2` (`.cargo/config.toml`). Every Windows 11 PC supports it.
+- Parallel graph processing was not needed at this load and was not built.
+
+**Known issues**
+- Running two Musiton windows at the same time can make the second one offer a wrong "recovery" (shared lock file).
+- A panic on the audio thread is not caught (the real-time rules forbid panics there; the debug build aborts).
+- The installer has not been tested on a fresh Windows PC by the owner yet.

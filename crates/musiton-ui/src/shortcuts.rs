@@ -36,6 +36,20 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Shift+mouse wheel", "Scroll timeline sideways"),
     ("Mouse wheel", "Scroll tracks"),
     ("Click on ruler", "Move playhead"),
+    ("Piano roll: Ctrl+A", "Select all notes"),
+    ("Piano roll: Delete", "Delete selected notes"),
+    ("Piano roll: Ctrl+D", "Duplicate selected notes"),
+    ("Piano roll: Q", "Quantize notes to the grid"),
+    (
+        "Piano roll: Up / Down",
+        "Transpose selected notes by a semitone",
+    ),
+    (
+        "Piano roll: Shift+Up / Shift+Down",
+        "Transpose selected notes by an octave",
+    ),
+    ("Piano roll: click (Draw tool)", "Add a note"),
+    ("Piano roll: right-click note", "Delete note"),
 ];
 
 /// Draws the shortcut table.
