@@ -67,9 +67,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** each effect has a golden test and a CPU bench; dragging any knob while playing is click-free.
 
 ## Phase 11 — Automation
-- [ ] Lanes per track for any parameter (built-in + later VST3), draw/edit points, curves
-- [ ] Modes: read / write / touch / latch; record knob moves
-- [ ] Applied at 32-sample sub-blocks
+- [x] Lanes per track for any parameter (built-in + later VST3), draw/edit points, curves
+- [x] Modes: read / write / touch / latch; record knob moves
+- [x] Applied at 32-sample sub-blocks
 **Done when:** a filter sweep drawn as automation renders identically every time.
 
 ## Phase 12 — VST3 hosting

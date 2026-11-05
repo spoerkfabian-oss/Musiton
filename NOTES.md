@@ -192,3 +192,18 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 
 **Fixed bugs**
 - `cargo build --release` failed: `musiton_engine::rt::AllocDisabler` only exists in debug builds of `assert_no_alloc`. Release builds now use the system allocator under the same name; CI additionally runs `cargo check --release`.
+
+## Phase 11 — Automation
+**Built:** Automation lanes per track for volume, pan and every instrument/effect parameter (VST3 parameters will plug into the same `ParamTarget::Device`). Automation view (toolbar "Automation" or `A`): each track shows one lane over its clips; the header chooses the parameter (lanes with points are marked `*`) and the mode. Click adds a point (snapped), drag moves it, right-click deletes, Alt+drag bends the curve between two points. Modes: Off, Read, Write (records the control from playback start until stop), Touch (records while the control is held, then returns to the existing curve), Latch (records from the first touch until stop). Recording takes moves of knobs in the device panel and of mixer fader/pan; each take is one undo step; recorded points are thinned.
+
+**Decisions**
+- Points store normalized values (0..1 knob position) with a curve per segment (power curve, −1…1); `curve_shape` lives in `musiton-core` so engine and project share it.
+- The engine gets compiled lanes (`EngineCommand::SetAutomation`: node, parameter, scale) and applies them every 32 samples **at song positions that are multiples of 32**, evaluated at the aligned position even when a device buffer splits the block. Together with block-size-independent device internals (polysynth filter updates and reverb updates now use running sample counters) a render no longer depends on the buffer size.
+- While a lane is recording, its playback is suspended and the moved control is sent straight to the engine; the static setting is not changed. Lanes in Read mode override the static value during playback and when stopped.
+- Track volume automation uses −60…+6 dB.
+
+**Acceptance:** `engine_graph::tests::automated_filter_sweep_renders_identically` — polysynth cutoff sweep drawn as automation (with curves) renders sample-identically with 256-, 100- and 333-sample callbacks and matches `crates/musiton-app/tests/golden/filter_sweep.wav`. Plus recorder tests (touch returns, latch holds, write + thinning) and a UI test (click in automation view adds a point).
+
+**Known issues**
+- Lanes are shown one at a time per track (no stacked lanes under the track yet).
+- The device-panel knob shows the static value, not the automated one, while automation plays.
