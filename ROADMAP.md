@@ -81,8 +81,8 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 **Done when:** Vital, Surge XT, Dexed and Valhalla Supermassive load, play, automate, save and reload correctly; a crashing plugin during scan doesn't affect the DAW.
 
 ## Phase 13 — Export
-- [ ] Offline bounce of full song / loop / selection → WAV (16/24/32f) / FLAC; dither for 16-bit; normalize option
-- [ ] Stem export (per track/bus); faster than realtime with progress bar
+- [x] Offline bounce of full song / loop / selection → WAV (16/24/32f) / FLAC; dither for 16-bit; normalize option
+- [x] Stem export (per track/bus); faster than realtime with progress bar
 **Done when:** a 32-bit float export (no dither, no normalize) is bit-identical to the offline golden render of the same project.
 
 ## Phase 14 — Polish & release

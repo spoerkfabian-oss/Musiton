@@ -207,3 +207,20 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Known issues**
 - Lanes are shown one at a time per track (no stacked lanes under the track yet).
 - The device-panel knob shows the static value, not the automated one, while automation plays.
+
+## Order change (owner decision)
+Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
+
+## Phase 13 — Export
+**Built:** File → Export audio…: range (whole song = start to end of the last clip, loop, or selected clips), tail in seconds for reverb/delay, WAV 16/24-bit, WAV 32-bit float, FLAC 16/24-bit, normalize to −0.1 dBFS, TPDF dither for 16-bit, stems (one file per track, named "<song> - <track>.<ext>"). Exports run on a worker thread, faster than real time, with a progress window and Cancel.
+
+**Decisions**
+- An export renders the project with the same graph code as playback (metronome off, no loop, automation on) starting from the range start; notes that began before the range start are not played.
+- Stems are "solo renders": each track is soloed in turn, so buses it feeds (and solo-safe buses) are included in its stem.
+- Dither uses a fixed-seed generator, so exports are reproducible. Normalizing needs the whole render in memory (≈ 23 MB per stereo minute).
+- FLAC: `flacenc` (pure Rust). It writes the last (shorter) block size as STREAMINFO minimum; we patch it to the fixed block size as the FLAC spec requires (symphonia refused those files otherwise).
+
+**Acceptance:** `export::tests::float_export_is_bit_identical_to_the_golden_render` — the 32-bit float export of the automated filter-sweep project equals `tests/golden/filter_sweep.wav` sample for sample. Also: format round trips (16-bit within dither, 24-bit within ½ LSB, float exact), normalize, stems + cancel.
+
+**Fixed bugs**
+- Importing some FLAC files failed: symphonia reports the end of a FLAC stream as an I/O "unexpected end of file"; the decoder now treats that as the end.
