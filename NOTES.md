@@ -220,7 +220,7 @@ Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
 - Dither uses a fixed-seed generator, so exports are reproducible. Normalizing needs the whole render in memory (≈ 23 MB per stereo minute).
 - FLAC: `flacenc` (pure Rust). It writes the last (shorter) block size as STREAMINFO minimum; we patch it to the fixed block size as the FLAC spec requires (symphonia refused those files otherwise).
 
-**Acceptance:** `export::tests::float_export_is_bit_identical_to_the_golden_render` — the 32-bit float export of the automated filter-sweep project equals `tests/golden/filter_sweep.wav` sample for sample. Also: format round trips (16-bit within dither, 24-bit within ½ LSB, float exact), normalize, stems + cancel.
+**Acceptance:** `export::tests::float_export_is_bit_identical_to_the_render` — the 32-bit float export of the automated filter-sweep project equals a direct render sample for sample, and `tests/golden/filter_sweep.wav` within 1e-4 (libm differs slightly between Windows and Linux; the first version demanded bit equality with the Linux golden and failed on Windows CI). Also: format round trips (16-bit within dither, 24-bit within ½ LSB, float exact), normalize, stems + cancel.
 
 **Fixed bugs**
 - Importing some FLAC files failed: symphonia reports the end of a FLAC stream as an I/O "unexpected end of file"; the decoder now treats that as the end.
