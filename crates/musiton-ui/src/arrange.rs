@@ -129,6 +129,8 @@ pub struct Arrange {
     box_select: Option<(Pos2, HashSet<ClipId>)>,
     /// Screen rectangles of the clips drawn this frame (for rubber-band selection).
     clip_rects: Vec<(ClipId, Rect)>,
+    /// Folder tracks shown closed (their tracks are hidden).
+    collapsed: HashSet<TrackId>,
 }
 
 impl Arrange {
@@ -237,7 +239,12 @@ impl Arrange {
                         );
                         continue;
                     }
-                    self.header(ui, i, track, header, &mut actions);
+                    let indent = FOLDER_INDENT * project.depth(track.id) as f32;
+                    let header = Rect::from_min_max(
+                        Pos2::new(header.left() + indent, header.top()),
+                        header.max,
+                    );
+                    self.header(ui, i, track, project, header, &mut actions);
                     if let Some(level) = input.levels.get(&track.id) {
                         header_meter(ui, header, *level);
                     }
@@ -413,6 +420,7 @@ impl Arrange {
                 ("+ Audio", TrackKind::Audio),
                 ("+ Instrument", TrackKind::Instrument),
                 ("+ Bus", TrackKind::Bus),
+                ("+ Folder", TrackKind::Folder),
             ] {
                 if ui.button(label).clicked() {
                     actions.push(self.add_track(project, kind));
@@ -464,6 +472,15 @@ impl Arrange {
             .selected
             .and_then(|s| project.track_index(s))
             .map_or(project.tracks.len(), |i| i + 1);
+        // New tracks go into the selected folder (or the folder of the selected track).
+        let parent = self.selected.and_then(|s| {
+            let t = project.track(s)?;
+            if t.kind == TrackKind::Folder {
+                Some(t.id)
+            } else {
+                t.parent
+            }
+        });
         self.selected = Some(id);
         UiAction::Edit {
             edit: Edit::AddTrack {
@@ -473,6 +490,7 @@ impl Arrange {
                     name: format!("{base} {n}"),
                     kind,
                     color: TRACK_COLORS[project.tracks.len() % TRACK_COLORS.len()],
+                    parent,
                     ..Track::default()
                 }),
             },
@@ -720,6 +738,7 @@ impl Arrange {
         ui: &mut Ui,
         index: usize,
         track: &Track,
+        project: &Project,
         rect: Rect,
         actions: &mut Vec<UiAction>,
     ) {
@@ -796,31 +815,46 @@ impl Arrange {
         if resp.double_clicked() {
             self.renaming = Some((track.id, track.name.clone()));
         }
-        resp.context_menu(|ui| self.header_menu(ui, track, actions));
+        resp.context_menu(|ui| self.header_menu(ui, project, track, actions));
 
         let inner = rect.shrink2(egui::vec2(12.0, 6.0));
         ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
-            ui.horizontal(|ui| match &mut self.renaming {
-                Some((rid, text)) if *rid == track.id => {
-                    let edit = ui.add(egui::TextEdit::singleline(text).desired_width(130.0));
-                    edit.request_focus();
-                    let enter = ui.input(|i| i.key_pressed(Key::Enter));
-                    let escape = ui.input(|i| i.key_pressed(Key::Escape));
-                    if escape {
-                        self.renaming = None;
-                    } else if edit.lost_focus() || enter {
-                        let name = text.trim().to_owned();
-                        if !name.is_empty() && name != track.name {
-                            actions.push(UiAction::Edit {
-                                edit: Edit::RenameTrack { id: track.id, name },
-                                merge: false,
-                            });
-                        }
-                        self.renaming = None;
+            ui.horizontal(|ui| {
+                if track.kind == TrackKind::Folder {
+                    let open = !self.collapsed.contains(&track.id);
+                    let r = folder_toggle(ui, open).on_hover_text(if open {
+                        "Close folder"
+                    } else {
+                        "Open folder"
+                    });
+                    if r.clicked() && !self.collapsed.remove(&track.id) {
+                        self.collapsed.insert(track.id);
                     }
                 }
-                _ => {
-                    ui.add(egui::Label::new(egui::RichText::new(&track.name).strong()).truncate());
+                match &mut self.renaming {
+                    Some((rid, text)) if *rid == track.id => {
+                        let edit = ui.add(egui::TextEdit::singleline(text).desired_width(130.0));
+                        edit.request_focus();
+                        let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                        let escape = ui.input(|i| i.key_pressed(Key::Escape));
+                        if escape {
+                            self.renaming = None;
+                        } else if edit.lost_focus() || enter {
+                            let name = text.trim().to_owned();
+                            if !name.is_empty() && name != track.name {
+                                actions.push(UiAction::Edit {
+                                    edit: Edit::RenameTrack { id: track.id, name },
+                                    merge: false,
+                                });
+                            }
+                            self.renaming = None;
+                        }
+                    }
+                    _ => {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&track.name).strong()).truncate(),
+                        );
+                    }
                 }
             });
             if self.automation_view && track.kind != TrackKind::Folder {
@@ -870,7 +904,13 @@ impl Arrange {
         });
     }
 
-    fn header_menu(&mut self, ui: &mut Ui, track: &Track, actions: &mut Vec<UiAction>) {
+    fn header_menu(
+        &mut self,
+        ui: &mut Ui,
+        project: &Project,
+        track: &Track,
+        actions: &mut Vec<UiAction>,
+    ) {
         if ui.button("Rename (F2)").clicked() {
             self.renaming = Some((track.id, track.name.clone()));
             ui.close();
@@ -905,6 +945,7 @@ impl Arrange {
             }
         });
         ui.separator();
+        self.folder_menu(ui, project, track, actions);
         if ui.button("Delete track (Del)").clicked() {
             actions.push(UiAction::Edit {
                 edit: Edit::RemoveTrack {
@@ -1373,6 +1414,44 @@ impl Arrange {
         });
     }
 
+    /// "Move into folder" / "Move out of folder" entries of the track menu.
+    fn folder_menu(
+        &mut self,
+        ui: &mut Ui,
+        project: &Project,
+        track: &Track,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let folders: Vec<&Track> = project
+            .tracks
+            .iter()
+            .filter(|f| {
+                f.kind == TrackKind::Folder
+                    && f.id != track.id
+                    && Some(f.id) != track.parent
+                    && !project.ancestors(f.id).any(|a| a == track.id)
+            })
+            .collect();
+        if !folders.is_empty() {
+            ui.menu_button("Move into folder", |ui| {
+                for f in folders {
+                    if ui.button(&f.name).clicked() {
+                        actions.extend(move_into_folder(project, track.id, Some(f.id)));
+                        ui.close();
+                    }
+                }
+            });
+        }
+        if let Some(parent) = track.parent {
+            if ui.button("Move out of folder").clicked() {
+                let outer = project.track(parent).and_then(|p| p.parent);
+                actions.extend(move_into_folder(project, track.id, outer));
+                ui.close();
+            }
+        }
+        ui.separator();
+    }
+
     /// Rubber-band selection: selects the clips the rectangle touches while dragging.
     fn update_box_select(&mut self, ui: &Ui) {
         let Some((origin, base)) = &self.box_select else {
@@ -1410,6 +1489,9 @@ impl Arrange {
     fn rows(&self, project: &Project) -> Vec<(usize, Option<ParamTarget>)> {
         let mut rows = Vec::with_capacity(project.tracks.len());
         for (i, t) in project.tracks.iter().enumerate() {
+            if project.ancestors(t.id).any(|f| self.collapsed.contains(&f)) {
+                continue;
+            }
             rows.push((i, None));
             if !self.automation_view || t.kind == TrackKind::Folder {
                 continue;
@@ -1689,5 +1771,132 @@ fn header_meter(ui: &Ui, header: Rect, level: [f32; 2]) {
             Color32::from_rgb(90, 200, 110)
         };
         painter.rect_filled(bar, 0.0, color);
+    }
+}
+
+/// Open/close triangle of a folder header.
+fn folder_toggle(ui: &mut Ui, open: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
+    let c = rect.center();
+    let color = if resp.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+    let pts = if open {
+        vec![
+            c + egui::vec2(-5.0, -3.0),
+            c + egui::vec2(5.0, -3.0),
+            c + egui::vec2(0.0, 4.0),
+        ]
+    } else {
+        vec![
+            c + egui::vec2(-3.0, -5.0),
+            c + egui::vec2(4.0, 0.0),
+            c + egui::vec2(-3.0, 5.0),
+        ]
+    };
+    ui.painter()
+        .add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+    resp
+}
+
+/// Header indentation per folder level.
+const FOLDER_INDENT: f32 = 14.0;
+
+/// One undo step that moves `id` into `folder` (`None` = top level) and places it after
+/// the folder's last track, so folder contents stay together.
+fn move_into_folder(project: &Project, id: TrackId, folder: Option<TrackId>) -> Option<UiAction> {
+    let from = project.track_index(id)?;
+    let mut edits = Vec::new();
+    if let Some(f) = folder {
+        let end = project
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.id != id && (t.id == f || project.ancestors(t.id).any(|a| a == f)))
+            .map(|(i, _)| i)
+            .max()?;
+        let to = if from < end { end } else { end + 1 };
+        if to != from {
+            edits.push(Edit::MoveTrack { from, to });
+        }
+    }
+    edits.push(Edit::SetParent { id, parent: folder });
+    Some(UiAction::Edit {
+        edit: Edit::Batch(edits),
+        merge: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use musiton_project::UndoStack;
+
+    fn project() -> Project {
+        let mut p = Project::default();
+        for (id, kind) in [
+            (1, TrackKind::Audio),
+            (2, TrackKind::Folder),
+            (3, TrackKind::Audio),
+            (4, TrackKind::Audio),
+        ] {
+            p.tracks.push(Track {
+                id: TrackId(id),
+                kind,
+                ..Track::default()
+            });
+        }
+        p.tracks[2].parent = Some(TrackId(2));
+        p
+    }
+
+    fn apply(p: &mut Project, a: Option<UiAction>) {
+        let Some(UiAction::Edit { edit, .. }) = a else {
+            panic!("no edit");
+        };
+        UndoStack::default().perform(p, edit, false).unwrap();
+    }
+
+    fn order(p: &Project) -> Vec<(u64, Option<u64>)> {
+        p.tracks
+            .iter()
+            .map(|t| (t.id.0, t.parent.map(|x| x.0)))
+            .collect()
+    }
+
+    #[test]
+    fn moving_into_a_folder_places_the_track_after_its_contents() {
+        // Track 1 (above the folder) moves in after track 3.
+        let mut p = project();
+        let a = move_into_folder(&p, TrackId(1), Some(TrackId(2)));
+        apply(&mut p, a);
+        assert_eq!(
+            order(&p),
+            [(2, None), (3, Some(2)), (1, Some(2)), (4, None)]
+        );
+        // Track 4 (below) moves in at the end of the folder (it already is).
+        let mut p = project();
+        let a = move_into_folder(&p, TrackId(4), Some(TrackId(2)));
+        apply(&mut p, a);
+        assert_eq!(
+            order(&p),
+            [(1, None), (2, None), (3, Some(2)), (4, Some(2))]
+        );
+        // Moving out keeps the position.
+        let a = move_into_folder(&p, TrackId(3), None);
+        apply(&mut p, a);
+        assert_eq!(order(&p), [(1, None), (2, None), (3, None), (4, Some(2))]);
+    }
+
+    #[test]
+    fn closed_folders_hide_their_tracks() {
+        let p = project();
+        let mut a = Arrange::new();
+        assert_eq!(a.rows(&p).len(), 4);
+        a.collapsed.insert(TrackId(2));
+        let shown: Vec<usize> = a.rows(&p).into_iter().map(|(i, _)| i).collect();
+        assert_eq!(shown, [0, 1, 3]);
     }
 }

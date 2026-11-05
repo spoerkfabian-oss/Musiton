@@ -124,21 +124,46 @@ impl Project {
         let Some(t) = self.track(id) else {
             return false;
         };
-        if t.strip.mute {
+        // Muting or soloing a folder mutes or solos everything inside it.
+        let in_line = |id: TrackId| std::iter::once(id).chain(self.ancestors(id));
+        let flag =
+            |id: TrackId, f: fn(&Track) -> bool| in_line(id).any(|a| self.track(a).is_some_and(f));
+        if flag(id, |t| t.strip.mute) {
             return false;
         }
         let soloed: Vec<TrackId> = self
             .tracks
             .iter()
-            .filter(|t| t.strip.solo)
+            .filter(|t| t.kind != TrackKind::Folder && flag(t.id, |t| t.strip.solo))
             .map(|t| t.id)
             .collect();
-        if soloed.is_empty() || t.strip.solo || t.strip.solo_safe {
+        if soloed.is_empty() || soloed.contains(&id) || t.strip.solo_safe {
             return true;
         }
         soloed
             .iter()
             .any(|&s| self.feeds(s, id) || self.feeds(id, s))
+    }
+
+    /// The folders `id` sits in, innermost first (stops at missing ids and cycles).
+    pub fn ancestors(&self, id: TrackId) -> impl Iterator<Item = TrackId> + '_ {
+        let mut current = self.track(id).and_then(|t| t.parent);
+        let mut seen = 0;
+        std::iter::from_fn(move || {
+            let p = current?;
+            seen += 1;
+            if seen > self.tracks.len() {
+                return None;
+            }
+            let t = self.track(p)?;
+            current = t.parent;
+            Some(p)
+        })
+    }
+
+    /// Folder depth of `id` (0 = top level).
+    pub fn depth(&self, id: TrackId) -> usize {
+        self.ancestors(id).count()
     }
 
     /// The track with `id`, mutable.
@@ -245,6 +270,9 @@ pub struct Track {
     pub devices: Vec<DeviceSlot>,
     /// Automation lanes.
     pub automation: Vec<AutomationLane>,
+    /// The folder track this track sits in (`None` = top level).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<TrackId>,
 }
 
 /// Parameter scale of track-volume automation (−60…+6 dB).
@@ -436,6 +464,7 @@ impl Default for Track {
             record: RecordSetup::default(),
             devices: Vec::new(),
             automation: Vec::new(),
+            parent: None,
         }
     }
 }

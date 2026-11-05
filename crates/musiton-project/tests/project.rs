@@ -550,3 +550,40 @@ fn automation_values_interpolate_with_curves() {
         None
     );
 }
+
+#[test]
+fn folder_mute_and_solo_apply_to_the_tracks_inside() {
+    let mut p = Project::default();
+    let track = |id, kind, parent: Option<u64>| Track {
+        id: TrackId(id),
+        kind,
+        parent: parent.map(TrackId),
+        ..Track::default()
+    };
+    p.tracks = vec![
+        track(1, TrackKind::Folder, None),
+        track(2, TrackKind::Folder, Some(1)),
+        track(3, TrackKind::Audio, Some(2)),
+        track(4, TrackKind::Audio, Some(1)),
+        track(5, TrackKind::Audio, None),
+    ];
+    assert_eq!(p.depth(TrackId(3)), 2);
+    assert_eq!(
+        p.ancestors(TrackId(3)).collect::<Vec<_>>(),
+        [TrackId(2), TrackId(1)]
+    );
+    // Solo the inner folder: only track 3 plays.
+    p.track_mut(TrackId(2)).unwrap().strip.solo = true;
+    for (id, heard) in [(3, true), (4, false), (5, false)] {
+        assert_eq!(p.audible(TrackId(id)), heard, "track {id}");
+    }
+    p.track_mut(TrackId(2)).unwrap().strip.solo = false;
+    // Mute the outer folder: 3 and 4 are silent, 5 plays.
+    p.track_mut(TrackId(1)).unwrap().strip.mute = true;
+    for (id, heard) in [(3, false), (4, false), (5, true)] {
+        assert_eq!(p.audible(TrackId(id)), heard, "track {id}");
+    }
+    // A cycle (corrupt file) does not hang.
+    p.track_mut(TrackId(1)).unwrap().parent = Some(TrackId(3));
+    assert!(p.depth(TrackId(3)) <= p.tracks.len());
+}

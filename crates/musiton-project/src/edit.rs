@@ -184,6 +184,13 @@ pub enum Edit {
     SetPunch(Option<(Tick, Tick)>),
     /// Add an audio file to the asset list.
     AddAsset(Option<Asset>),
+    /// Put a track into a folder (`None` = top level).
+    SetParent {
+        /// The track.
+        id: TrackId,
+        /// Its folder.
+        parent: Option<TrackId>,
+    },
     /// Point an audio file entry at another file (relative to the project folder).
     RelinkAsset {
         /// The asset.
@@ -217,6 +224,7 @@ impl Edit {
             Edit::MoveClipToTrack { .. } => "Move clip",
             Edit::AddAsset(_) => "Import audio",
             Edit::RelinkAsset { .. } => "Relink audio file",
+            Edit::SetParent { .. } => "Move into folder",
             Edit::SetOutput { .. } => "Output routing",
             Edit::SetRecord { .. } => "Record setup",
             Edit::SetDevices { .. } => "Devices",
@@ -449,6 +457,10 @@ impl Edit {
                 std::mem::swap(&mut t.record, record);
             }
             Edit::SetPunch(range) => std::mem::swap(&mut p.punch_range, range),
+            Edit::SetParent { id, parent } => {
+                let t = p.track_mut(*id).ok_or(EditError::NoTrack)?;
+                std::mem::swap(&mut t.parent, parent);
+            }
             Edit::RelinkAsset { id, file } => {
                 let a = p
                     .assets
