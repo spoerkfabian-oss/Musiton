@@ -8,6 +8,13 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Home", "Return to start"),
     ("L", "Loop on/off"),
     ("R", "Record on armed tracks"),
+    ("A", "Automation view on/off"),
+    ("Click (automation view)", "Add automation point"),
+    ("Right-click point", "Delete automation point"),
+    (
+        "Alt+drag (automation view)",
+        "Bend the curve between two points",
+    ),
     ("Ctrl+N", "New project"),
     ("Ctrl+O", "Open project"),
     ("Ctrl+S", "Save"),

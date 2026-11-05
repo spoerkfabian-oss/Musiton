@@ -7,8 +7,12 @@ use std::sync::Arc;
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, UiBuilder};
 use musiton_core::audio::Peaks;
 use musiton_core::ids::{AssetId, ClipId, TrackId};
+use musiton_core::params::ParamInfo;
 use musiton_core::{Tick, TimeSig};
-use musiton_project::{ChannelStrip, Clip, Edit, Project, Track, TrackKind};
+use musiton_project::{
+    AutoMode, AutoPoint, AutomationLane, ChannelStrip, Clip, Edit, ParamTarget, Project, Track,
+    TrackKind,
+};
 
 use crate::clip_edit;
 use crate::clip_view::{paint_clip, ClipPaint, TITLE_HEIGHT};
@@ -52,6 +56,23 @@ pub struct ArrangeInput<'a> {
     pub playing: bool,
     /// Waveform peaks of loaded audio files.
     pub peaks: &'a HashMap<AssetId, Arc<Peaks>>,
+    /// What each track can automate: (target, name, parameter scale).
+    pub auto_targets: &'a HashMap<TrackId, Vec<AutoTarget>>,
+}
+
+/// An automatable parameter: (target, display name, scale).
+pub type AutoTarget = (ParamTarget, String, ParamInfo);
+
+/// An automation point being dragged (previewed; committed on release).
+#[derive(Debug, Clone)]
+struct AutoDrag {
+    track: TrackId,
+    target: ParamTarget,
+    /// Index of the dragged point, or of the segment's left point when bending.
+    index: usize,
+    bend: bool,
+    origin: Pos2,
+    orig: Vec<AutoPoint>,
 }
 
 /// What a clip drag changes.
@@ -95,6 +116,13 @@ pub struct Arrange {
     pending: Vec<UiAction>,
     /// A MIDI clip to create (track, start, length) once the project is mutable again.
     pending_clip: Option<(TrackId, Tick, Tick)>,
+    /// Show and edit automation instead of clips.
+    pub automation_view: bool,
+    /// The lane shown per track in automation view.
+    auto_target: HashMap<TrackId, ParamTarget>,
+    auto_drag: Option<AutoDrag>,
+    /// Automatable parameters per track (copied from the input each frame).
+    targets: HashMap<TrackId, Vec<AutoTarget>>,
 }
 
 impl Arrange {
@@ -119,6 +147,12 @@ impl Arrange {
             playhead, playing, ..
         } = *input;
         let mut actions = Vec::new();
+        self.targets.clone_from(input.auto_targets);
+        if !crate::text_input_focused(ui.ctx())
+            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::A))
+        {
+            self.automation_view = !self.automation_view;
+        }
         self.shortcuts(ui, project, playhead, &mut actions);
         self.toolbar(ui, project, &mut actions);
 
@@ -366,6 +400,8 @@ impl Arrange {
                         ui.selectable_value(&mut self.snap, s, s.label());
                     }
                 });
+            ui.toggle_value(&mut self.automation_view, "Automation")
+                .on_hover_text("Show and edit automation (A)");
             ui.toggle_value(&mut self.follow, "Follow")
                 .on_hover_text("Scroll with the playhead");
             ui.separator();
@@ -759,6 +795,10 @@ impl Arrange {
                     ui.add(egui::Label::new(egui::RichText::new(&track.name).strong()).truncate());
                 }
             });
+            if self.automation_view && track.kind != TrackKind::Folder {
+                self.auto_header(ui, track, actions);
+                return;
+            }
             ui.horizontal(|ui| {
                 ui.weak(kind_label(track.kind));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -939,13 +979,18 @@ impl Arrange {
             if !dragged.contains(&clip.id()) {
                 self.paint(&painter, clip, crect, rect, track, input);
             }
-            self.clip_interaction(ui, input, clip, crect);
+            if !self.automation_view {
+                self.clip_interaction(ui, input, clip, crect);
+            }
         }
         for (_, clip) in input.preview.iter().filter(|(row, _)| *row == input.index) {
             let crect = self.clip_rect(clip, clip_area);
             self.paint(&painter, clip, crect, rect, track, input);
         }
 
+        if self.automation_view && track.kind != TrackKind::Folder {
+            self.auto_lane(ui, track, rect, input.project, actions);
+        }
         if let Some(t) = input.playhead {
             let x = rect.left() + self.view.x(t);
             if rect.x_range().contains(x) {
@@ -1185,5 +1230,259 @@ fn set_strip(id: TrackId, strip: ChannelStrip) -> UiAction {
             strip,
         },
         merge: false,
+    }
+}
+
+const AUTO_MODES: [(AutoMode, &str); 5] = [
+    (AutoMode::Off, "Off"),
+    (AutoMode::Read, "Read"),
+    (AutoMode::Write, "Write"),
+    (AutoMode::Touch, "Touch"),
+    (AutoMode::Latch, "Latch"),
+];
+
+/// Point handle radius.
+const POINT_R: f32 = 4.0;
+
+impl Arrange {
+    /// The target shown for `track` (default: volume).
+    fn shown_target(&self, track: TrackId) -> ParamTarget {
+        self.auto_target
+            .get(&track)
+            .copied()
+            .unwrap_or(ParamTarget::Volume)
+    }
+
+    fn auto_edit(
+        track: &Track,
+        target: ParamTarget,
+        change: impl FnOnce(&mut AutomationLane),
+    ) -> UiAction {
+        let mut lanes = track.automation.clone();
+        let i = match lanes.iter().position(|l| l.target == target) {
+            Some(i) => i,
+            None => {
+                lanes.push(AutomationLane {
+                    target,
+                    points: Vec::new(),
+                    mode: AutoMode::Read,
+                });
+                lanes.len() - 1
+            }
+        };
+        if let Some(l) = lanes.get_mut(i) {
+            change(l);
+            l.points.sort_by_key(|p| p.tick);
+        }
+        UiAction::Edit {
+            edit: Edit::SetAutomation {
+                track: track.id,
+                lanes,
+            },
+            merge: false,
+        }
+    }
+
+    /// Header row in automation view: parameter and mode.
+    fn auto_header(&mut self, ui: &mut Ui, track: &Track, actions: &mut Vec<UiAction>) {
+        let targets = self.targets.get(&track.id).cloned().unwrap_or_default();
+        let mut target = self.shown_target(track.id);
+        let lane = track.automation.iter().find(|l| l.target == target);
+        ui.horizontal(|ui| {
+            let name = targets
+                .iter()
+                .find(|t| t.0 == target)
+                .map_or("?".to_owned(), |t| t.1.clone());
+            egui::ComboBox::from_id_salt(("auto_target", track.id))
+                .width(110.0)
+                .selected_text(name)
+                .show_ui(ui, |ui| {
+                    for (t, n, _) in &targets {
+                        let used = track
+                            .automation
+                            .iter()
+                            .any(|l| l.target == *t && !l.points.is_empty());
+                        let label = if used {
+                            format!("● {n}").replace('●', "*")
+                        } else {
+                            n.clone()
+                        };
+                        ui.selectable_value(&mut target, *t, label);
+                    }
+                });
+            self.auto_target.insert(track.id, target);
+            let mut mode = lane.map_or(AutoMode::Read, |l| l.mode);
+            let before = mode;
+            egui::ComboBox::from_id_salt(("auto_mode", track.id))
+                .width(54.0)
+                .selected_text(AUTO_MODES.iter().find(|m| m.0 == mode).map_or("", |m| m.1))
+                .show_ui(ui, |ui| {
+                    for (m, n) in AUTO_MODES {
+                        ui.selectable_value(&mut mode, m, n);
+                    }
+                });
+            if mode != before {
+                actions.push(Self::auto_edit(track, target, |l| l.mode = mode));
+            }
+        });
+    }
+
+    /// Automation curve over a track lane, with point editing.
+    fn auto_lane(
+        &mut self,
+        ui: &mut Ui,
+        track: &Track,
+        rect: Rect,
+        project: &Project,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let target = self.shown_target(track.id);
+        let info = self
+            .targets
+            .get(&track.id)
+            .and_then(|v| v.iter().find(|t| t.0 == target))
+            .map(|t| t.2);
+        let stored = track.automation.iter().find(|l| l.target == target);
+        let dragging = self
+            .auto_drag
+            .clone()
+            .filter(|d| d.track == track.id && d.target == target);
+        let mut points = stored.map(|l| l.points.clone()).unwrap_or_default();
+        let (pointer, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        let area = rect.shrink2(egui::vec2(0.0, 6.0));
+        let y_of = |v: f32| area.bottom() - v.clamp(0.0, 1.0) * area.height();
+        let v_of = |y: f32| ((area.bottom() - y) / area.height()).clamp(0.0, 1.0);
+        let x_of = |t: i64| rect.left() + self.view.x(t as f64);
+        let sig = project.time_sig;
+
+        // Drag preview.
+        if let (Some(d), Some(p)) = (dragging.as_ref(), pointer) {
+            points = d.orig.clone();
+            if d.bend {
+                let dv = (d.origin.y - p.y) / area.height();
+                if let Some(pt) = points.get_mut(d.index) {
+                    pt.curve = (pt.curve + dv * 2.0).clamp(-1.0, 1.0);
+                }
+            } else if let Some(pt) = points.get_mut(d.index) {
+                let tick = self.view.tick(p.x - rect.left()).max(0.0);
+                pt.tick = self.snap.round(tick, sig);
+                pt.value = v_of(p.y);
+            }
+            points.sort_by_key(|p| p.tick);
+        }
+
+        // Draw: dim the clips, then the curve and the points.
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::from_black_alpha(110));
+        let color = Color32::from_rgb(255, 170, 60);
+        let lane = AutomationLane {
+            target,
+            points: points.clone(),
+            mode: stored.map_or(AutoMode::Read, |l| l.mode),
+        };
+        if !points.is_empty() {
+            let mut line = Vec::new();
+            let mut x = rect.left();
+            while x <= rect.right() {
+                let tick = self.view.tick(x - rect.left());
+                if let Some(v) = lane.value_at(tick) {
+                    line.push(Pos2::new(x, y_of(v)));
+                }
+                x += 3.0;
+            }
+            painter.add(egui::Shape::line(line, Stroke::new(1.5, color)));
+            for p in &points {
+                let c = Pos2::new(x_of(p.tick.0), y_of(p.value));
+                if rect.x_range().contains(c.x) {
+                    painter.circle_filled(c, POINT_R, color);
+                }
+            }
+        } else {
+            painter.text(
+                Pos2::new(rect.left() + 8.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Click to add automation points",
+                egui::FontId::proportional(11.0),
+                Color32::from_gray(150),
+            );
+        }
+        if lane.mode == AutoMode::Off {
+            painter.rect_filled(rect, 0.0, Color32::from_black_alpha(80));
+        }
+
+        // Hover value.
+        let resp = ui.interact(
+            rect,
+            ui.scope_id().with(("auto", track.id)),
+            Sense::click_and_drag(),
+        );
+        let hit = |p: Pos2| {
+            points.iter().position(|pt| {
+                (x_of(pt.tick.0) - p.x).abs() <= POINT_R + 2.0
+                    && (y_of(pt.value) - p.y).abs() <= POINT_R + 2.0
+            })
+        };
+        if let (Some(p), Some(info)) = (resp.hover_pos(), info) {
+            let v = lane
+                .value_at(self.view.tick(p.x - rect.left()))
+                .unwrap_or(v_of(p.y));
+            resp.clone().on_hover_text(format!(
+                "{}\nClick: add point · drag: move · right-click: delete · Alt+drag: bend",
+                info.format(info.from_normalized(v))
+            ));
+        }
+        if resp.secondary_clicked() {
+            if let Some(i) = resp.interact_pointer_pos().and_then(hit) {
+                actions.push(Self::auto_edit(track, target, |l| {
+                    if i < l.points.len() {
+                        l.points.remove(i);
+                    }
+                }));
+            }
+        }
+        if resp.clicked() {
+            if let Some(p) = resp.interact_pointer_pos().filter(|p| hit(*p).is_none()) {
+                let tick = self
+                    .snap
+                    .round(self.view.tick(p.x - rect.left()).max(0.0), sig);
+                let value = v_of(p.y);
+                actions.push(Self::auto_edit(track, target, |l| {
+                    l.points.retain(|pt| pt.tick != tick);
+                    l.points.push(AutoPoint {
+                        tick,
+                        value,
+                        curve: 0.0,
+                    });
+                }));
+            }
+        }
+        if resp.drag_started() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let alt = ui.input(|i| i.modifiers.alt);
+                let start = match hit(p) {
+                    Some(i) if !alt => Some((i, false)),
+                    _ if alt => {
+                        let tick = self.view.tick(p.x - rect.left());
+                        let i = points.partition_point(|pt| (pt.tick.0 as f64) <= tick);
+                        (i > 0 && i < points.len()).then(|| (i - 1, true))
+                    }
+                    _ => None,
+                };
+                if let Some((index, bend)) = start {
+                    self.auto_drag = Some(AutoDrag {
+                        track: track.id,
+                        target,
+                        index,
+                        bend,
+                        origin: p,
+                        orig: points.clone(),
+                    });
+                }
+            }
+        }
+        if dragging.is_some() && !down {
+            self.auto_drag = None;
+            actions.push(Self::auto_edit(track, target, |l| l.points = points));
+        }
     }
 }

@@ -39,10 +39,12 @@ fn frame(
     let mut out = ctx.run_ui(input(events), |ui| {
         egui::CentralPanel::default_margins().show(ui, |ui| {
             let peaks = Default::default();
+            let targets = Default::default();
             let input = ArrangeInput {
                 playhead: Some(1234.0),
                 playing: true,
                 peaks: &peaks,
+                auto_targets: &targets,
             };
             actions = arrange.ui(ui, p, &input);
         });
@@ -66,10 +68,12 @@ fn fifty_tracks_render_well_within_a_60fps_frame() {
         let mut out = ctx.run_ui(input(vec![]), |ui| {
             egui::CentralPanel::default_margins().show(ui, |ui| {
                 let peaks = Default::default();
+                let targets = Default::default();
                 let input = ArrangeInput {
                     playhead: Some(1234.0),
                     playing: true,
                     peaks: &peaks,
+                    auto_targets: &targets,
                 };
                 arrange.ui(ui, &mut p, &input);
             });
@@ -171,4 +175,51 @@ fn clicking_the_ruler_locates_to_snapped_position() {
     }
     // Default snap is "Bar": 1.4 bars rounds to bar 2 (tick 3840).
     assert_eq!(found, Some(musiton_core::Tick(3840)));
+}
+
+#[test]
+fn clicking_a_lane_in_automation_view_adds_a_point() {
+    let ctx = egui::Context::default();
+    let mut p = project_with_tracks(1);
+    let mut arrange = Arrange::new();
+    arrange.automation_view = true;
+    let click = |ctx: &egui::Context, arrange: &mut Arrange, p: &mut Project, pos: Pos2| {
+        let mk = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            ctx,
+            arrange,
+            p,
+            vec![egui::Event::PointerMoved(pos), mk(true)],
+        );
+        frame(ctx, arrange, p, vec![mk(false)])
+    };
+    frame(&ctx, &mut arrange, &mut p, vec![]);
+    let mut got = None;
+    // The first track row starts below toolbar and ruler; probe downwards.
+    for y in (60..140).step_by(6) {
+        let x = 8.0 + musiton_ui::arrange::HEADER_WIDTH + 2.0 * 120.0;
+        for a in click(&ctx, &mut arrange, &mut p, Pos2::new(x, y as f32)) {
+            if let UiAction::Edit {
+                edit: Edit::SetAutomation { lanes, .. },
+                ..
+            } = a
+            {
+                got = Some(lanes);
+            }
+        }
+        if got.is_some() {
+            break;
+        }
+    }
+    let lanes = got.expect("no automation edit");
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].target, musiton_project::ParamTarget::Volume);
+    assert_eq!(lanes[0].points.len(), 1);
+    // Snap is "Bar": two bars in → tick 7680.
+    assert_eq!(lanes[0].points[0].tick, musiton_core::Tick(7680));
 }
