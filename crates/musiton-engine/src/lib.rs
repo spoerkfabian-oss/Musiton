@@ -4,6 +4,7 @@
 //! The engine is driven either by a device callback (see `musiton-io`) or offline by
 //! [`render_offline`] — both run exactly the same code.
 
+pub mod automation;
 mod command;
 mod engine;
 pub mod graph;

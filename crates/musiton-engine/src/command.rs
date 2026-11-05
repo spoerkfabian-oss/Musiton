@@ -47,6 +47,8 @@ pub enum EngineCommand {
         /// Velocity 0..1.
         vel: f32,
     },
+    /// Replace the automation (node indices refer to the graph sent before it).
+    SetAutomation(Option<Box<crate::automation::Automation>>),
     /// Replace the running graph (cross-faded, click-free).
     SwapGraph(Box<CompiledGraph>),
     /// Hand new data to a node of the running graph (e.g. a MIDI track's notes) without

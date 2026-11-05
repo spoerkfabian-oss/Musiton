@@ -123,6 +123,9 @@ pub struct Polysynth {
     volume: LinearRamp,
     cutoff: LinearRamp,
     dirty: bool,
+    /// Samples rendered so far (filter updates happen on fixed song-relative samples, so
+    /// output does not depend on block sizes).
+    counter: u64,
 }
 
 impl Default for Polysynth {
@@ -145,6 +148,7 @@ impl Polysynth {
             volume: LinearRamp::new(0.7, 1),
             cutoff: LinearRamp::new(4_000.0, 1),
             dirty: true,
+            counter: 0,
         }
     }
 
@@ -255,7 +259,8 @@ impl Polysynth {
             self.lfo_phase = (self.lfo_phase + lfo_inc).fract();
             let base_cut = self.cutoff.next_value();
             let vol = self.volume.next_value() * HEADROOM;
-            let update = i % FILTER_UPDATE == 0;
+            let update = self.counter.is_multiple_of(FILTER_UPDATE as u64);
+            self.counter += 1;
             let mut out = 0.0;
             for v in &mut self.voices {
                 if !v.amp.is_active() {

@@ -7,6 +7,7 @@ use musiton_core::{SamplePos, TempoMap, Tick, TimeSig};
 use musiton_dsp::osc::SineOsc;
 use musiton_dsp::smooth::LinearRamp;
 
+use crate::automation::AUTOMATION_BLOCK;
 use crate::command::{EngineCommand, Garbage, InputSource};
 use crate::graph::CompiledGraph;
 use crate::node::{Event, EventKind, ProcessContext};
@@ -78,6 +79,7 @@ pub fn create(sample_rate: f32, max_block: usize) -> (EngineHandle, Engine) {
         input_started: false,
         probe: None,
         midi_in: None,
+        automation: None,
         live: Vec::with_capacity(MAX_LIVE_EVENTS),
     };
     (handle, engine)
@@ -168,6 +170,7 @@ pub struct Engine {
     /// Frames since the latency-measurement click was played.
     probe: Option<u64>,
     midi_in: Option<Box<rtrb::Consumer<[u8; 3]>>>,
+    automation: Option<Box<crate::automation::Automation>>,
     /// Live MIDI for the next segment (cleared after it was handed to the graph).
     live: Vec<Event>,
 }
@@ -332,6 +335,11 @@ impl Engine {
                     }
                 }
                 EngineCommand::SetRecording(on) => self.recording = on,
+                EngineCommand::SetAutomation(new) => {
+                    if let Some(old) = std::mem::replace(&mut self.automation, new) {
+                        self.retire(old);
+                    }
+                }
                 EngineCommand::SetMidiInput(new) => {
                     if let Some(old) = std::mem::replace(&mut self.midi_in, new) {
                         self.retire(old);
@@ -382,7 +390,50 @@ impl Engine {
         }
     }
 
+    /// Renders a segment, split at multiples of [`AUTOMATION_BLOCK`] song samples when there
+    /// is automation (parameters are updated at the start of each piece).
     fn render_segment(&mut self, out: &mut [f32], channels: usize, frames: usize) {
+        let has_automation = self.automation.as_ref().is_some_and(|a| !a.0.is_empty());
+        if !has_automation {
+            self.render_part(out, channels, frames, self.pos);
+            return;
+        }
+        let mut done = 0;
+        while done < frames {
+            let pos = if self.playing {
+                self.pos + done as u64
+            } else {
+                self.pos
+            };
+            let to_boundary = (AUTOMATION_BLOCK - pos % AUTOMATION_BLOCK) as usize;
+            let n = (frames - done).min(to_boundary);
+            // Always evaluate at the aligned block start, even when a device buffer
+            // boundary splits the block, so the result doesn't depend on buffer sizes.
+            self.apply_automation(pos - pos % AUTOMATION_BLOCK);
+            let Some(part) = out.get_mut(done * channels..(done + n) * channels) else {
+                break;
+            };
+            self.render_part(part, channels, n, pos);
+            done += n;
+        }
+    }
+
+    /// Sets every automated parameter to its value at song position `pos`.
+    fn apply_automation(&mut self, pos: u64) {
+        let (Some(auto), Some(graph)) = (self.automation.as_ref(), self.graph.as_mut()) else {
+            return;
+        };
+        let tick = self
+            .tempo
+            .sample_to_tick(pos as f64, f64::from(self.sample_rate));
+        for lane in &auto.0 {
+            if let Some(v) = lane.value_at(tick) {
+                graph.set_param(lane.node, lane.param, v);
+            }
+        }
+    }
+
+    fn render_part(&mut self, out: &mut [f32], channels: usize, frames: usize, pos: u64) {
         let in_ch = self.read_input(frames);
         let sr = f64::from(self.sample_rate);
         let punch = self.punch.map(|(a, b)| {
@@ -393,7 +444,7 @@ impl Engine {
             sample_rate: self.sample_rate,
             frames,
             playing: self.playing,
-            sample_pos: self.pos,
+            sample_pos: pos,
             tempo: &self.tempo,
             time_sig: self.time_sig,
             metronome: self.metronome,

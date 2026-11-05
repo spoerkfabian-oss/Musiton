@@ -56,6 +56,11 @@ pub struct Reverb {
     width: OnePole,
     decay: OnePole,
     damping: OnePole,
+    /// Samples processed so far (block-size independent update points).
+    counter: u64,
+    /// Feedback gains and damping coefficient from the last update.
+    gains: [f32; LINES],
+    damp_coef: f32,
 }
 
 impl Default for Reverb {
@@ -72,6 +77,9 @@ impl Default for Reverb {
             width: OnePole::default(),
             decay: OnePole::default(),
             damping: OnePole::default(),
+            counter: 0,
+            gains: [0.0; LINES],
+            damp_coef: 0.0,
         }
     }
 }
@@ -132,13 +140,12 @@ impl AudioNode for Reverb {
         let sr = self.sample_rate;
         self.decay.set(self.v(id::DECAY));
         self.damping.set(self.v(id::DAMPING));
-        let mut damp = 0.0;
         self.size.set(self.v(id::SIZE));
         self.predelay.set(self.v(id::PREDELAY) * sr);
         self.mix.set(self.v(id::MIX));
         self.width.set(self.v(id::WIDTH));
         let mut lens = [0.0_f32; LINES];
-        let mut gains = [0.0_f32; LINES];
+        let mut gains = self.gains;
         for i in 0..io.frames() {
             // Line lengths follow the (slowly) smoothed size every sample, so the read
             // positions glide; gains and damping are updated every 32 samples.
@@ -148,12 +155,16 @@ impl AudioNode for Reverb {
             for k in 0..LINES {
                 lens[k] = BASE_MS[k] * 0.001 * size * sr;
             }
-            if i % 32 == 0 {
-                damp = 1.0 - (-std::f32::consts::TAU * damping / sr).exp();
+            let update = self.counter.is_multiple_of(32);
+            self.counter += 1;
+            if update {
+                self.damp_coef = 1.0 - (-std::f32::consts::TAU * damping / sr).exp();
                 for k in 0..LINES {
                     gains[k] = 10f32.powf(-3.0 * lens[k] / (decay * sr));
                 }
+                self.gains = gains;
             }
+            let damp = self.damp_coef;
             let x = [
                 io.input(0).get(i).copied().unwrap_or(0.0),
                 io.input(1).get(i).copied().unwrap_or(0.0),
