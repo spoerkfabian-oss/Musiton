@@ -11,10 +11,15 @@ use musiton_core::{TempoMap, Tick};
 use musiton_io::file::{import_audio, Imported};
 use musiton_project::Project;
 
+/// Result of a background rate conversion: per asset the converted audio (`None` = failed).
+pub type Converted = Vec<(AssetId, Option<AudioData>)>;
+
 /// Audio files of the project in memory (cloning shares the audio).
 #[derive(Default, Clone)]
 pub struct AssetStore {
     audio: HashMap<AssetId, Arc<AudioData>>,
+    /// Copies converted to the audio device's rate (when it differs from the project's).
+    playback: HashMap<AssetId, Arc<AudioData>>,
     peaks: HashMap<AssetId, Arc<Peaks>>,
     /// Bumped whenever the set of loaded files changes (triggers a graph rebuild).
     pub generation: u64,
@@ -51,9 +56,32 @@ impl AssetStore {
         self.generation += 1;
     }
 
-    /// Decoded audio of an asset.
-    pub fn audio(&self, id: AssetId) -> Option<&Arc<AudioData>> {
-        self.audio.get(&id)
+    /// Audio of an asset for playback at `rate`: the converted copy if there is one,
+    /// otherwise the original (the clip player then interpolates).
+    pub fn audio_at(&self, id: AssetId, rate: u32) -> Option<&Arc<AudioData>> {
+        self.playback
+            .get(&id)
+            .filter(|a| a.sample_rate == rate)
+            .or_else(|| self.audio.get(&id))
+    }
+
+    /// Assets that are not at `rate` and have no converted copy yet.
+    pub fn needs_conversion(&self, rate: u32) -> Vec<(AssetId, Arc<AudioData>)> {
+        self.audio
+            .iter()
+            .filter(|(id, a)| {
+                a.sample_rate != rate && self.playback.get(id).is_none_or(|p| p.sample_rate != rate)
+            })
+            .map(|(id, a)| (*id, a.clone()))
+            .collect()
+    }
+
+    /// Stores a copy converted for playback (triggers a graph rebuild).
+    pub fn insert_playback(&mut self, id: AssetId, audio: AudioData) {
+        if self.audio.contains_key(&id) {
+            self.playback.insert(id, Arc::new(audio));
+            self.generation += 1;
+        }
     }
 
     /// Waveform peaks of all loaded assets.
@@ -161,6 +189,29 @@ pub fn place_take(
 mod tests {
     use super::*;
     use musiton_core::PPQ;
+
+    #[test]
+    fn playback_copies_are_used_only_at_their_rate() {
+        let mut store = AssetStore::default();
+        let id = AssetId(1);
+        let tone = |rate: u32| AudioData {
+            sample_rate: rate,
+            channels: vec![vec![0.25; rate as usize / 10]],
+        };
+        store.insert(id, tone(48_000));
+        assert!(store.needs_conversion(48_000).is_empty());
+        assert_eq!(store.needs_conversion(44_100).len(), 1);
+        let gen = store.generation;
+        let converted = musiton_io::file::resample(tone(48_000), 44_100).unwrap();
+        store.insert_playback(id, converted);
+        assert!(store.generation > gen);
+        assert!(store.needs_conversion(44_100).is_empty());
+        assert_eq!(store.audio_at(id, 44_100).unwrap().sample_rate, 44_100);
+        // Export at the project rate still gets the original.
+        assert_eq!(store.audio_at(id, 48_000).unwrap().sample_rate, 48_000);
+        // Another device rate needs a new conversion.
+        assert_eq!(store.needs_conversion(96_000).len(), 1);
+    }
 
     #[test]
     fn takes_move_earlier_by_the_latency() {

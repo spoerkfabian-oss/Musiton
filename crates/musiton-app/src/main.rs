@@ -105,6 +105,10 @@ struct App {
     show_shortcuts: bool,
     assets: AssetStore,
     importer: Importer,
+    /// Background conversion of the project's audio to the device rate.
+    converting: Option<std::sync::mpsc::Receiver<assets::Converted>>,
+    /// Assets whose conversion failed (not retried; they play interpolated).
+    conversion_failed: std::collections::HashSet<(musiton_core::ids::AssetId, u32)>,
     graph: GraphState,
     browser: Browser,
     input: Option<musiton_io::audio::AudioInputStream>,
@@ -212,6 +216,8 @@ impl App {
             show_shortcuts: false,
             assets: AssetStore::default(),
             importer: Importer::default(),
+            converting: None,
+            conversion_failed: std::collections::HashSet::new(),
             graph: GraphState::default(),
             browser: Browser::default(),
             input: None,
@@ -1272,6 +1278,66 @@ impl App {
         }
     }
 
+    /// Converts audio files to the device rate in the background when it differs from
+    /// the project rate (otherwise clips would play with simple interpolation).
+    fn update_conversion(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        if let Some(rx) = &self.converting {
+            match rx.try_recv() {
+                Ok(done) => {
+                    let rate = self
+                        .output
+                        .as_ref()
+                        .map_or(0, |(_, e)| e.sample_rate() as u32);
+                    for (id, audio) in done {
+                        match audio {
+                            Some(a) => self.assets.insert_playback(id, a),
+                            None => {
+                                self.conversion_failed.insert((id, rate));
+                            }
+                        }
+                    }
+                    self.converting = None;
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => self.converting = None,
+            }
+        }
+        let Some((_, engine)) = &self.output else {
+            return;
+        };
+        let rate = engine.sample_rate() as u32;
+        let todo: Vec<_> = self
+            .assets
+            .needs_conversion(rate)
+            .into_iter()
+            .filter(|(id, _)| !self.conversion_failed.contains(&(*id, rate)))
+            .collect();
+        if todo.is_empty() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("rate-convert".into())
+            .spawn(move || {
+                let done = todo
+                    .into_iter()
+                    .map(|(id, a)| {
+                        let converted = musiton_io::file::resample((*a).clone(), rate);
+                        if let Err(e) = &converted {
+                            tracing::error!("converting audio to {rate} Hz failed: {e}");
+                        }
+                        (id, converted.ok())
+                    })
+                    .collect();
+                let _ = tx.send(done);
+            });
+        if spawned.is_ok() {
+            self.converting = Some(rx);
+            self.set_status(format!("Converting audio to the device rate ({rate} Hz)…"));
+        }
+    }
+
     /// Starts importing `files`; the first goes to `track`, others onto new tracks.
     fn import(
         &mut self,
@@ -1877,6 +1943,7 @@ impl App {
         self.apply_actions(actions);
         self.apply_actions(bottom_actions);
         self.finish_imports();
+        self.update_conversion();
         self.finish_recordings();
         self.finish_midi_recordings();
         self.update_automation_recording(&ctx);

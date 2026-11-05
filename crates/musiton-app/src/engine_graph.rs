@@ -420,7 +420,7 @@ pub fn build(
                             gain: db_to_gain(a.gain_db),
                             fade_in: a.fade_in,
                             fade_out: a.fade_out,
-                            audio: assets.audio(a.asset)?.clone(),
+                            audio: assets.audio_at(a.asset, sample_rate as u32)?.clone(),
                         }),
                         _ => None,
                     })
@@ -437,7 +437,9 @@ pub fn build(
                 let (type_id, zones) = instrument_of(t).unwrap_or_default();
                 let samples: Vec<(u8, Arc<musiton_core::audio::AudioData>)> = zones
                     .iter()
-                    .filter_map(|z| Some((z.key, assets.audio(z.asset)?.clone())))
+                    .filter_map(|z| {
+                        Some((z.key, assets.audio_at(z.asset, sample_rate as u32)?.clone()))
+                    })
                     .collect();
                 let instrument =
                     musiton_devices::create_instrument(&type_id, &instrument_params(t), &samples);
