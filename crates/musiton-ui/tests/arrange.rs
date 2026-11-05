@@ -40,11 +40,13 @@ fn frame(
         egui::CentralPanel::default_margins().show(ui, |ui| {
             let peaks = Default::default();
             let targets = Default::default();
+            let levels = Default::default();
             let input = ArrangeInput {
                 playhead: Some(1234.0),
                 playing: true,
                 peaks: &peaks,
                 auto_targets: &targets,
+                levels: &levels,
             };
             actions = arrange.ui(ui, p, &input);
         });
@@ -69,11 +71,13 @@ fn fifty_tracks_render_well_within_a_60fps_frame() {
             egui::CentralPanel::default_margins().show(ui, |ui| {
                 let peaks = Default::default();
                 let targets = Default::default();
+                let levels = p.tracks.iter().map(|t| (t.id, [0.3, 0.2])).collect();
                 let input = ArrangeInput {
                     playhead: Some(1234.0),
                     playing: true,
                     peaks: &peaks,
                     auto_targets: &targets,
+                    levels: &levels,
                 };
                 arrange.ui(ui, &mut p, &input);
             });

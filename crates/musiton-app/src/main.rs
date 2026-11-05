@@ -1958,11 +1958,19 @@ impl App {
                 .iter()
                 .map(|t| (t.id, engine_graph::automation_targets(t)))
                 .collect();
+            let levels: std::collections::HashMap<_, _> = self
+                .graph
+                .info
+                .meters
+                .iter()
+                .filter_map(|(k, m)| Some(((*k)?, m.rms())))
+                .collect();
             let input = ArrangeInput {
                 playhead,
                 playing,
                 peaks: self.assets.peaks(),
                 auto_targets: &auto_targets,
+                levels: &levels,
             };
             actions = self.arrange.ui(ui, &mut self.doc.project, &input);
         });

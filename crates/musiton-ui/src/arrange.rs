@@ -58,6 +58,8 @@ pub struct ArrangeInput<'a> {
     pub peaks: &'a HashMap<AssetId, Arc<Peaks>>,
     /// What each track can automate: (target, name, parameter scale).
     pub auto_targets: &'a HashMap<TrackId, Vec<AutoTarget>>,
+    /// Current RMS level (linear, left/right) per track, for the header meters.
+    pub levels: &'a HashMap<TrackId, [f32; 2]>,
 }
 
 /// An automatable parameter: (target, display name, scale).
@@ -236,6 +238,9 @@ impl Arrange {
                         continue;
                     }
                     self.header(ui, i, track, header, &mut actions);
+                    if let Some(level) = input.levels.get(&track.id) {
+                        header_meter(ui, header, *level);
+                    }
                     let lane_input = LaneInput {
                         index: i,
                         grid: &grid,
@@ -1661,5 +1666,28 @@ impl Arrange {
             self.auto_drag = None;
             actions.push(Self::auto_edit(track, target, |l| l.points = points));
         }
+    }
+}
+
+/// Two thin level bars (left/right RMS, −60…0 dB) at the right edge of a track header.
+fn header_meter(ui: &Ui, header: Rect, level: [f32; 2]) {
+    let painter = ui.painter_at(header);
+    let h = header.height() - 12.0;
+    for (k, v) in level.into_iter().enumerate() {
+        let db = musiton_core::units::gain_to_db(v);
+        let x = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+        let left = header.right() - 9.0 + k as f32 * 4.0;
+        let bar = Rect::from_min_max(
+            Pos2::new(left, header.bottom() - 6.0 - h * x),
+            Pos2::new(left + 3.0, header.bottom() - 6.0),
+        );
+        let color = if db > -3.0 {
+            Color32::from_rgb(240, 80, 60)
+        } else if db > -12.0 {
+            Color32::from_rgb(230, 200, 60)
+        } else {
+            Color32::from_rgb(90, 200, 110)
+        };
+        painter.rect_filled(bar, 0.0, color);
     }
 }
