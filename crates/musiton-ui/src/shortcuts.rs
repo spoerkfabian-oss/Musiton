@@ -27,6 +27,10 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+D", "Duplicate selected clips"),
     ("S", "Split selected clips at the playhead"),
     ("Shift/Ctrl+click", "Add a clip to the selection"),
+    (
+        "Drag on empty lane space",
+        "Select clips in a rectangle (Shift/Ctrl: add)",
+    ),
     ("Drag clip", "Move (also to another track of the same kind)"),
     ("Drag clip edge", "Trim"),
     ("Drag white handle", "Fade in / fade out"),

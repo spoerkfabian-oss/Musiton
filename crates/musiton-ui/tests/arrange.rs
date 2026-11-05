@@ -282,3 +282,79 @@ fn other_lanes_with_points_get_their_own_editable_row() {
     );
     assert!(pan > v, "pan row {pan} should be below volume row {v}");
 }
+
+#[test]
+fn dragging_on_empty_lane_space_selects_clips_in_the_rectangle() {
+    use musiton_core::ids::ClipId;
+    use musiton_core::{Tick, PPQ};
+    use musiton_project::{Clip, MidiClip, TrackKind};
+    let ctx = egui::Context::default();
+    let mut p = project_with_tracks(2);
+    let bar = 4 * PPQ;
+    for (t, ids) in [(0, [10, 11]), (1, [20, 21])] {
+        p.tracks[t].kind = TrackKind::Instrument;
+        for (k, id) in ids.into_iter().enumerate() {
+            p.tracks[t].clips.push(Clip::Midi(MidiClip {
+                id: ClipId(id),
+                start: Tick(k as i64 * 4 * bar),
+                length: Tick(bar),
+                notes: Vec::new(),
+            }));
+        }
+    }
+    let mut arrange = Arrange::new();
+    arrange.follow = false;
+    frame(&ctx, &mut arrange, &mut p, vec![]);
+    let lane_x = 8.0 + musiton_ui::arrange::HEADER_WIDTH;
+    let px_bar = 120.0;
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    // Find the first track's row by clicking its first clip.
+    let mut row0 = None;
+    for y in (60..160).step_by(4) {
+        let pos = Pos2::new(lane_x + 0.5 * px_bar, y as f32);
+        frame(
+            &ctx,
+            &mut arrange,
+            &mut p,
+            vec![egui::Event::PointerMoved(pos), button(pos, true)],
+        );
+        frame(&ctx, &mut arrange, &mut p, vec![button(pos, false)]);
+        if arrange.selected_clips.contains(&ClipId(10)) {
+            row0 = Some(y as f32);
+            break;
+        }
+    }
+    let y0 = row0.expect("first track row");
+    // Drag from empty space (bar 3, track 1) up-left to bar 1.5 on track 0.
+    let start = Pos2::new(
+        lane_x + 2.5 * px_bar,
+        y0 + musiton_ui::arrange::ROW_HEIGHT + 20.0,
+    );
+    let end = Pos2::new(lane_x + 0.5 * px_bar, y0);
+    frame(
+        &ctx,
+        &mut arrange,
+        &mut p,
+        vec![egui::Event::PointerMoved(start), button(start, true)],
+    );
+    for k in 1..=5 {
+        let t = k as f32 / 5.0;
+        let pos = start + (end - start) * t;
+        frame(
+            &ctx,
+            &mut arrange,
+            &mut p,
+            vec![egui::Event::PointerMoved(pos)],
+        );
+    }
+    frame(&ctx, &mut arrange, &mut p, vec![button(end, false)]);
+    frame(&ctx, &mut arrange, &mut p, vec![]);
+    let mut got: Vec<u64> = arrange.selected_clips.iter().map(|c| c.0).collect();
+    got.sort_unstable();
+    assert_eq!(got, vec![10, 20]);
+}

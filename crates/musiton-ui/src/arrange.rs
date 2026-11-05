@@ -123,6 +123,10 @@ pub struct Arrange {
     auto_drag: Option<AutoDrag>,
     /// Automatable parameters per track (copied from the input each frame).
     targets: HashMap<TrackId, Vec<AutoTarget>>,
+    /// Rubber-band selection in progress: start point and the selection it adds to.
+    box_select: Option<(Pos2, HashSet<ClipId>)>,
+    /// Screen rectangles of the clips drawn this frame (for rubber-band selection).
+    clip_rects: Vec<(ClipId, Rect)>,
 }
 
 impl Arrange {
@@ -196,6 +200,7 @@ impl Arrange {
 
         let preview = self.preview(project);
         let rows = self.rows(project);
+        self.clip_rects.clear();
         let mut new_track_drop = None;
         egui::ScrollArea::vertical()
             .id_salt("tracks")
@@ -268,6 +273,7 @@ impl Arrange {
                 at: self.snap.round(tick, project.time_sig),
             });
         }
+        self.update_box_select(ui);
         self.update_drag(ui, project, &mut actions);
         if let Some((track, start, length)) = self.pending_clip.take() {
             let clip = ClipId(project.alloc_id());
@@ -914,10 +920,26 @@ impl Arrange {
         input: &LaneInput,
         actions: &mut Vec<UiAction>,
     ) {
-        let resp = ui.interact(rect, ui.scope_id().with(("lane", track.id)), Sense::click());
+        let sense = if self.automation_view {
+            Sense::click()
+        } else {
+            Sense::click_and_drag()
+        };
+        let resp = ui.interact(rect, ui.scope_id().with(("lane", track.id)), sense);
         if resp.clicked() {
             self.selected = Some(track.id);
             self.selected_clips.clear();
+        }
+        if resp.drag_started() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                let base = if add {
+                    self.selected_clips.clone()
+                } else {
+                    HashSet::new()
+                };
+                self.box_select = Some((p, base));
+            }
         }
         if resp.double_clicked() && track.kind == TrackKind::Instrument {
             if let Some(p) = resp.interact_pointer_pos() {
@@ -996,6 +1018,7 @@ impl Arrange {
             if !dragged.contains(&clip.id()) {
                 self.paint(&painter, clip, crect, rect, track, input);
             }
+            self.clip_rects.push((clip.id(), crect.intersect(rect)));
             if !self.automation_view {
                 self.clip_interaction(ui, input, clip, crect);
             }
@@ -1343,6 +1366,37 @@ impl Arrange {
                 actions.push(Self::auto_edit(track, target, |l| l.mode = mode));
             }
         });
+    }
+
+    /// Rubber-band selection: selects the clips the rectangle touches while dragging.
+    fn update_box_select(&mut self, ui: &Ui) {
+        let Some((origin, base)) = &self.box_select else {
+            return;
+        };
+        let (pos, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        let Some(pos) = pos else {
+            return;
+        };
+        let area = Rect::from_two_pos(*origin, pos);
+        let mut selected = base.clone();
+        selected.extend(
+            self.clip_rects
+                .iter()
+                .filter(|(_, r)| r.intersects(area))
+                .map(|(id, _)| *id),
+        );
+        self.selected_clips = selected;
+        if down {
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::unique("box_select"),
+            ));
+            let color = ui.visuals().selection.bg_fill;
+            painter.rect_filled(area, 0.0, color.gamma_multiply(0.15));
+            painter.rect_stroke(area, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+        } else {
+            self.box_select = None;
+        }
     }
 
     /// Rows of the track list: (track index, extra automation lane). In automation view
