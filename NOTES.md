@@ -245,3 +245,25 @@ Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
 - Running two Musiton windows at the same time can make the second one offer a wrong "recovery" (shared lock file).
 - A panic on the audio thread is not caught (the real-time rules forbid panics there; the debug build aborts).
 - The installer has not been tested on a fresh Windows PC by the owner yet.
+
+## Follow-ups before VST3 (owner decision: "Zuerst alles andere")
+**Fixed known issues**
+- Session locks are per window: each running Musiton holds an OS-locked file in `sessions/`, so a second window no longer triggers a false recovery (uses `File::try_lock`, Rust 1.89+).
+- Device knobs (green when automated) and mixer volume/pan show the automated value at the playhead. Moving an automated control still edits the static value, which only matters once the lane is set to Off.
+- Stacked automation lanes: in automation view, every lane with points gets its own row under its track. "Show" puts that lane over the clips.
+- Polysynth: oscillator/noise levels and resonance are smoothed (20 ms).
+- Device rate ≠ project rate: audio files are converted in the background with the high-quality resampler. The graph then switches to the converted copies; exports use the originals.
+- Missing audio files: a dialog lists them, with "Locate…" or "Search folder…" (finds files by name, up to 6 levels deep). The found file is copied into the project (`Edit::RelinkAsset`, undoable).
+- Rubber-band selection: drag on empty lane space; Shift/Ctrl adds to the selection.
+- Level meters in the track headers (RMS, −60…0 dB).
+- Folder tracks: "+ Folder"; new tracks go into the selected folder; track menu "Move into folder / Move out of folder"; tracks are indented by depth; folders open and close; folder mute/solo applies to the tracks inside. File format: optional `parent` field on tracks (old files load unchanged; files saved without folders are unchanged).
+- Debug builds are optimized (`opt-level = 1` for our crates): the demo song needs ~16 % CPU instead of >100 %.
+- An engine panic on the audio thread (release builds) now outputs silence and reports the device as failed; the status bar offers "Restart audio".
+- The demo song is balanced (per-part trim utility, mix peak ≈ −2.5 dBFS).
+- Installer config: the file-association role must be lowercase (`editor`).
+
+**Known issues**
+- Moving a folder into another folder moves only the folder row, not its tracks (they keep their parent and stay where they are).
+- After undoing a relink, the audio stays loaded until the project is reopened.
+- "Locate…" converts and copies on the UI thread (short freeze for long files).
+- The dropout counter rises in the cloud test machine even when idle (no real sound card); this needs checking on real hardware.
