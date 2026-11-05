@@ -12,7 +12,9 @@ mod export;
 mod export_dialog;
 mod midi_record;
 mod presets;
+mod session;
 mod settings;
+mod settings_dialog;
 mod transport;
 
 use std::path::{Path, PathBuf};
@@ -112,6 +114,15 @@ struct App {
     /// Control moves being recorded into automation lanes.
     auto_rec: auto_record::AutoRecorder,
     export_dialog: export_dialog::ExportDialog,
+    settings_dialog: settings_dialog::SettingsDialog,
+    /// Offered after a crash.
+    recovery: Option<session::Recovery>,
+    /// An error to show in a dialog.
+    error: Option<String>,
+    /// Set after an internal error: the UI only shows the error dialog.
+    broken: bool,
+    /// Project path last written to the session lock.
+    locked_path: Option<Option<PathBuf>>,
     export_task: Option<export::ExportTask>,
     /// Transport state of the previous frame.
     was_playing: bool,
@@ -207,11 +218,23 @@ impl App {
             midi_rec: std::collections::HashMap::new(),
             auto_rec: auto_record::AutoRecorder::default(),
             export_dialog: export_dialog::ExportDialog::default(),
+            settings_dialog: settings_dialog::SettingsDialog::default(),
+            recovery: None,
+            error: None,
+            broken: false,
+            locked_path: None,
             export_task: None,
             was_playing: false,
         };
         if let Some(dir) = app.settings.browser_dir.clone() {
             app.browser.set_dir(&dir);
+        }
+        if let Some(dir) = Settings::data_dir() {
+            let autosave_for = |p: Option<&Path>| {
+                let doc = Document::with_path(p.map(Path::to_path_buf));
+                doc.autosave_path(Some(&dir))
+            };
+            app.recovery = session::find_recovery(&dir, &autosave_for);
         }
         app.restart_audio();
         if let Some(path) = open {
@@ -917,7 +940,7 @@ impl App {
             }
             Err(e) => {
                 tracing::error!("opening {} failed: {e}", path.display());
-                self.set_status(format!("Could not open {}: {e}", path.display()));
+                self.error = Some(format!("Could not open {}:\n{e}", path.display()));
             }
         }
     }
@@ -1072,8 +1095,13 @@ impl App {
                 }
             });
             ui.menu_button("Options", |ui| {
+                if ui.button("Settings…").clicked() {
+                    self.settings_dialog.open = true;
+                    ui.close();
+                }
                 if ui.button("Audio settings…").clicked() {
                     self.audio_dialog.open(&self.settings.audio);
+                    ui.close();
                 }
             });
             ui.menu_button("Help", |ui| {
@@ -1738,8 +1766,9 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl App {
+    /// One frame of the normal interface.
+    fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(100));
 
@@ -1850,16 +1879,152 @@ impl eframe::App for App {
             None => {}
         }
         self.export_ui(&ctx);
+        settings_dialog::apply(&ctx, &self.settings.ui);
+        match self.settings_dialog.show(&ctx, &self.settings.ui) {
+            Some(settings_dialog::SettingsAction::Changed(ui_settings)) => {
+                self.settings.ui = ui_settings;
+                self.save_settings();
+            }
+            Some(settings_dialog::SettingsAction::OpenAudio) => {
+                self.audio_dialog.open(&self.settings.audio)
+            }
+            None => {}
+        }
         self.unsaved_dialog(&ctx);
 
         if let Some((_, engine)) = &mut self.output {
             self.sync.sync(&self.doc.project, engine);
         }
-        match self.doc.autosave_if_due(Settings::data_dir().as_deref()) {
+        let interval = Duration::from_secs(u64::from(self.settings.ui.autosave_minutes) * 60);
+        match self
+            .doc
+            .autosave_if_due(Settings::data_dir().as_deref(), interval)
+        {
             Some(Ok(path)) => tracing::info!("autosaved to {}", path.display()),
             Some(Err(e)) => self.set_status(format!("Autosave failed: {e}")),
             None => {}
         }
         self.update_title(&ctx);
+    }
+
+    /// Keeps the crash-detection lock file pointing at the open project.
+    fn update_lock(&mut self) {
+        if self.locked_path.as_ref() == Some(&self.doc.path) {
+            return;
+        }
+        if let Some(dir) = Settings::data_dir() {
+            session::write_lock(&dir, self.doc.path.as_deref());
+        }
+        self.locked_path = Some(self.doc.path.clone());
+    }
+
+    /// Offers to restore the autosave left by a crashed session.
+    fn recovery_dialog(&mut self, ctx: &egui::Context) {
+        let Some(r) = &self.recovery else { return };
+        let text = match r.project.as_deref().and_then(Path::file_stem) {
+            Some(n) => format!(
+                "An automatic backup of {} is newer than the saved version. Restore it?",
+                n.to_string_lossy()
+            ),
+            None => "An automatic backup of an unsaved song was found. Restore it?".to_owned(),
+        };
+        let mut choice = None;
+        egui::Modal::new(egui::Id::unique("recovery")).show(ctx, |ui| {
+            ui.heading("Musiton did not close properly");
+            ui.label(text.as_str());
+            ui.horizontal(|ui| {
+                if ui.button("Restore backup").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Discard").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        let Some(restore) = choice else { return };
+        let Some(r) = self.recovery.take() else {
+            return;
+        };
+        if restore {
+            match Document::recover(&r.autosave, r.project) {
+                Ok(doc) => {
+                    self.stop_and_rewind();
+                    self.doc = doc;
+                    self.load_assets();
+                    self.set_status("Backup restored – save to keep it.");
+                }
+                Err(e) => self.error = Some(format!("The backup could not be restored: {e}")),
+            }
+        }
+    }
+
+    /// Shows the current error message (if any).
+    fn error_dialog(&mut self, ctx: &egui::Context) {
+        let Some(msg) = &self.error else { return };
+        let broken = self.broken;
+        let mut close = false;
+        egui::Modal::new(egui::Id::unique("error")).show(ctx, |ui| {
+            ui.heading(if broken {
+                "Something went wrong"
+            } else {
+                "Error"
+            });
+            ui.label(msg.as_str());
+            ui.horizontal(|ui| {
+                if broken {
+                    if ui.button("Quit Musiton").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                } else if ui.button("OK").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close {
+            self.error = None;
+        }
+    }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        if !self.broken {
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.frame_ui(ui);
+                self.update_lock();
+                self.recovery_dialog(&ctx);
+            }));
+            if let Err(payload) = run {
+                let what = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown error".into());
+                tracing::error!("UI panic: {what}");
+                self.broken = true;
+                self.allow_close = true;
+                let saved = self.doc.save_emergency(Settings::data_dir().as_deref());
+                self.error = Some(match saved {
+                    Some(p) => format!(
+                        "Musiton hit an internal error ({what}).\n\nYour song was saved to\n{}\nPlease restart Musiton.",
+                        p.display()
+                    ),
+                    None => format!(
+                        "Musiton hit an internal error ({what}) and could not save a backup.\nPlease restart Musiton."
+                    ),
+                });
+            }
+        }
+        self.error_dialog(&ctx);
+    }
+
+    fn on_exit(&mut self) {
+        // A broken session keeps its lock so the emergency save is offered next start.
+        if !self.broken {
+            if let Some(dir) = Settings::data_dir() {
+                session::clear_lock(&dir);
+            }
+        }
     }
 }

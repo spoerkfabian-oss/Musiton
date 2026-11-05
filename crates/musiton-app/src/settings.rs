@@ -14,6 +14,42 @@ pub struct Settings {
     pub recent_projects: Vec<PathBuf>,
     /// Folder shown in the browser panel.
     pub browser_dir: Option<PathBuf>,
+    /// Look of the user interface.
+    pub ui: UiSettings,
+}
+
+/// Colour theme.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Theme {
+    /// Dark.
+    #[default]
+    Dark,
+    /// Light.
+    Light,
+    /// Follow the operating system.
+    System,
+}
+
+/// User interface settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiSettings {
+    /// Colour theme.
+    pub theme: Theme,
+    /// Zoom of the whole interface (1.0 = 100 %).
+    pub scale: f32,
+    /// Minutes between autosaves (0 = off).
+    pub autosave_minutes: u32,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::Dark,
+            scale: 1.0,
+            autosave_minutes: 2,
+        }
+    }
 }
 
 /// Most entries kept in [`Settings::recent_projects`].
@@ -138,6 +174,11 @@ mod tests {
             },
             recent_projects: vec![PathBuf::from("a/b.musiton")],
             browser_dir: Some(PathBuf::from("samples")),
+            ui: UiSettings {
+                theme: Theme::Light,
+                scale: 1.25,
+                autosave_minutes: 5,
+            },
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

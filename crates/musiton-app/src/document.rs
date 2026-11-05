@@ -5,9 +5,6 @@ use std::time::{Duration, Instant};
 
 use musiton_project::{Edit, EditError, Project, ProjectError, UndoStack, EXTENSION};
 
-/// How often unsaved changes are written to the autosave file.
-pub const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(120);
-
 /// A project plus everything needed to edit and save it.
 pub struct Document {
     /// The song.
@@ -42,12 +39,32 @@ impl Document {
         }
     }
 
+    /// An empty document that pretends to be saved at `path` (for path calculations).
+    pub fn with_path(path: Option<PathBuf>) -> Self {
+        Self::new(Project::default(), path)
+    }
+
     /// Opens a project file.
     pub fn open(path: &Path) -> Result<Self, ProjectError> {
         Ok(Self::new(
             musiton_project::load(path)?,
             Some(path.to_path_buf()),
         ))
+    }
+
+    /// Loads an autosave as the (unsaved) state of `project`.
+    pub fn recover(autosave: &Path, project: Option<PathBuf>) -> Result<Self, ProjectError> {
+        let mut doc = Self::new(musiton_project::load(autosave)?, project);
+        doc.settings_dirty = true;
+        Ok(doc)
+    }
+
+    /// Writes the current state to its autosave file right away (emergency save).
+    pub fn save_emergency(&mut self, data_dir: Option<&Path>) -> Option<PathBuf> {
+        let path = self.autosave_path(data_dir)?;
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        musiton_project::write_file(&self.project, &path).ok()?;
+        Some(path)
     }
 
     /// Song name for the title bar.
@@ -125,8 +142,9 @@ impl Document {
     pub fn autosave_if_due(
         &mut self,
         data_dir: Option<&Path>,
+        interval: Duration,
     ) -> Option<Result<PathBuf, ProjectError>> {
-        if self.last_autosave.elapsed() < AUTOSAVE_INTERVAL {
+        if interval.is_zero() || self.last_autosave.elapsed() < interval {
             return None;
         }
         self.last_autosave = Instant::now();
