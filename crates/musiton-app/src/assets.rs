@@ -11,8 +11,8 @@ use musiton_core::{TempoMap, Tick};
 use musiton_io::file::{import_audio, Imported};
 use musiton_project::Project;
 
-/// Audio files of the project in memory.
-#[derive(Default)]
+/// Audio files of the project in memory (cloning shares the audio).
+#[derive(Default, Clone)]
 pub struct AssetStore {
     audio: HashMap<AssetId, Arc<AudioData>>,
     peaks: HashMap<AssetId, Arc<Peaks>>,

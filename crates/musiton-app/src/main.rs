@@ -8,6 +8,8 @@ mod auto_record;
 mod browser;
 mod document;
 mod engine_graph;
+mod export;
+mod export_dialog;
 mod midi_record;
 mod presets;
 mod settings;
@@ -109,6 +111,8 @@ struct App {
         std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::RecMidi>>,
     /// Control moves being recorded into automation lanes.
     auto_rec: auto_record::AutoRecorder,
+    export_dialog: export_dialog::ExportDialog,
+    export_task: Option<export::ExportTask>,
     /// Transport state of the previous frame.
     was_playing: bool,
 }
@@ -202,6 +206,8 @@ impl App {
             midi_error: None,
             midi_rec: std::collections::HashMap::new(),
             auto_rec: auto_record::AutoRecorder::default(),
+            export_dialog: export_dialog::ExportDialog::default(),
+            export_task: None,
             was_playing: false,
         };
         if let Some(dir) = app.settings.browser_dir.clone() {
@@ -362,6 +368,91 @@ impl App {
         match self.doc.perform(edit, false) {
             Ok(()) => self.set_status("Effect moved"),
             Err(e) => self.set_status(format!("Moving the effect failed: {e}")),
+        }
+    }
+
+    /// Export window, start of an export, and its progress.
+    fn export_ui(&mut self, ctx: &egui::Context) {
+        let p = &self.doc.project;
+        let selection: Vec<(musiton_core::Tick, musiton_core::Tick)> = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| self.arrange.selected_clips.contains(&c.id()))
+            .map(|c| (c.start(), c.end()))
+            .collect();
+        let has_loop = p.loop_range.is_some();
+        if self
+            .export_dialog
+            .show(ctx, !selection.is_empty(), has_loop)
+        {
+            let range = match self.export_dialog.range {
+                export::ExportRange::Song => (musiton_core::Tick(0), export::song_end(p)),
+                export::ExportRange::Loop => p
+                    .loop_range
+                    .unwrap_or((musiton_core::Tick(0), export::song_end(p))),
+                export::ExportRange::Selection => (
+                    selection.iter().map(|s| s.0).min().unwrap_or_default(),
+                    selection.iter().map(|s| s.1).max().unwrap_or_default(),
+                ),
+            };
+            let options = self.export_dialog.options();
+            let name = self.doc.name();
+            let path = if self.export_dialog.stems {
+                rfd::FileDialog::new()
+                    .set_title("Folder for the stems")
+                    .pick_folder()
+            } else {
+                rfd::FileDialog::new()
+                    .set_title("Export audio")
+                    .add_filter(options.format.extension(), &[options.format.extension()])
+                    .set_file_name(format!("{name}.{}", options.format.extension()))
+                    .save_file()
+            };
+            if let Some(path) = path {
+                let job = export::ExportJob {
+                    range,
+                    tail_secs: self.export_dialog.tail,
+                    options,
+                    stems: self.export_dialog.stems,
+                    path,
+                };
+                let assets = self.assets.clone();
+                self.export_task = Some(export::start(job, self.doc.project.clone(), assets, name));
+            }
+        }
+        let Some(task) = &self.export_task else {
+            return;
+        };
+        ctx.request_repaint_after(Duration::from_millis(50));
+        if let Some(result) = task.result() {
+            self.export_task = None;
+            match result {
+                Ok(files) => self.set_status(format!(
+                    "Exported {}",
+                    files
+                        .first()
+                        .map_or(String::new(), |f| f.display().to_string())
+                        + if files.len() > 1 { " and more" } else { "" }
+                )),
+                Err(e) => self.set_status(e),
+            }
+            return;
+        }
+        let progress = task.progress.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::unique("export_progress")).show(ctx, |ui| {
+            ui.heading("Exporting…");
+            ui.add(
+                egui::ProgressBar::new(progress)
+                    .show_percentage()
+                    .desired_width(300.0),
+            );
+            cancel = ui.button("Cancel").clicked();
+        });
+        if cancel {
+            task.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -936,6 +1027,11 @@ impl App {
                 }
                 if ui.button("Save as…       Ctrl+Shift+S").clicked() {
                     self.save_as();
+                }
+                ui.separator();
+                if ui.button("Export audio…").clicked() {
+                    self.export_dialog.open = true;
+                    ui.close();
                 }
                 ui.separator();
                 if ui.button("Import MIDI file…").clicked() {
@@ -1753,6 +1849,7 @@ impl eframe::App for App {
             }
             None => {}
         }
+        self.export_ui(&ctx);
         self.unsaved_dialog(&ctx);
 
         if let Some((_, engine)) = &mut self.output {
