@@ -420,33 +420,50 @@ where
     let cb_shared = shared.clone();
     let err_shared = shared.clone();
     let err_failed = failed.clone();
+    let cb_failed = failed.clone();
+    // Set once the engine panicked: from then on only silence is output and the device is
+    // reported as failed, so the app restarts audio with a fresh engine.
+    let mut panicked = false;
 
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            no_alloc(|| {
-                let start = Instant::now();
-                let chunk_len = scratch.len();
-                for chunk in data.chunks_mut(chunk_len) {
-                    let Some(buf) = scratch.get_mut(..chunk.len()) else {
-                        chunk.fill(T::EQUILIBRIUM);
-                        continue;
-                    };
-                    engine.process(buf, channels);
-                    for (o, &s) in chunk.iter_mut().zip(buf.iter()) {
-                        *o = T::from_sample(s);
+            if panicked {
+                data.fill(T::EQUILIBRIUM);
+                return;
+            }
+            // Safety net only: engine code must not panic (see CLAUDE.md). In debug builds
+            // the panic's own allocation already aborts inside `no_alloc`.
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                no_alloc(|| {
+                    let start = Instant::now();
+                    let chunk_len = scratch.len();
+                    for chunk in data.chunks_mut(chunk_len) {
+                        let Some(buf) = scratch.get_mut(..chunk.len()) else {
+                            chunk.fill(T::EQUILIBRIUM);
+                            continue;
+                        };
+                        engine.process(buf, channels);
+                        for (o, &s) in chunk.iter_mut().zip(buf.iter()) {
+                            *o = T::from_sample(s);
+                        }
                     }
-                }
-                let frames = data.len() / channels.max(1);
-                let budget = frames as f32 / sample_rate;
-                if budget > 0.0 {
-                    let load = start.elapsed().as_secs_f32() / budget;
-                    if load > 1.0 {
-                        cb_shared.add_xrun();
+                    let frames = data.len() / channels.max(1);
+                    let budget = frames as f32 / sample_rate;
+                    if budget > 0.0 {
+                        let load = start.elapsed().as_secs_f32() / budget;
+                        if load > 1.0 {
+                            cb_shared.add_xrun();
+                        }
+                        cb_shared.set_cpu_load(meter.update(load));
                     }
-                    cb_shared.set_cpu_load(meter.update(load));
-                }
-            });
+                })
+            }));
+            if run.is_err() {
+                panicked = true;
+                data.fill(T::EQUILIBRIUM);
+                cb_failed.store(true, Ordering::Relaxed);
+            }
         },
         move |err: cpal::Error| match err.kind() {
             cpal::ErrorKind::Xrun => err_shared.add_xrun(),

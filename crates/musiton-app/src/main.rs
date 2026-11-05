@@ -1137,6 +1137,7 @@ impl App {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let mut restart = false;
         ui.horizontal(|ui| {
             if let Some(err) = &self.audio_error {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Audio: {err}"));
@@ -1144,8 +1145,9 @@ impl App {
                 if out.has_failed() {
                     ui.colored_label(
                         ui.visuals().error_fg_color,
-                        "Audio device stopped working — check Options > Audio settings",
+                        "Audio stopped working — check Options > Audio settings",
                     );
+                    restart = ui.small_button("Restart audio").clicked();
                 } else {
                     let info = out.info();
                     ui.label(&info.device_name);
@@ -1211,6 +1213,9 @@ impl App {
                 }
             }
         });
+        if restart {
+            self.restart_audio();
+        }
     }
 
     fn unsaved_dialog(&mut self, ctx: &egui::Context) {

@@ -37,6 +37,11 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
+# Our own crates are optimized a little in debug builds too, so the DSP runs in real time
+# with `cargo run` (debug assertions and `assert_no_alloc` stay on).
+[profile.dev]
+opt-level = 1
+
 [profile.dev.package."*"]
 opt-level = 2
 
