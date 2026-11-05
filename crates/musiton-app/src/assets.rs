@@ -26,8 +26,12 @@ pub struct AssetStore {
 }
 
 impl AssetStore {
-    /// Loads every asset of `project` from `dir`. Returns the files that failed.
-    pub fn load_project(&mut self, project: &Project, dir: Option<&Path>) -> Vec<String> {
+    /// Loads every asset of `project` from `dir`. Returns the assets that failed.
+    pub fn load_project(
+        &mut self,
+        project: &Project,
+        dir: Option<&Path>,
+    ) -> Vec<(AssetId, String)> {
         *self = Self {
             generation: self.generation + 1,
             ..Self::default()
@@ -35,14 +39,14 @@ impl AssetStore {
         let mut failed = Vec::new();
         for asset in &project.assets {
             let Some(dir) = dir else {
-                failed.push(asset.file.clone());
+                failed.push((asset.id, asset.file.clone()));
                 continue;
             };
             match musiton_io::file::decode_file(&dir.join(&asset.file)) {
                 Ok(audio) => self.insert(asset.id, audio),
                 Err(e) => {
                     tracing::error!("cannot load {}: {e}", asset.file);
-                    failed.push(asset.file.clone());
+                    failed.push((asset.id, asset.file.clone()));
                 }
             }
         }

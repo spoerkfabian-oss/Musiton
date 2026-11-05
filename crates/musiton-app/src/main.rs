@@ -13,6 +13,7 @@ mod export;
 mod export_dialog;
 mod midi_record;
 mod presets;
+mod relink;
 mod session;
 mod settings;
 mod settings_dialog;
@@ -105,6 +106,7 @@ struct App {
     show_shortcuts: bool,
     assets: AssetStore,
     importer: Importer,
+    relink: relink::RelinkDialog,
     /// Background conversion of the project's audio to the device rate.
     converting: Option<std::sync::mpsc::Receiver<assets::Converted>>,
     /// Assets whose conversion failed (not retried; they play interpolated).
@@ -216,6 +218,7 @@ impl App {
             show_shortcuts: false,
             assets: AssetStore::default(),
             importer: Importer::default(),
+            relink: relink::RelinkDialog::default(),
             converting: None,
             conversion_failed: std::collections::HashSet::new(),
             graph: GraphState::default(),
@@ -1268,13 +1271,36 @@ impl App {
     fn load_assets(&mut self) {
         self.arrange.selected_clips.clear();
         self.arrange.selected = None;
-        let failed = self.assets.load_project(&self.doc.project, self.doc.dir());
-        if !failed.is_empty() {
-            self.set_status(format!(
-                "{} audio file(s) missing: {}",
-                failed.len(),
-                failed.join(", ")
-            ));
+        self.relink.missing = self.assets.load_project(&self.doc.project, self.doc.dir());
+    }
+
+    /// The "missing audio files" dialog.
+    fn relink_ui(&mut self, ctx: &egui::Context) {
+        for action in self.relink.show(ctx) {
+            let relink::RelinkAction::Use(id, src) = action else {
+                continue;
+            };
+            let Some(dir) = self.doc.dir().map(Path::to_path_buf) else {
+                continue;
+            };
+            match musiton_io::file::import_audio(&src, &dir, self.doc.project.sample_rate) {
+                Ok(imported) => {
+                    let edit = musiton_project::Edit::RelinkAsset {
+                        id,
+                        file: imported.rel_path,
+                    };
+                    match self.doc.perform(edit, false) {
+                        Ok(()) => {
+                            self.assets.insert(id, imported.audio);
+                            self.relink.missing.retain(|(m, _)| *m != id);
+                        }
+                        Err(e) => self.error = Some(format!("Relinking failed: {e}")),
+                    }
+                }
+                Err(e) => {
+                    self.error = Some(format!("Could not use {}:\n{e}", src.display()));
+                }
+            }
         }
     }
 
@@ -1989,6 +2015,7 @@ impl App {
             None => {}
         }
         self.unsaved_dialog(&ctx);
+        self.relink_ui(&ctx);
 
         if let Some((_, engine)) = &mut self.output {
             self.sync.sync(&self.doc.project, engine);

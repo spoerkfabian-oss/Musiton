@@ -1,6 +1,6 @@
 //! Undoable edits. Every change to a [`Project`] made by the user goes through an [`Edit`].
 
-use musiton_core::ids::{ClipId, DeviceId, MarkerId, TrackId};
+use musiton_core::ids::{AssetId, ClipId, DeviceId, MarkerId, TrackId};
 use musiton_core::{TempoMap, Tick, TimeSig};
 
 use crate::{
@@ -26,6 +26,9 @@ pub enum EditError {
     /// No marker with this id.
     #[error("marker not found")]
     NoMarker,
+    /// No audio file with this id.
+    #[error("audio file not found")]
+    NoAsset,
     /// Index out of range.
     #[error("invalid position")]
     BadIndex,
@@ -181,6 +184,13 @@ pub enum Edit {
     SetPunch(Option<(Tick, Tick)>),
     /// Add an audio file to the asset list.
     AddAsset(Option<Asset>),
+    /// Point an audio file entry at another file (relative to the project folder).
+    RelinkAsset {
+        /// The asset.
+        id: AssetId,
+        /// Its new path.
+        file: String,
+    },
     /// Several edits as one undo step (applied in order, reverted in reverse order).
     Batch(Vec<Edit>),
 }
@@ -206,6 +216,7 @@ impl Edit {
             Edit::ReplaceClip { .. } => "Edit clip",
             Edit::MoveClipToTrack { .. } => "Move clip",
             Edit::AddAsset(_) => "Import audio",
+            Edit::RelinkAsset { .. } => "Relink audio file",
             Edit::SetOutput { .. } => "Output routing",
             Edit::SetRecord { .. } => "Record setup",
             Edit::SetDevices { .. } => "Devices",
@@ -438,6 +449,14 @@ impl Edit {
                 std::mem::swap(&mut t.record, record);
             }
             Edit::SetPunch(range) => std::mem::swap(&mut p.punch_range, range),
+            Edit::RelinkAsset { id, file } => {
+                let a = p
+                    .assets
+                    .iter_mut()
+                    .find(|a| a.id == *id)
+                    .ok_or(EditError::NoAsset)?;
+                std::mem::swap(&mut a.file, file);
+            }
             Edit::SetAutomation { track, lanes } => {
                 let t = p.track_mut(*track).ok_or(EditError::NoTrack)?;
                 std::mem::swap(&mut t.automation, lanes);
