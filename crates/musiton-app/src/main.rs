@@ -4,6 +4,7 @@
 
 mod assets;
 mod audio_dialog;
+mod auto_record;
 mod browser;
 mod document;
 mod engine_graph;
@@ -106,6 +107,10 @@ struct App {
     /// Live MIDI recorded per track, waiting for recording to end.
     midi_rec:
         std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::RecMidi>>,
+    /// Control moves being recorded into automation lanes.
+    auto_rec: auto_record::AutoRecorder,
+    /// Transport state of the previous frame.
+    was_playing: bool,
 }
 
 /// Effect types for the device panel.
@@ -135,6 +140,8 @@ struct GraphState {
     sent: std::collections::HashMap<engine_graph::ParamKey, f32>,
     /// Recording chunks the disk could not keep up with.
     record_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Automation last sent to the engine.
+    sent_automation: Option<musiton_engine::automation::Automation>,
     /// Notes last sent to each instrument track's node.
     sent_notes:
         std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::MidiNote>>,
@@ -194,6 +201,8 @@ impl App {
             midi: None,
             midi_error: None,
             midi_rec: std::collections::HashMap::new(),
+            auto_rec: auto_record::AutoRecorder::default(),
+            was_playing: false,
         };
         if let Some(dir) = app.settings.browser_dir.clone() {
             app.browser.set_dir(&dir);
@@ -1276,6 +1285,7 @@ impl App {
                         )));
                         self.graph.sent = built.info.params(&self.doc.project, live);
                         self.graph.sent_notes = engine_graph::all_notes(&self.doc.project);
+                        self.graph.sent_automation = None;
                         self.graph.midi_taps = built.midi_taps;
                         self.graph.info = built.info;
                     }
@@ -1310,10 +1320,187 @@ impl App {
         }
     }
 
+    /// Sends the automation for the running graph when it changed.
+    fn sync_automation(&mut self) {
+        let Some((_, engine)) = &mut self.output else {
+            return;
+        };
+        let auto = self
+            .graph
+            .info
+            .automation(&self.doc.project, &self.auto_rec.active());
+        if self.graph.sent_automation.as_ref() != Some(&auto) {
+            self.graph.sent_automation = Some(auto.clone());
+            let set = (!auto.0.is_empty()).then(|| Box::new(auto));
+            engine.send_or_log(musiton_engine::EngineCommand::SetAutomation(set));
+        }
+    }
+
+    /// Current normalized value of an automation target (its static setting).
+    fn target_value(
+        &self,
+        track: musiton_core::ids::TrackId,
+        target: musiton_project::ParamTarget,
+    ) -> f32 {
+        use musiton_project::ParamTarget;
+        let p = &self.doc.project;
+        let Some(t) = p.track(track) else {
+            return 0.0;
+        };
+        match target {
+            ParamTarget::Volume => engine_graph::VOLUME_PARAM.to_normalized(t.strip.gain_db),
+            ParamTarget::Pan => engine_graph::PAN_PARAM.to_normalized(t.strip.pan),
+            ParamTarget::Device { device, param } => {
+                let info = engine_graph::automation_targets(t)
+                    .into_iter()
+                    .find(|(x, _, _)| *x == target)
+                    .map(|(_, _, i)| i);
+                let value = t
+                    .devices
+                    .iter()
+                    .find(|d| d.id == device)
+                    .and_then(|d| d.param(param));
+                info.map_or(0.0, |i| i.to_normalized(value.unwrap_or(i.default)))
+            }
+        }
+    }
+
+    /// While playing, a control move on a lane in Write/Touch/Latch mode is recorded
+    /// (and played directly) instead of changing the static setting. Returns `true` if
+    /// the edit was taken.
+    fn record_automation(&mut self, edit: &musiton_project::Edit) -> bool {
+        use musiton_project::{Edit, ParamTarget};
+        let Some((_, engine)) = &self.output else {
+            return false;
+        };
+        if !engine.shared().playing() {
+            return false;
+        }
+        let p = &self.doc.project;
+        let mut moves: Vec<(musiton_core::ids::TrackId, ParamTarget, f32)> = Vec::new();
+        match edit {
+            Edit::SetDeviceParam {
+                track,
+                device,
+                param,
+                value,
+            } => {
+                let target = ParamTarget::Device {
+                    device: *device,
+                    param: *param,
+                };
+                if let Some((_, _, info, _)) = self.graph.info.resolve(p, *track, target) {
+                    moves.push((
+                        *track,
+                        target,
+                        info.to_normalized(value.unwrap_or(info.default)),
+                    ));
+                }
+            }
+            Edit::SetStrip {
+                track: Some(track),
+                strip,
+            } => {
+                if let Some(t) = p.track(*track) {
+                    if strip.gain_db != t.strip.gain_db {
+                        moves.push((
+                            *track,
+                            ParamTarget::Volume,
+                            engine_graph::VOLUME_PARAM.to_normalized(strip.gain_db),
+                        ));
+                    }
+                    if strip.pan != t.strip.pan {
+                        moves.push((
+                            *track,
+                            ParamTarget::Pan,
+                            engine_graph::PAN_PARAM.to_normalized(strip.pan),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+        let moves: Vec<_> = moves
+            .into_iter()
+            .filter(|(t, target, _)| {
+                auto_record::AutoRecorder::recording_mode(p, *t, *target).is_some()
+            })
+            .collect();
+        if moves.is_empty() {
+            return false;
+        }
+        let sr = f64::from(engine.sample_rate());
+        let tick = musiton_core::Tick(
+            p.tempo
+                .sample_to_tick(engine.shared().playhead() as f64, sr)
+                .round() as i64,
+        );
+        for (track, target, value) in moves {
+            self.auto_rec
+                .touch(&self.doc.project, track, target, value, tick);
+            if let Some((node, id, info, db_to_gain)) =
+                self.graph.info.resolve(&self.doc.project, track, target)
+            {
+                let plain = info.from_normalized(value);
+                let val = if db_to_gain {
+                    musiton_core::units::db_to_gain(plain)
+                } else {
+                    plain
+                };
+                if let Some((_, e)) = &mut self.output {
+                    e.send_or_log(musiton_engine::EngineCommand::SetParam { node, id, val });
+                }
+                self.graph.sent.remove(&(node, id));
+            }
+        }
+        self.sync_automation();
+        true
+    }
+
+    /// Starts Write lanes when playback starts, finishes takes on release/stop.
+    fn update_automation_recording(&mut self, ctx: &egui::Context) {
+        let (playing, tick) = match &self.output {
+            Some((_, e)) => {
+                let sr = f64::from(e.sample_rate());
+                let t = self
+                    .doc
+                    .project
+                    .tempo
+                    .sample_to_tick(e.shared().playhead() as f64, sr);
+                (e.shared().playing(), musiton_core::Tick(t.round() as i64))
+            }
+            None => (false, musiton_core::Tick(0)),
+        };
+        let edits = if playing && !self.was_playing {
+            let mut rec = std::mem::take(&mut self.auto_rec);
+            let current = |t, x| self.target_value(t, x);
+            rec.start_write_lanes(&self.doc.project, &current, tick);
+            self.auto_rec = rec;
+            Vec::new()
+        } else if playing {
+            let down = ctx.input(|i| i.pointer.primary_down());
+            self.auto_rec.frame(&self.doc.project, tick, down)
+        } else if self.was_playing {
+            self.auto_rec.stop(&self.doc.project)
+        } else {
+            Vec::new()
+        };
+        self.was_playing = playing;
+        for e in edits {
+            if let Err(e) = self.doc.perform(e, false) {
+                self.set_status(format!("Recording automation failed: {e}"));
+            }
+        }
+        self.sync_automation();
+    }
+
     fn apply_actions(&mut self, actions: Vec<UiAction>) {
         for action in actions {
             match action {
                 UiAction::Edit { edit, merge } => {
+                    if self.record_automation(&edit) {
+                        continue;
+                    }
                     if let Err(e) = self.doc.perform(edit, merge) {
                         self.set_status(format!("Edit failed: {e}"));
                     }
@@ -1516,10 +1703,18 @@ impl eframe::App for App {
         let (playhead, playing) = self.playhead();
         let mut actions = Vec::new();
         egui::CentralPanel::default_margins().show(ui, |ui| {
+            let auto_targets: std::collections::HashMap<_, _> = self
+                .doc
+                .project
+                .tracks
+                .iter()
+                .map(|t| (t.id, engine_graph::automation_targets(t)))
+                .collect();
             let input = ArrangeInput {
                 playhead,
                 playing,
                 peaks: self.assets.peaks(),
+                auto_targets: &auto_targets,
             };
             actions = self.arrange.ui(ui, &mut self.doc.project, &input);
         });
@@ -1528,6 +1723,7 @@ impl eframe::App for App {
         self.finish_imports();
         self.finish_recordings();
         self.finish_midi_recordings();
+        self.update_automation_recording(&ctx);
         self.update_graph();
         if self.importer.running() > 0 {
             ctx.request_repaint_after(Duration::from_millis(50));

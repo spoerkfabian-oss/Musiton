@@ -33,3 +33,6 @@ musiton-devices.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hound = "3.5"

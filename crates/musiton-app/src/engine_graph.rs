@@ -232,7 +232,121 @@ fn params(
     out
 }
 
+/// Parameter scale used for track-volume automation (dB).
+pub const VOLUME_PARAM: musiton_core::params::ParamInfo =
+    musiton_core::params::ParamInfo::new(0, "Volume", -60.0, 6.0, 0.0).unit("dB");
+/// Parameter scale used for track-pan automation.
+pub const PAN_PARAM: musiton_core::params::ParamInfo =
+    musiton_core::params::ParamInfo::new(1, "Pan", -1.0, 1.0, 0.0);
+
+/// Everything a track's lanes can automate: (target, display name, parameter scale).
+pub fn automation_targets(
+    t: &musiton_project::Track,
+) -> Vec<(
+    musiton_project::ParamTarget,
+    String,
+    musiton_core::params::ParamInfo,
+)> {
+    use musiton_project::ParamTarget;
+    let mut out = vec![
+        (ParamTarget::Volume, "Volume".to_owned(), VOLUME_PARAM),
+        (ParamTarget::Pan, "Pan".to_owned(), PAN_PARAM),
+    ];
+    for (i, d) in t.devices.iter().enumerate() {
+        let instrument = i == 0 && t.kind == TrackKind::Instrument;
+        let (name, params): (&str, &[musiton_core::params::ParamInfo]) = if instrument {
+            musiton_devices::instrument_type(d.type_id()).map_or(("?", &[]), |x| (x.name, x.params))
+        } else {
+            musiton_devices::effect_type(d.type_id()).map_or(("?", &[]), |x| (x.name, x.params))
+        };
+        for p in params {
+            out.push((
+                ParamTarget::Device {
+                    device: d.id,
+                    param: p.id.0,
+                },
+                format!("{name}: {}", p.name),
+                *p,
+            ));
+        }
+    }
+    out
+}
+
 impl GraphInfo {
+    /// Node and parameter that `target` of `track` controls, with its scale and whether
+    /// the node expects a linear gain for a dB value.
+    pub fn resolve(
+        &self,
+        project: &Project,
+        track: TrackId,
+        target: musiton_project::ParamTarget,
+    ) -> Option<(NodeIdx, ParamId, musiton_core::params::ParamInfo, bool)> {
+        use musiton_project::ParamTarget;
+        let t = project.track(track)?;
+        match target {
+            ParamTarget::Volume => Some((
+                *self.strips.get(&Some(track))?,
+                STRIP_GAIN,
+                VOLUME_PARAM,
+                true,
+            )),
+            ParamTarget::Pan => {
+                Some((*self.strips.get(&Some(track))?, STRIP_PAN, PAN_PARAM, false))
+            }
+            ParamTarget::Device { device, param } => {
+                let info = automation_targets(t)
+                    .into_iter()
+                    .find(|(x, _, _)| *x == target)
+                    .map(|(_, _, i)| i)?;
+                let is_instrument = t.kind == TrackKind::Instrument
+                    && t.devices.first().is_some_and(|d| d.id == device);
+                let node = if is_instrument {
+                    self.midi.get(&track)?
+                } else {
+                    self.fx.get(&device)?
+                };
+                Some((*node, ParamId(param), info, false))
+            }
+        }
+    }
+
+    /// Engine automation for all lanes that play back, except those in `skip`
+    /// (lanes being recorded right now).
+    pub fn automation(
+        &self,
+        project: &Project,
+        skip: &[(TrackId, musiton_project::ParamTarget)],
+    ) -> musiton_engine::automation::Automation {
+        let mut lanes = Vec::new();
+        for t in &project.tracks {
+            for lane in &t.automation {
+                if lane.mode == musiton_project::AutoMode::Off
+                    || lane.points.is_empty()
+                    || skip.contains(&(t.id, lane.target))
+                {
+                    continue;
+                }
+                if let Some((node, param, info, db_to_gain)) =
+                    self.resolve(project, t.id, lane.target)
+                {
+                    lanes.push(musiton_engine::automation::AutoLane {
+                        node,
+                        param,
+                        info,
+                        db_to_gain,
+                        points: lane
+                            .points
+                            .iter()
+                            .map(|p| (p.tick.0 as f64, p.value, p.curve))
+                            .collect(),
+                    });
+                }
+            }
+        }
+        musiton_engine::automation::Automation(lanes)
+    }
+
     /// The `MidiTrack` node of an instrument track.
     pub fn midi_node(&self, track: TrackId) -> Option<NodeIdx> {
         self.midi.get(&track).copied()
@@ -895,5 +1009,118 @@ mod tests {
         render_offline(&mut e, 8192, 2, 256);
         let latest = analyzer.latest(4096);
         assert!(latest.iter().any(|s| s.abs() > 0.1), "analyzer is silent");
+    }
+
+    /// Phase 11 acceptance: a filter sweep drawn as automation renders identically every
+    /// time — with different callback sizes, and against the stored golden render.
+    #[test]
+    fn automated_filter_sweep_renders_identically() {
+        use musiton_core::ids::DeviceId;
+        use musiton_devices::polysynth::id;
+        use musiton_project::{
+            AutoMode, AutoPoint, AutomationLane, DeviceSlot, MidiClip, Note, ParamTarget, TrackKind,
+        };
+        let assets = AssetStore::default();
+        let mut project = Project {
+            metronome: false,
+            tempo: TempoMap::constant(120.0),
+            ..Project::default()
+        };
+        let mut synth = DeviceSlot::builtin(DeviceId(7), musiton_devices::POLYSYNTH);
+        synth.set_param(id::RESONANCE, Some(0.6));
+        let notes = vec![Note {
+            pitch: 45,
+            velocity: 110,
+            start: Tick(0),
+            length: Tick(8 * PPQ),
+            channel: 0,
+        }];
+        project.tracks.push(Track {
+            id: TrackId(1),
+            kind: TrackKind::Instrument,
+            devices: vec![synth],
+            clips: vec![Clip::Midi(MidiClip {
+                id: ClipId(3),
+                start: Tick(0),
+                length: Tick(8 * PPQ),
+                notes,
+            })],
+            automation: vec![AutomationLane {
+                target: ParamTarget::Device {
+                    device: DeviceId(7),
+                    param: id::CUTOFF,
+                },
+                points: vec![
+                    AutoPoint {
+                        tick: Tick(0),
+                        value: 0.2,
+                        curve: 0.0,
+                    },
+                    AutoPoint {
+                        tick: Tick(4 * PPQ),
+                        value: 0.9,
+                        curve: 0.5,
+                    },
+                    AutoPoint {
+                        tick: Tick(8 * PPQ),
+                        value: 0.3,
+                        curve: -0.5,
+                    },
+                ],
+                mode: AutoMode::Read,
+            }],
+            ..Track::default()
+        });
+        let render = |project: &Project, block: usize, automate: bool| {
+            let built = build(project, &assets, 48_000.0, 512, 0).unwrap();
+            let auto = built.info.automation(project, &[]);
+            assert_eq!(auto.0.len(), 1);
+            let params = built.info.params(project, None);
+            let (mut h, mut e) = create(48_000.0, 512);
+            h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
+            for ((node, pid), val) in params {
+                h.send(EngineCommand::SetParam { node, id: pid, val }).ok();
+            }
+            if automate {
+                h.send(EngineCommand::SetAutomation(Some(Box::new(auto))))
+                    .ok();
+            }
+            render_offline(&mut e, 1024, 2, 512);
+            h.send(EngineCommand::Play).ok();
+            render_offline(&mut e, 4 * 24_000, 2, block)
+        };
+        let a = render(&project, 256, true);
+        let b = render(&project, 100, true);
+        let c = render(&project, 333, true);
+        assert_eq!(a, b, "different callback size changed the render");
+        assert_eq!(a, c);
+        assert_ne!(a, render(&project, 256, false), "automation had no effect");
+
+        let left: Vec<f32> = a.chunks(2).map(|f| f[0]).collect();
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden/filter_sweep.wav");
+        if std::env::var_os("MUSITON_BLESS").is_some() {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for s in &left {
+                w.write_sample(*s).unwrap();
+            }
+            w.finalize().unwrap();
+        } else {
+            let mut r = hound::WavReader::open(&path)
+                .expect("golden file missing (run with MUSITON_BLESS=1)");
+            let golden: Vec<f32> = r.samples::<f32>().map(Result::unwrap).collect();
+            assert_eq!(golden.len(), left.len());
+            let worst = golden
+                .iter()
+                .zip(&left)
+                .fold(0.0_f32, |m, (g, x)| m.max((g - x).abs()));
+            assert!(worst <= 1e-4, "differs from golden by {worst}");
+        }
     }
 }

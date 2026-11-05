@@ -2169,6 +2169,7 @@ dependencies = [
  "anyhow",
  "directories",
  "eframe",
+ "hound",
  "musiton-core",
  "musiton-devices",
  "musiton-engine",
