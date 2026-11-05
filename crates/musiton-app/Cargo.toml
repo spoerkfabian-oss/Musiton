@@ -56,7 +56,7 @@ extensions = ["musiton"]
 name = "Musiton project"
 description = "Musiton project"
 mime-type = "application/x-musiton"
-role = "Editor"
+role = "editor"
 
 [dev-dependencies]
 hound = "3.5"
