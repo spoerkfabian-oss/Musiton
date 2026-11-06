@@ -1,6 +1,20 @@
 # ROADMAP.md
 
-Each phase ends with something the owner can **run and test**. "Done when" = acceptance criteria; all must hold before the next phase.
+Each phase ends with something the owner can **run and test**. "Done when" = acceptance criteria; all must hold before the next phase. Details of what was built per phase are in [NOTES.md](NOTES.md).
+
+## Status
+
+| Phase | State |
+|---|---|
+| 0–11 | done |
+| 12 — VST3 hosting | open. It is done last, by owner decision, together with CLAP, LV2 and the plugin sandbox. |
+| 13 — Export | done |
+| 14 — Polish & release | done. Still needs the owner's test on a fresh Windows PC with the installer. |
+| Later list | in progress. The order is below. |
+
+Work order from here:
+1. The "Later" list.
+2. Phase 12 together with the plugin-related "Later" items.
 
 ## Phase 0 — Foundation
 - [x] Cargo workspace with all crates from ARCHITECTURE.md (empty stubs), `rust-toolchain.toml`, `.gitignore`, README; licence: ask owner (suggest MIT OR Apache-2.0)
@@ -89,8 +103,20 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 - [x] Settings page, themes, full shortcut list, tooltips
 - [x] Crash recovery from autosave; error dialogs instead of panics
 - [x] Performance pass (profile with 32 tracks + plugins on the test PC); optional: parallel graph processing
+  *(measured with 36 built-in synth tracks + effects in the cloud: ~39 % of one core; the run with plugins on the test PC follows phase 12)*
 - [x] Windows installer via `cargo-packager`, `.musiton` file association, app icon
 **Done when:** fresh Windows install → installer → open demo project → plays without dropouts.
 
-## Later (not v1)
-CLAP hosting (`clack-host`), ASIO, time-stretch/warp, comping, sidechain routing UI, tempo ramps, MIDI CC lanes in piano roll, step sequencer, LV2 on Linux, out-of-process plugin sandbox, video track.
+## Later (after v1 features, before or with phase 12)
+Order decided by the owner. Tick when done.
+
+- [ ] Tempo ramps (linear tempo changes between tempo points) and a tempo lane to edit them
+- [ ] MIDI CC lanes in the piano roll
+- [ ] Step sequencer
+- [ ] Sidechain routing UI (the compressor already has sidechain inputs)
+- [ ] Comping (choose the best parts of several takes)
+- [ ] Time-stretch / warp for audio clips
+- [ ] Video track (FFmpeg, shipped as LGPL DLLs)
+- [ ] With phase 12: CLAP hosting (`clack-host`), LV2 on Linux, out-of-process plugin sandbox
+
+Dropped by owner decision: ASIO (proprietary SDK). WASAPI stays the Windows backend.

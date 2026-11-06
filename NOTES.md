@@ -1,11 +1,44 @@
 # NOTES.md
 
-Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bottom.
+This file is the project's memory:
+- owner decisions;
+- currently open issues;
+- a log per phase: what was built, which decisions were made, and the known issues at that time.
+
+Newest entries are at the bottom of the log. Issues that were fixed later are marked **✓ fixed** where they were first noted. The current list is under "Open issues".
 
 ## Owner decisions
 - Licence: MIT OR Apache-2.0.
-- Name: **Musiton**. Crates are `musiton-*` (instead of `daw-*`), scanner binary `musiton-scan`, project folder extension `.musiton` (instead of `.dawproj`). Docs updated accordingly.
+- Name: **Musiton**. Crates are named `musiton-*` (instead of `daw-*`). The scanner binary is `musiton-scan`, and project files end in `.musiton` (instead of `.dawproj`).
 - Commits go straight to `main`.
+- Project layout: the song folder holds the song file plus `audio/`, `peaks/`, `plugins/` and `autosave/` (see phase 3).
+- Phase 12 (VST3) is done **last**: after phases 13 and 14 and after the "Later" list ("Zuerst alles andere").
+- Later list:
+  - ASIO is **not** built (proprietary SDK).
+  - The video track **is** built, with FFmpeg (LGPL DLLs shipped with the installer).
+  - CLAP/LV2 hosting and the plugin sandbox come together with VST3.
+  - The order is in [ROADMAP.md](ROADMAP.md).
+- Documentation is in English. Every non-code folder has a short README.
+
+## Open issues
+**Needs the owner's hardware (cannot be checked in the cloud):**
+- Audio output by ear: test tone, demo song, no crackle at 256 samples.
+- The dropout counter rises on the cloud machine even when idle, because it has no real sound card. Check it on real hardware.
+- Recording: 30 minutes of 2 tracks without dropouts; a recorded clip lines up with the metronome (otherwise use Measure or the manual offset).
+- MIDI keyboard: live play, recording, and both instruments up to the highest notes.
+- Installer on a fresh Windows PC → open the demo song → it plays without dropouts (phase 14 acceptance).
+
+**Known limitations:**
+- WASAPI dropout detection is only the "callback too slow" heuristic. Input gaps also count as dropouts.
+- Input and output on different devices drift slowly against each other. Use one interface for both.
+- Live MIDI timing resolution is one audio block (≤ 5 ms at 256 samples).
+- The tempo can only be edited as one constant BPM in the UI. The engine supports tempo maps; tempo ramps are next on the Later list.
+- The limiter's 72-sample latency is not compensated yet (PDC comes with phase 12).
+- Saturation is not oversampled. In the sampler, a stolen voice can click when all 16 voices are busy.
+- Moving a folder into another folder moves only the folder row, not its tracks.
+- After undoing a relink, the audio stays loaded until the project is reopened. "Locate…" converts on the UI thread, so long files cause a short freeze.
+- Recordings and imports are loaded fully into memory. The `peaks/` disk cache is not used yet.
+- Piano-roll "lasso" is a rectangle selection.
 
 ## Phase 0 — Foundation
 **Built:** Cargo workspace with all crates as stubs, `rust-toolchain.toml` (pinned 1.97.0), CI (Windows + Linux: fmt, clippy -D warnings, test), `tracing` logging in the app (`RUST_LOG` overrides the default `info,wgpu=warn`), empty eframe window titled "Musiton".
@@ -15,7 +48,7 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 - `assert_no_alloc`: the app installs `AllocDisabler` as global allocator in **debug builds only**; audio-thread code is wrapped in `musiton_engine::rt::no_alloc(...)` (no-op in release).
 - Workspace lints: `unsafe_code = "forbid"` (the plugin-host crate will opt out in phase 12), `missing_docs = "warn"` (→ error in CI via `-D warnings`).
 - Dependencies of external crates are built with `opt-level = 2` in dev builds so debug audio code stays fast enough.
-- Top-level `tests/` folder: integration tests live in each crate's own `tests/` folder instead; cross-crate golden tests will go into the crate that owns the offline renderer (`musiton-engine`).
+- No top-level `tests/` folder: integration and golden tests live in each crate's own `tests/` folder (engine, devices, app).
 
 **Known issues**
 - None.
@@ -52,8 +85,8 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 - Metronome: 1760 Hz accent / 880 Hz beat, 8 ms decay, 50 ms long.
 
 **Known issues**
-- The transport bar is temporary (phase 4 builds the real UI); tempo is a single constant BPM in the UI for now (the engine supports tempo maps).
-- Space toggles play/stop; while a number field is being edited by keyboard, Space still toggles the transport.
+- The transport bar is temporary **✓ fixed (phase 4)**. Tempo is a single constant BPM in the UI (still open).
+- Space toggles play/stop even while a number field is being edited **✓ fixed (phase 4: single-key shortcuts are ignored while typing)**.
 
 ## Phase 3 — Project model
 **Built:** `Project` model (tracks, clips, notes, markers, tempo, time signature, loop, master strip, asset list), RON save/load with version check and migration hook, undo/redo for every edit, File menu (New, Open, Open recent, Save, Save as), Edit menu (Undo/Redo with labels), shortcuts (Ctrl+N/O/S, Ctrl+Shift+S, Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z), "Save changes?" dialog on New/Open/Quit, `*` in the title for unsaved changes, autosave every 2 minutes, opening a project given on the command line (for the later file association).
@@ -69,8 +102,8 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 - Recent projects (max 10) are stored in `settings.json`.
 
 **Known issues**
-- The project's `sample_rate` is not yet linked to the device rate (matters from phase 5 on).
-- The transport bar only edits a single constant tempo.
+- The project's `sample_rate` is not linked to the device rate **✓ fixed (follow-ups: background conversion to the device rate)**.
+- The transport bar only edits a single constant tempo (still open).
 
 ## Phase 4 — UI shell
 **Built:** Window layout (menu, transport bar, browser panel left, arrangement centre, Editor/Mixer tabs bottom, status bar). Arrangement view in `musiton-ui`: toolbar (+Audio/+Instrument/+Bus, snap grid, follow, zoom), bar/beat ruler (click/drag to move the playhead, loop range shown), track headers (colour, name, type, mute/solo), timeline lanes with bar/beat/snap grid and playhead. Zoom with Ctrl+wheel (around the mouse), Shift+wheel scrolls in time, wheel scrolls tracks. Snap 1/1…1/32 plus triplets and "Bar". Tracks: add, delete, rename (double-click or F2), recolour (right-click menu), reorder by dragging the header. Help → Keyboard shortcuts. `L` toggles the loop.
@@ -86,8 +119,8 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Performance:** 50 tracks: ~1.2 ms per frame for layout + tessellation in a debug build (test `fifty_tracks_render_well_within_a_60fps_frame` fails above 8 ms).
 
 **Known issues**
-- Browser panel and Editor/Mixer tabs are placeholders until phases 5, 6 and 8.
-- Folder tracks can be created only from files for now (no UI to nest tracks yet).
+- Browser panel and Editor/Mixer tabs are placeholders **✓ fixed (phases 5, 6, 8)**.
+- No UI to create or nest folder tracks **✓ fixed (follow-ups)**.
 
 ## Phase 5 — Audio clips
 **Built:** Import of WAV/FLAC/MP3/OGG/AIFF by dragging files from Explorer onto a track (or below the tracks for a new track) or from the new Browser panel (choose a folder; drag, or double-click to add on a new track at the playhead). Files are decoded (symphonia), converted to the project sample rate (rubato FFT resampler) and stored as 32-bit float WAV in the project's `audio/` folder, on a worker thread. Clips show their waveform from multi-resolution peaks. Editing: move (snapped, also to another track of the same kind), trim both edges, fade handles, clip gain (right-click), split at playhead (S), duplicate (Ctrl+D), delete, multi-select (Shift/Ctrl+click). Each drag is previewed and committed as a single undo step. The engine plays audio tracks through a `ClipPlayer` node per track into a master `Mix` node; mute/solo are honoured.
@@ -104,9 +137,9 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Golden/accuracy test:** `engine_graph::tests::arrangement_plays_back_sample_accurately` — a kick on every beat and a hat on every off-beat at 120 BPM rendered offline with odd callback sizes; every output sample equals the expected sum exactly.
 
 **Known issues**
-- If the audio device runs at a different rate than the project (default 48 kHz), clips are played with linear interpolation (lower quality). Choose 48 kHz in Options → Audio settings.
-- Missing audio files are reported in the status bar; the relink dialog comes later.
-- No rubber-band (box) selection yet.
+- A device rate different from the project rate plays clips with linear interpolation **✓ fixed (follow-ups)**.
+- Missing audio files are only reported in the status bar **✓ fixed (follow-ups: relink dialog)**.
+- No rubber-band selection **✓ fixed (follow-ups)**.
 
 ## Phase 6 — Mixer
 **Built:** Mixer tab with a strip per track plus master: fader (−∞…+6 dB, double-click = 0 dB), pan (double-click = centre), mute, solo, solo-safe (buses), stereo peak + RMS meters with falling peak line and clip indicator (click to reset), output routing (master or a bus), sends to buses (level, pre/post fader, add/remove). Engine: `Strip` node (smoothed gain/pan/mute, pre-fader taps, lock-free `Meter`), `SendGain` node.
@@ -122,8 +155,8 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Acceptance:** `engine_graph::tests::drum_bus_with_send` — drums → drum bus with a −6 dB send to an FX bus; output and the drum-bus/FX/master meters match the levels computed by hand (also with a pre-fader send and the drum fader fully down). A real reverb on the FX bus comes with the built-in effects in phase 10.
 
 **Known issues**
-- No meters in the track headers yet (only in the mixer).
-- Instrument tracks have a strip but no sound source until phase 9.
+- No meters in the track headers **✓ fixed (follow-ups)**.
+- Instrument tracks have no sound source **✓ fixed (phase 9)**.
 
 ## Phase 7 — Audio recording
 **Built:** Input device choice (Options → Audio settings, or "None"), per-track input (mono or stereo pair) and monitoring (off / auto = while armed / on) in the mixer strip, arm button "R" in the track header, Rec button and `R` key in the transport (starts playback if stopped), punch in/out range ("Punch" + bars), recording through a disk thread into `audio/<track name>.wav` takes, loop recording (every loop pass becomes its own take; a new take mutes the clips it covers — right-click → Unmute to bring an older take back), latency compensation: "Measure" (plays a click and times it back through input 1) or an estimate from the buffer sizes, plus a manual correction in ms.
@@ -139,7 +172,7 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Tests:** `musiton-io/tests/recording.rs` (offline, with a simulated input device): sample-exact alignment of a straight take, one take per loop pass, punch in/out, 2 tracks × 60 s with zero lost chunks and no allocation on the audio thread, latency measurement through a simulated 700-frame loopback cable.
 
 **Known issues / needs the owner**
-- The 30-minute 2-track test and "recorded clip lines up with the metronome" need real hardware: arm a track, record a few bars clapping on the click, check the alignment; if it is off, use Measure (cable from output to input 1) or the manual correction.
+- (Still open.) The 30-minute 2-track test and "recorded clip lines up with the metronome" need real hardware: arm a track, record a few bars clapping on the click, check the alignment; if it is off, use Measure (cable from output to input 1) or the manual correction.
 - Input gaps count as dropouts once the input is running.
 
 ## Phase 8 — MIDI + piano roll
@@ -175,7 +208,7 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 
 **Known issues**
 - Owner test on real hardware: play both instruments from the keyboard, especially high notes.
-- Not every polysynth parameter is smoothed yet (levels/resonance change per block); full smoothing is a phase-10 item.
+- Not every polysynth parameter is smoothed **✓ fixed (phase 10 and follow-ups: levels and resonance)**.
 
 ## Phase 10 — Built-in effects
 **Built:** Utility (gain, balance, width, phase invert), 8-band parametric EQ (bell, shelves, cuts, notch) with response curve and live spectrum, compressor (threshold, ratio, attack, release, knee, makeup, mix; sidechain inputs prepared), delay (free or tempo-synced incl. dotted/triplet, feedback with high-cut, ping-pong, mix), FDN reverb (8 lines, Hadamard matrix, decay, size, damping, pre-delay, width, mix), look-ahead limiter (ceiling, release, input gain; never exceeds the ceiling), saturation (soft/hard/tube, drive, tone, output, mix). Device rack in the "Device" tab for every track: "+ Add effect", On/off (bypass), `<`/`>` to reorder, `x` to remove, drag an effect's name onto another track's header to move it.
@@ -205,11 +238,8 @@ Decisions, deviations from ARCHITECTURE.md, known issues. Newest phase at the bo
 **Acceptance:** `engine_graph::tests::automated_filter_sweep_renders_identically` — polysynth cutoff sweep drawn as automation (with curves) renders sample-identically with 256-, 100- and 333-sample callbacks and matches `crates/musiton-app/tests/golden/filter_sweep.wav`. Plus recorder tests (touch returns, latch holds, write + thinning) and a UI test (click in automation view adds a point).
 
 **Known issues**
-- Lanes are shown one at a time per track (no stacked lanes under the track yet).
-- The device-panel knob shows the static value, not the automated one, while automation plays.
-
-## Order change (owner decision)
-Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
+- Only one lane per track is visible **✓ fixed (follow-ups: stacked lanes)**.
+- Knobs show the static value, not the automated one **✓ fixed (follow-ups)**.
 
 ## Phase 13 — Export
 **Built:** File → Export audio…: range (whole song = start to end of the last clip, loop, or selected clips), tail in seconds for reverb/delay, WAV 16/24-bit, WAV 32-bit float, FLAC 16/24-bit, normalize to −0.1 dBFS, TPDF dither for 16-bit, stems (one file per track, named "<song> - <track>.<ext>"). Exports run on a worker thread, faster than real time, with a progress window and Cancel.
@@ -242,11 +272,11 @@ Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
 - Parallel graph processing was not needed at this load and was not built.
 
 **Known issues**
-- Running two Musiton windows at the same time can make the second one offer a wrong "recovery" (shared lock file).
-- A panic on the audio thread is not caught (the real-time rules forbid panics there; the debug build aborts).
-- The installer has not been tested on a fresh Windows PC by the owner yet.
+- Two Musiton windows can make the second one offer a wrong recovery **✓ fixed (follow-ups: one lock per window)**.
+- A panic on the audio thread is not caught **✓ fixed for release builds (follow-ups)**. Debug builds still abort, on purpose.
+- The installer has not been tested on a fresh Windows PC by the owner yet (still open).
 
-## Follow-ups before VST3 (owner decision: "Zuerst alles andere")
+## Follow-ups after phase 14 (before VST3)
 **Fixed known issues**
 - Session locks are per window: each running Musiton holds an OS-locked file in `sessions/`, so a second window no longer triggers a false recovery (uses `File::try_lock`, Rust 1.89+).
 - Device knobs (green when automated) and mixer volume/pan show the automated value at the playhead. Moving an automated control still edits the static value, which only matters once the lane is set to Off.
@@ -262,14 +292,4 @@ Phase 12 (VST3 hosting) is done **last**, after phases 13 and 14.
 - The demo song is balanced (per-part trim utility, mix peak ≈ −2.5 dBFS).
 - Installer config: the file-association role must be lowercase (`editor`).
 
-**Known issues**
-- Moving a folder into another folder moves only the folder row, not its tracks (they keep their parent and stay where they are).
-- After undoing a relink, the audio stays loaded until the project is reopened.
-- "Locate…" converts and copies on the UI thread (short freeze for long files).
-- The dropout counter rises in the cloud test machine even when idle (no real sound card); this needs checking on real hardware.
-
-**Owner decisions (later list)**
-- ASIO: not built (proprietary SDK). WASAPI stays the Windows backend.
-- Video track: build it with FFmpeg (LGPL, shipped as DLLs with the installer).
-- CLAP/LV2 hosting and the out-of-process sandbox are done together with VST3, at the very end.
-- Order: tempo ramps → MIDI CC lanes → step sequencer → sidechain routing UI → comping → time-stretch/warp → video track → VST3/CLAP/LV2/sandbox.
+**Known issues:** see "Open issues" at the top (folder move, relink undo, "Locate…" freeze, dropout counter in the cloud).
