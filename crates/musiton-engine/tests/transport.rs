@@ -154,14 +154,8 @@ fn tempo_change_while_playing_keeps_musical_position() {
 fn tempo_map_with_steps() {
     let (mut h, mut e) = metronome_engine(120.0);
     let map = TempoMap::from_points(vec![
-        TempoPoint {
-            tick: Tick(0),
-            bpm: 120.0,
-        },
-        TempoPoint {
-            tick: Tick(2 * PPQ),
-            bpm: 60.0,
-        },
+        TempoPoint::step(Tick(0), 120.0),
+        TempoPoint::step(Tick(2 * PPQ), 60.0),
     ]);
     h.send(EngineCommand::SetTempoMap(Box::new(map))).ok();
     let out = left(&render_offline(&mut e, 4 * 48_000, 2, BLOCK));

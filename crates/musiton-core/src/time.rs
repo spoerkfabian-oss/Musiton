@@ -24,13 +24,27 @@ pub struct SamplePos(pub u64);
 /// Lowest and highest tempo accepted (BPM).
 pub const BPM_RANGE: (f64, f64) = (10.0, 999.0);
 
-/// A tempo change (step, no ramp) at `tick`.
+/// A tempo change at `tick`: a step, or (with `ramp`) a linear glide to the next point.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TempoPoint {
     /// Where the tempo starts.
     pub tick: Tick,
     /// Beats (quarter notes) per minute.
     pub bpm: f64,
+    /// Glide linearly (in BPM over ticks) to the next point's tempo.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ramp: bool,
+}
+
+impl TempoPoint {
+    /// A step change to `bpm` at `tick`.
+    pub fn step(tick: Tick, bpm: f64) -> Self {
+        Self {
+            tick,
+            bpm,
+            ramp: false,
+        }
+    }
 }
 
 /// Tempo changes over time with tick ↔ seconds ↔ samples conversion.
@@ -54,7 +68,7 @@ impl Default for TempoMap {
 impl TempoMap {
     /// A single tempo for the whole song.
     pub fn constant(bpm: f64) -> Self {
-        Self::from_points(vec![TempoPoint { tick: Tick(0), bpm }])
+        Self::from_points(vec![TempoPoint::step(Tick(0), bpm)])
     }
 
     /// Builds a map from arbitrary points: sorted, BPM clamped to [`BPM_RANGE`],
@@ -74,17 +88,60 @@ impl TempoMap {
         points.reverse();
         if points.first().is_none_or(|p| p.tick.0 != 0) {
             let bpm = points.first().map_or(120.0, |p| p.bpm);
-            points.insert(0, TempoPoint { tick: Tick(0), bpm });
+            points.insert(0, TempoPoint::step(Tick(0), bpm));
         }
-        let mut secs = Vec::with_capacity(points.len());
+        // The last point has nothing to ramp to.
+        if let Some(last) = points.last_mut() {
+            last.ramp = false;
+        }
+        let mut map = Self {
+            secs: Vec::with_capacity(points.len()),
+            points,
+        };
         let mut acc = 0.0;
-        for (i, p) in points.iter().enumerate() {
-            if let Some(prev) = i.checked_sub(1).and_then(|j| points.get(j)) {
-                acc += (p.tick.0 - prev.tick.0) as f64 * secs_per_tick(prev.bpm);
+        for i in 0..map.points.len() {
+            if i > 0 {
+                let len = map.points[i].tick.0 - map.points[i - 1].tick.0;
+                acc += map.segment_secs(i - 1, len as f64);
             }
-            secs.push(acc);
+            map.secs.push(acc);
         }
-        Self { points, secs }
+        map
+    }
+
+    /// Tempo change per tick in segment `i` (0 for steps).
+    fn slope(&self, i: usize) -> f64 {
+        match (self.points.get(i), self.points.get(i + 1)) {
+            (Some(a), Some(b)) if a.ramp && b.tick.0 > a.tick.0 => {
+                (b.bpm - a.bpm) / (b.tick.0 - a.tick.0) as f64
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Seconds from the start of segment `i` to `dt` ticks into it.
+    fn segment_secs(&self, i: usize, dt: f64) -> f64 {
+        let Some(p) = self.points.get(i) else {
+            return 0.0;
+        };
+        let k = self.slope(i);
+        if k.abs() < 1e-12 || dt <= 0.0 {
+            return dt * secs_per_tick(p.bpm);
+        }
+        // ∫ 60 / (PPQ · (b0 + k·t)) dt
+        60.0 / (PPQ as f64 * k) * ((p.bpm + k * dt) / p.bpm).ln()
+    }
+
+    /// Ticks into segment `i` after `s` seconds (inverse of `segment_secs`).
+    fn segment_ticks(&self, i: usize, s: f64) -> f64 {
+        let Some(p) = self.points.get(i) else {
+            return 0.0;
+        };
+        let k = self.slope(i);
+        if k.abs() < 1e-12 || s <= 0.0 {
+            return s / secs_per_tick(p.bpm);
+        }
+        p.bpm * ((s * PPQ as f64 * k / 60.0).exp() - 1.0) / k
     }
 
     /// The tempo points (first one is at tick 0).
@@ -94,13 +151,20 @@ impl TempoMap {
 
     /// Tempo at `tick`.
     pub fn bpm_at(&self, tick: f64) -> f64 {
-        self.segment_by_tick(tick).1.bpm
+        let i = self.index_by_tick(tick);
+        let (_, p) = self.segment(i);
+        p.bpm + self.slope(i) * (tick - p.tick.0 as f64).max(0.0)
     }
 
     /// Seconds from song start to `tick` (negative ticks extrapolate the first tempo).
     pub fn tick_to_seconds(&self, tick: f64) -> f64 {
-        let (secs, p) = self.segment_by_tick(tick);
-        secs + (tick - p.tick.0 as f64) * secs_per_tick(p.bpm)
+        let i = self.index_by_tick(tick);
+        let (secs, p) = self.segment(i);
+        let dt = tick - p.tick.0 as f64;
+        if dt < 0.0 {
+            return secs + dt * secs_per_tick(p.bpm);
+        }
+        secs + self.segment_secs(i, dt)
     }
 
     /// Tick at `seconds` from song start.
@@ -110,7 +174,11 @@ impl TempoMap {
             .partition_point(|&s| s <= seconds)
             .saturating_sub(1);
         let (secs, p) = self.segment(i);
-        p.tick.0 as f64 + (seconds - secs) / secs_per_tick(p.bpm)
+        let ds = seconds - secs;
+        if ds < 0.0 {
+            return p.tick.0 as f64 + ds / secs_per_tick(p.bpm);
+        }
+        p.tick.0 as f64 + self.segment_ticks(i, ds)
     }
 
     /// Sample position (fractional) of `tick` at `sample_rate`.
@@ -126,19 +194,18 @@ impl TempoMap {
         self.seconds_to_tick(sample / sample_rate)
     }
 
-    fn segment_by_tick(&self, tick: f64) -> (f64, TempoPoint) {
-        let i = self
-            .points
+    fn index_by_tick(&self, tick: f64) -> usize {
+        self.points
             .partition_point(|p| p.tick.0 as f64 <= tick)
-            .saturating_sub(1);
-        self.segment(i)
+            .saturating_sub(1)
     }
 
     fn segment(&self, i: usize) -> (f64, TempoPoint) {
-        let p = self.points.get(i).copied().unwrap_or(TempoPoint {
-            tick: Tick(0),
-            bpm: 120.0,
-        });
+        let p = self
+            .points
+            .get(i)
+            .copied()
+            .unwrap_or(TempoPoint::step(Tick(0), 120.0));
         (self.secs.get(i).copied().unwrap_or(0.0), p)
     }
 }
@@ -249,14 +316,8 @@ mod tests {
     fn step_change() {
         // 1 bar (4 beats) at 120 = 2 s, then 60 BPM: one beat = 1 s.
         let m = TempoMap::from_points(vec![
-            TempoPoint {
-                tick: Tick(0),
-                bpm: 120.0,
-            },
-            TempoPoint {
-                tick: Tick(4 * PPQ),
-                bpm: 60.0,
-            },
+            TempoPoint::step(Tick(0), 120.0),
+            TempoPoint::step(Tick(4 * PPQ), 60.0),
         ]);
         assert_relative_eq!(m.tick_to_seconds(5.0 * PPQ as f64), 3.0);
         assert_relative_eq!(m.seconds_to_tick(3.0), 5.0 * PPQ as f64);
@@ -265,20 +326,47 @@ mod tests {
     }
 
     #[test]
-    fn from_points_normalises() {
+    fn ramp_glides_linearly_between_points() {
+        // 60 → 120 BPM over 4 beats: the average beat lasts ln(2) s (∫ 60/bpm).
         let m = TempoMap::from_points(vec![
             TempoPoint {
-                tick: Tick(960),
-                bpm: 90.0,
-            },
-            TempoPoint {
-                tick: Tick(960),
-                bpm: 100.0,
-            },
-            TempoPoint {
                 tick: Tick(0),
-                bpm: 5000.0,
+                bpm: 60.0,
+                ramp: true,
             },
+            TempoPoint::step(Tick(4 * PPQ), 120.0),
+        ]);
+        assert_relative_eq!(m.bpm_at(2.0 * PPQ as f64), 90.0);
+        let ramp_secs = 4.0 * std::f64::consts::LN_2;
+        assert_relative_eq!(
+            m.tick_to_seconds(4.0 * PPQ as f64),
+            ramp_secs,
+            epsilon = 1e-9
+        );
+        // After the ramp: steady 120 BPM (0.5 s per beat).
+        assert_relative_eq!(
+            m.tick_to_seconds(5.0 * PPQ as f64),
+            ramp_secs + 0.5,
+            epsilon = 1e-9
+        );
+        for t in [0.0, 100.0, 1_500.0, 3_839.0, 4_000.0] {
+            assert_relative_eq!(m.seconds_to_tick(m.tick_to_seconds(t)), t, epsilon = 1e-6);
+        }
+        // The last point cannot ramp.
+        let m = TempoMap::from_points(vec![TempoPoint {
+            tick: Tick(0),
+            bpm: 100.0,
+            ramp: true,
+        }]);
+        assert!(!m.points()[0].ramp);
+    }
+
+    #[test]
+    fn from_points_normalises() {
+        let m = TempoMap::from_points(vec![
+            TempoPoint::step(Tick(960), 90.0),
+            TempoPoint::step(Tick(960), 100.0),
+            TempoPoint::step(Tick(0), 5000.0),
         ]);
         assert_eq!(m.points().len(), 2);
         assert_eq!(m.points()[0].bpm, BPM_RANGE.1);
@@ -301,10 +389,14 @@ mod tests {
     }
 
     fn arb_map() -> impl Strategy<Value = TempoMap> {
-        prop::collection::vec((0i64..200_000, 20.0f64..300.0), 0..8).prop_map(|v| {
+        prop::collection::vec((0i64..200_000, 20.0f64..300.0, any::<bool>()), 0..8).prop_map(|v| {
             TempoMap::from_points(
                 v.into_iter()
-                    .map(|(t, bpm)| TempoPoint { tick: Tick(t), bpm })
+                    .map(|(t, bpm, ramp)| TempoPoint {
+                        tick: Tick(t),
+                        bpm,
+                        ramp,
+                    })
                     .collect(),
             )
         })

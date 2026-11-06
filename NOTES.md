@@ -293,3 +293,11 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Installer config: the file-association role must be lowercase (`editor`).
 
 **Known issues:** see "Open issues" at the top (folder move, relink undo, "Locate…" freeze, dropout counter in the cloud).
+
+## Later list — tempo ramps (in progress)
+**Built so far (engine side only):** `TempoPoint` has an optional `ramp` flag. A ramping point glides linearly in BPM over ticks to the next point. Tick ↔ seconds conversion uses the exact integral (`60/(PPQ·k)·ln(…)`) and its inverse, so the conversion stays RT-safe (no allocation) and exactly invertible. The last point never ramps. Files without ramps are unchanged (`ramp` is omitted when false).
+
+**Tests:** `ramp_glides_linearly_between_points` (60→120 BPM over 4 beats takes 4·ln 2 s); the tick↔sample round-trip proptest now includes random ramps. Step-only maps render bit-identically to before (all golden tests unchanged).
+
+**Still to do:** the tempo lane in the arrangement (add/move/delete points, toggle ramp) and a transport BPM field that edits the tempo at the playhead instead of replacing the whole map.
+

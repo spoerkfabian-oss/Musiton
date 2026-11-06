@@ -94,7 +94,7 @@ pub const PPQ: i64 = 960;
 pub struct Tick(pub i64);              // musical position
 pub struct SamplePos(pub u64);         // absolute sample position
 pub struct TempoMap { /* points + cached seconds per point; binary-search lookups, RT-safe */ }
-pub struct TempoPoint { tick: Tick, bpm: f64 }            // step changes (ramps: later list)
+pub struct TempoPoint { tick: Tick, bpm: f64, ramp: bool } // ramp = linear glide to the next point
 pub struct TimeSig { num: u8, den: u8 }                   // one signature per song
 pub struct ParamInfo { id, name, min, max, default, kind /* linear/log/int/toggle/choice */, unit }
 

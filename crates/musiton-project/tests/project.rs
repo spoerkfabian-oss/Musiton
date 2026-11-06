@@ -190,7 +190,7 @@ fn to_edit(p: &mut Project, op: Op) -> Option<Edit> {
         Op::Tempo(points) => Edit::SetTempo(TempoMap::from_points(
             points
                 .into_iter()
-                .map(|(t, bpm)| TempoPoint { tick: Tick(t), bpm })
+                .map(|(t, bpm)| TempoPoint::step(Tick(t), bpm))
                 .collect(),
         )),
         Op::TimeSig(n, d) => Edit::SetTimeSig(TimeSig::new(n, d)),
