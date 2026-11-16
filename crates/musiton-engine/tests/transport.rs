@@ -163,6 +163,37 @@ fn tempo_map_with_steps() {
 }
 
 #[test]
+fn metronome_follows_a_tempo_ramp() {
+    let (mut h, mut e) = metronome_engine(120.0);
+    // 60 → 120 BPM over 4 beats, then steady 120.
+    let map = TempoMap::from_points(vec![
+        TempoPoint {
+            tick: Tick(0),
+            bpm: 60.0,
+            ramp: true,
+        },
+        TempoPoint::step(Tick(4 * PPQ), 120.0),
+    ]);
+    h.send(EngineCommand::SetTempoMap(Box::new(map))).ok();
+    let out = left(&render_offline(&mut e, 4 * 48_000, 2, BLOCK));
+    // Beat k of the ramp starts at 4·ln(1 + k/4) seconds (∫ 60/bpm over the beats so far).
+    let mut expected: Vec<f64> = (0..4).map(|k| 4.0 * (1.0 + k as f64 / 4.0).ln()).collect();
+    let ramp_end = 4.0 * std::f64::consts::LN_2;
+    expected.extend((0..3).map(|k| ramp_end + 0.5 * k as f64));
+    let clicks = onsets(&out);
+    assert_eq!(clicks.len(), expected.len(), "{clicks:?}");
+    for (got, want) in clicks.iter().zip(&expected) {
+        let want = want * 48_000.0;
+        assert!(
+            (*got as f64 - want).abs() <= 1.5,
+            "click at {got}, expected {want:.1}"
+        );
+    }
+    // The beats get closer together during the ramp.
+    assert!(clicks[2] - clicks[1] < clicks[1] - clicks[0]);
+}
+
+#[test]
 fn graph_swap_is_click_free() {
     let (mut h, mut e) = create(SR, BLOCK);
     let build = |v: f32| {

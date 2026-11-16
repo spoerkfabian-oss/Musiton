@@ -110,7 +110,7 @@ Work order from here:
 ## Later (after v1 features, before or with phase 12)
 Order decided by the owner. Tick when done.
 
-- [ ] Tempo ramps (linear tempo changes between tempo points) and a tempo lane to edit them
+- [x] Tempo ramps (linear tempo changes between tempo points) and a tempo lane to edit them
 - [ ] MIDI CC lanes in the piano roll
 - [ ] Step sequencer
 - [ ] Sidechain routing UI (the compressor already has sidechain inputs)

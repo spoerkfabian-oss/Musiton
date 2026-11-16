@@ -103,6 +103,11 @@ impl Transport {
         let mut out = TransportOutput::default();
         let playing = engine.as_ref().is_some_and(|e| e.shared().playing());
         let recording = engine.as_ref().is_some_and(|e| e.shared().recording());
+        let playhead_tick = engine.as_ref().map_or(0.0, |e| {
+            project
+                .tempo
+                .sample_to_tick(e.shared().playhead() as f64, f64::from(e.sample_rate()))
+        });
         let mut cmds = Vec::new();
 
         // Consumed here so a focused button doesn't also react to the same key press.
@@ -159,17 +164,22 @@ impl Transport {
             ui.separator();
 
             ui.label("BPM");
-            let mut bpm = project.tempo.bpm_at(0.0);
-            let r = ui.add(
-                egui::DragValue::new(&mut bpm)
-                    .range(20.0..=300.0)
-                    .speed(0.2)
-                    .fixed_decimals(1),
-            );
+            let mut bpm = project.tempo.bpm_at(playhead_tick);
+            let r = ui
+                .add(
+                    egui::DragValue::new(&mut bpm)
+                        .range(20.0..=300.0)
+                        .speed(0.2)
+                        .fixed_decimals(1),
+                )
+                .on_hover_text(
+                    "Tempo at the playhead. With tempo changes, this edits the section the \
+                     playhead is in (see the Tempo lane).",
+                );
             if r.changed() {
                 let merge = r.dragged() && !r.drag_started();
-                out.edits
-                    .push((Edit::SetTempo(TempoMap::constant(bpm)), merge));
+                let tempo = project.tempo.with_bpm_at(playhead_tick, bpm);
+                out.edits.push((Edit::SetTempo(tempo), merge));
             }
 
             ui.label("Time sig");

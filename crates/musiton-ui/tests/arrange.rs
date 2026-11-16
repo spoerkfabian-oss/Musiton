@@ -362,3 +362,78 @@ fn dragging_on_empty_lane_space_selects_clips_in_the_rectangle() {
     got.sort_unstable();
     assert_eq!(got, vec![10, 20]);
 }
+
+#[test]
+fn tempo_lane_adds_points_and_toggles_ramps() {
+    let ctx = egui::Context::default();
+    let mut p = project_with_tracks(1);
+    let mut arrange = Arrange::new();
+    arrange.show_tempo = true;
+    arrange.follow = false;
+    frame(&ctx, &mut arrange, &mut p, vec![]);
+    let x = 8.0 + musiton_ui::arrange::HEADER_WIDTH + 2.0 * 120.0;
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let click = |ctx: &egui::Context, a: &mut Arrange, p: &mut Project, pos: Pos2| {
+        frame(
+            ctx,
+            a,
+            p,
+            vec![egui::Event::PointerMoved(pos), button(pos, true)],
+        );
+        frame(ctx, a, p, vec![button(pos, false)])
+    };
+    let tempo_edit = |actions: Vec<UiAction>| {
+        actions.into_iter().find_map(|a| match a {
+            UiAction::Edit {
+                edit: Edit::SetTempo(map),
+                ..
+            } => Some(map),
+            _ => None,
+        })
+    };
+    // Probe down from the toolbar until a click lands in the tempo lane.
+    let mut found = None;
+    for y in (30..140).step_by(4) {
+        let pos = Pos2::new(x, y as f32);
+        if let Some(map) = tempo_edit(click(&ctx, &mut arrange, &mut p, pos)) {
+            found = Some((map, pos));
+            break;
+        }
+    }
+    let (_, top) = found.expect("no tempo edit from clicking the tempo lane");
+    // Click again in the middle of the lane, so the new tempo stays inside the lane's range.
+    let pos = Pos2::new(x, top.y + 20.0);
+    let map = tempo_edit(click(&ctx, &mut arrange, &mut p, pos)).expect("tempo edit");
+    assert_eq!(map.points().len(), 2);
+    // Snap is "Bar": two bars in → tick 7680.
+    assert_eq!(map.points()[1].tick, musiton_core::Tick(7680));
+    assert!(!map.points()[1].ramp);
+    p.tempo = map;
+
+    // Double-click the new point: it becomes a ramp start (its index 1 is the last point,
+    // so add a third point first; a last point cannot ramp).
+    let later = Pos2::new(x + 2.0 * 120.0, pos.y);
+    p.tempo = tempo_edit(click(&ctx, &mut arrange, &mut p, later)).expect("second point");
+    // Let time pass, so the clicks above do not count towards a triple-click.
+    for _ in 0..40 {
+        frame(&ctx, &mut arrange, &mut p, vec![]);
+    }
+    // The new point sits where it was clicked (the lane's BPM range did not change).
+    let mut toggled = None;
+    for _ in 0..2 {
+        if let Some(map) = tempo_edit(click(&ctx, &mut arrange, &mut p, pos)) {
+            toggled = Some(map);
+        }
+    }
+    let map = toggled.expect("double-click did not edit the tempo");
+    assert_eq!(map.points().len(), 3);
+    assert!(
+        map.points()[1].ramp,
+        "double-click did not turn the ramp on"
+    );
+}

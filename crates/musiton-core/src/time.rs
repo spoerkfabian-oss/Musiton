@@ -144,6 +144,15 @@ impl TempoMap {
         p.bpm * ((s * PPQ as f64 * k / 60.0).exp() - 1.0) / k
     }
 
+    /// A copy where the tempo point in effect at `tick` has tempo `bpm` (ramps are kept).
+    pub fn with_bpm_at(&self, tick: f64, bpm: f64) -> Self {
+        let mut points = self.points.clone();
+        if let Some(p) = points.get_mut(self.index_by_tick(tick)) {
+            p.bpm = bpm;
+        }
+        Self::from_points(points)
+    }
+
     /// The tempo points (first one is at tick 0).
     pub fn points(&self) -> &[TempoPoint] {
         &self.points
@@ -359,6 +368,24 @@ mod tests {
             ramp: true,
         }]);
         assert!(!m.points()[0].ramp);
+    }
+
+    #[test]
+    fn editing_the_tempo_at_a_position_changes_only_that_section() {
+        let m = TempoMap::from_points(vec![
+            TempoPoint::step(Tick(0), 100.0),
+            TempoPoint {
+                tick: Tick(4 * PPQ),
+                bpm: 120.0,
+                ramp: true,
+            },
+            TempoPoint::step(Tick(8 * PPQ), 140.0),
+        ]);
+        let e = m.with_bpm_at(5.0 * PPQ as f64, 90.0);
+        let bpms: Vec<f64> = e.points().iter().map(|p| p.bpm).collect();
+        assert_eq!(bpms, [100.0, 90.0, 140.0]);
+        assert!(e.points()[1].ramp);
+        assert_eq!(m.with_bpm_at(0.0, 80.0).points()[0].bpm, 80.0);
     }
 
     #[test]

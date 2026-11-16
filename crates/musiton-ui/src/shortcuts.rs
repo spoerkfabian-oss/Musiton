@@ -40,6 +40,16 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Shift+mouse wheel", "Scroll timeline sideways"),
     ("Mouse wheel", "Scroll tracks"),
     ("Click on ruler", "Move playhead"),
+    ("Tempo lane: click", "Add a tempo change"),
+    (
+        "Tempo lane: drag point",
+        "Move a tempo change (time and BPM)",
+    ),
+    (
+        "Tempo lane: double-click point",
+        "Ramp to the next tempo on/off",
+    ),
+    ("Tempo lane: right-click point", "Delete a tempo change"),
     ("Piano roll: Ctrl+A", "Select all notes"),
     ("Piano roll: Delete", "Delete selected notes"),
     ("Piano roll: Ctrl+D", "Duplicate selected notes"),

@@ -8,7 +8,7 @@ use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, U
 use musiton_core::audio::Peaks;
 use musiton_core::ids::{AssetId, ClipId, TrackId};
 use musiton_core::params::ParamInfo;
-use musiton_core::{Tick, TimeSig};
+use musiton_core::{TempoMap, TempoPoint, Tick, TimeSig};
 use musiton_project::{
     AutoMode, AutoPoint, AutomationLane, ChannelStrip, Clip, Edit, ParamTarget, Project, Track,
     TrackKind,
@@ -131,6 +131,10 @@ pub struct Arrange {
     clip_rects: Vec<(ClipId, Rect)>,
     /// Folder tracks shown closed (their tracks are hidden).
     collapsed: HashSet<TrackId>,
+    /// Show the tempo lane under the ruler.
+    pub show_tempo: bool,
+    /// Tempo point being dragged: its index and the BPM range of the lane at drag start.
+    tempo_drag: Option<(usize, f64, f64)>,
 }
 
 impl Arrange {
@@ -201,6 +205,10 @@ impl Arrange {
             playhead,
             &mut actions,
         );
+
+        if self.show_tempo {
+            self.tempo_lane(ui, project, lane_left, playhead, &mut actions);
+        }
 
         let preview = self.preview(project);
         let rows = self.rows(project);
@@ -438,6 +446,8 @@ impl Arrange {
                 });
             ui.toggle_value(&mut self.automation_view, "Automation")
                 .on_hover_text("Show and edit automation (A)");
+            ui.toggle_value(&mut self.show_tempo, "Tempo")
+                .on_hover_text("Show the tempo lane: tempo changes and ramps");
             ui.toggle_value(&mut self.follow, "Follow")
                 .on_hover_text("Scroll with the playhead");
             ui.separator();
@@ -1452,6 +1462,165 @@ impl Arrange {
         ui.separator();
     }
 
+    /// The tempo lane: tempo points (steps or ramps) drawn as a curve; click adds a point,
+    /// drag moves one, double-click toggles its ramp, right-click deletes it.
+    fn tempo_lane(
+        &mut self,
+        ui: &mut Ui,
+        project: &Project,
+        lane_left: f32,
+        playhead: Option<f64>,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), TEMPO_HEIGHT),
+            Sense::hover(),
+        );
+        let header = Rect::from_min_max(row.min, Pos2::new(lane_left, row.bottom()));
+        let rect = Rect::from_min_max(Pos2::new(lane_left, row.top()), row.max);
+        let visuals = ui.visuals().clone();
+        let painter = ui.painter_at(row);
+        painter.rect_filled(
+            header.shrink2(egui::vec2(0.0, 1.0)),
+            2.0,
+            visuals.faint_bg_color,
+        );
+        painter.rect_filled(
+            rect.shrink2(egui::vec2(0.0, 1.0)),
+            0.0,
+            visuals.extreme_bg_color,
+        );
+        let tempo = &project.tempo;
+        painter.text(
+            header.left_center() + egui::vec2(12.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            format!("Tempo  {:.1} BPM", tempo.bpm_at(playhead.unwrap_or(0.0))),
+            egui::FontId::proportional(13.0),
+            visuals.text_color(),
+        );
+
+        let points = tempo.points().to_vec();
+        let (lo, hi) = self
+            .tempo_drag
+            .map_or_else(|| tempo_range(&points), |(_, lo, hi)| (lo, hi));
+        let area = rect.shrink2(egui::vec2(0.0, 6.0));
+        let y_of = |bpm: f64| {
+            let x = ((bpm - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
+            area.bottom() - x * area.height()
+        };
+        let bpm_of = |y: f32| {
+            let x = f64::from((area.bottom() - y) / area.height()).clamp(0.0, 1.0);
+            ((lo + x * (hi - lo)) * 10.0).round() / 10.0
+        };
+        let x_of = |tick: f64| rect.left() + self.view.x(tick);
+        let accent = Color32::from_rgb(240, 170, 60);
+
+        // Curve: sample the map across the visible width (shows steps and ramps alike).
+        let mut line = Vec::new();
+        let mut x = rect.left();
+        while x <= rect.right() {
+            let tick = self.view.tick(x - rect.left()).max(0.0);
+            line.push(Pos2::new(x, y_of(tempo.bpm_at(tick))));
+            x += 2.0;
+        }
+        painter.add(egui::Shape::line(line, Stroke::new(1.5, accent)));
+        for p in &points {
+            let c = Pos2::new(x_of(p.tick.0 as f64), y_of(p.bpm));
+            if rect.x_range().contains(c.x) {
+                if p.ramp {
+                    painter.circle_stroke(c, POINT_R, Stroke::new(2.0, accent));
+                } else {
+                    painter.circle_filled(c, POINT_R, accent);
+                }
+            }
+        }
+        if let Some(t) = playhead {
+            let x = x_of(t);
+            if rect.x_range().contains(x) {
+                painter.vline(x, rect.y_range(), Stroke::new(1.0, playhead_color()));
+            }
+        }
+
+        let resp = ui.interact(
+            rect,
+            ui.scope_id().with("tempo_lane"),
+            Sense::click_and_drag(),
+        );
+        let hit = |p: Pos2| {
+            points.iter().position(|pt| {
+                (x_of(pt.tick.0 as f64) - p.x).abs() <= POINT_R + 3.0
+                    && (y_of(pt.bpm) - p.y).abs() <= POINT_R + 3.0
+            })
+        };
+        let sig = project.time_sig;
+        let set = |points: Vec<TempoPoint>, merge: bool| UiAction::Edit {
+            edit: Edit::SetTempo(TempoMap::from_points(points)),
+            merge,
+        };
+        if let Some(p) = resp.hover_pos() {
+            let tick = self.view.tick(p.x - rect.left()).max(0.0);
+            resp.clone().on_hover_text(format!(
+                "{:.1} BPM\nClick: add tempo change · drag: move · double-click: ramp on/off \
+                 · right-click: delete",
+                tempo.bpm_at(tick)
+            ));
+        }
+        let pointer = resp.interact_pointer_pos();
+        if resp.double_clicked() {
+            if let Some(i) = pointer.and_then(hit) {
+                let mut v = points.clone();
+                if let Some(pt) = v.get_mut(i) {
+                    pt.ramp = !pt.ramp;
+                }
+                actions.push(set(v, false));
+            }
+        } else if resp.clicked() {
+            if let Some(p) = pointer.filter(|p| hit(*p).is_none()) {
+                let tick = self
+                    .snap
+                    .round(self.view.tick(p.x - rect.left()).max(0.0), sig);
+                let mut v = points.clone();
+                v.retain(|pt| pt.tick != tick || tick.0 == 0);
+                v.push(TempoPoint::step(tick, bpm_of(p.y)));
+                actions.push(set(v, false));
+            }
+        }
+        if resp.secondary_clicked() {
+            if let Some(i) = pointer.and_then(hit).filter(|i| *i > 0) {
+                let mut v = points.clone();
+                v.remove(i);
+                actions.push(set(v, false));
+            }
+        }
+        if resp.drag_started() {
+            if let Some(i) = pointer.and_then(hit) {
+                let (lo, hi) = tempo_range(&points);
+                self.tempo_drag = Some((i, lo, hi));
+            }
+        }
+        if let (Some((i, _, _)), Some(p)) = (self.tempo_drag, pointer) {
+            if resp.dragged() {
+                let mut v = points.clone();
+                // Keep the point between its neighbours so its index stays the same.
+                let min = v.get(i.wrapping_sub(1)).map_or(0, |n| n.tick.0 + 1);
+                let max = v.get(i + 1).map_or(i64::MAX, |n| n.tick.0 - 1);
+                if let Some(pt) = v.get_mut(i) {
+                    if i > 0 {
+                        let t = self
+                            .snap
+                            .round(self.view.tick(p.x - rect.left()).max(0.0), sig);
+                        pt.tick = Tick(t.0.clamp(min, max.max(min)));
+                    }
+                    pt.bpm = bpm_of(p.y);
+                }
+                actions.push(set(v, !resp.drag_started()));
+            }
+        }
+        if resp.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            self.tempo_drag = None;
+        }
+    }
+
     /// Rubber-band selection: selects the clips the rectangle touches while dragging.
     fn update_box_select(&mut self, ui: &Ui) {
         let Some((origin, base)) = &self.box_select else {
@@ -1827,6 +1996,17 @@ fn move_into_folder(project: &Project, id: TrackId, folder: Option<TrackId>) -> 
         edit: Edit::Batch(edits),
         merge: false,
     })
+}
+
+/// Height of the tempo lane.
+const TEMPO_HEIGHT: f32 = 48.0;
+
+/// BPM range shown by the tempo lane: the points' range with some room, at least 60…180.
+fn tempo_range(points: &[TempoPoint]) -> (f64, f64) {
+    let (min, max) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+        (lo.min(p.bpm), hi.max(p.bpm))
+    });
+    ((min - 20.0).clamp(10.0, 60.0), (max + 20.0).max(180.0))
 }
 
 #[cfg(test)]

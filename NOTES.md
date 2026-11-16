@@ -32,7 +32,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - WASAPI dropout detection is only the "callback too slow" heuristic. Input gaps also count as dropouts.
 - Input and output on different devices drift slowly against each other. Use one interface for both.
 - Live MIDI timing resolution is one audio block (≤ 5 ms at 256 samples).
-- The tempo can only be edited as one constant BPM in the UI. The engine supports tempo maps; tempo ramps are next on the Later list.
+- The time signature is one value for the whole song (tempo changes and ramps are editable in the tempo lane).
 - The limiter's 72-sample latency is not compensated yet (PDC comes with phase 12).
 - Saturation is not oversampled. In the sampler, a stolen voice can click when all 16 voices are busy.
 - Moving a folder into another folder moves only the folder row, not its tracks.
@@ -85,7 +85,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Metronome: 1760 Hz accent / 880 Hz beat, 8 ms decay, 50 ms long.
 
 **Known issues**
-- The transport bar is temporary **✓ fixed (phase 4)**. Tempo is a single constant BPM in the UI (still open).
+- The transport bar is temporary **✓ fixed (phase 4)**. Tempo is a single constant BPM in the UI **✓ fixed (later list: tempo lane)**.
 - Space toggles play/stop even while a number field is being edited **✓ fixed (phase 4: single-key shortcuts are ignored while typing)**.
 
 ## Phase 3 — Project model
@@ -103,7 +103,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 
 **Known issues**
 - The project's `sample_rate` is not linked to the device rate **✓ fixed (follow-ups: background conversion to the device rate)**.
-- The transport bar only edits a single constant tempo (still open).
+- The transport bar only edits a single constant tempo **✓ fixed (later list: tempo lane)**.
 
 ## Phase 4 — UI shell
 **Built:** Window layout (menu, transport bar, browser panel left, arrangement centre, Editor/Mixer tabs bottom, status bar). Arrangement view in `musiton-ui`: toolbar (+Audio/+Instrument/+Bus, snap grid, follow, zoom), bar/beat ruler (click/drag to move the playhead, loop range shown), track headers (colour, name, type, mute/solo), timeline lanes with bar/beat/snap grid and playhead. Zoom with Ctrl+wheel (around the mouse), Shift+wheel scrolls in time, wheel scrolls tracks. Snap 1/1…1/32 plus triplets and "Bar". Tracks: add, delete, rename (double-click or F2), recolour (right-click menu), reorder by dragging the header. Help → Keyboard shortcuts. `L` toggles the loop.
@@ -294,10 +294,20 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 
 **Known issues:** see "Open issues" at the top (folder move, relink undo, "Locate…" freeze, dropout counter in the cloud).
 
-## Later list — tempo ramps (in progress)
-**Built so far (engine side only):** `TempoPoint` has an optional `ramp` flag. A ramping point glides linearly in BPM over ticks to the next point. Tick ↔ seconds conversion uses the exact integral (`60/(PPQ·k)·ln(…)`) and its inverse, so the conversion stays RT-safe (no allocation) and exactly invertible. The last point never ramps. Files without ramps are unchanged (`ramp` is omitted when false).
+## Later list — tempo ramps
+**Built**
+- `TempoPoint` has an optional `ramp` flag: a ramping point glides linearly in BPM over ticks to the next point. The last point never ramps.
+- Tempo lane in the arrangement (toolbar "Tempo"): the tempo is drawn as a curve under the ruler. Click adds a tempo change (snapped to the grid), drag moves a point in time and BPM, double-click turns the ramp to the next point on or off (ramp starts are drawn hollow), right-click deletes. The first point stays at the song start.
+- The BPM field in the transport bar shows the tempo at the playhead and edits the section the playhead is in (`TempoMap::with_bpm_at`), instead of replacing the whole tempo map.
 
-**Tests:** `ramp_glides_linearly_between_points` (60→120 BPM over 4 beats takes 4·ln 2 s); the tick↔sample round-trip proptest now includes random ramps. Step-only maps render bit-identically to before (all golden tests unchanged).
+**Decisions**
+- Tick ↔ seconds conversion uses the exact integral of the ramp (`60/(PPQ·k)·ln(…)`) and its inverse, so it stays RT-safe (no allocation) and exactly invertible.
+- File format: `ramp` is omitted when false, so files without ramps are unchanged.
+- The lane shows 60…180 BPM, or wider when the song's tempos need it. The range is frozen while a point is dragged.
+- Audio clips keep their length in seconds (no time-stretch yet): their start follows the tempo map, their content does not.
 
-**Still to do:** the tempo lane in the arrangement (add/move/delete points, toggle ramp) and a transport BPM field that edits the tempo at the playhead instead of replacing the whole map.
+**Tests:** core — `ramp_glides_linearly_between_points`, `editing_the_tempo_at_a_position_changes_only_that_section`, and the tick↔sample round-trip proptest now includes random ramps. Engine — `metronome_follows_a_tempo_ramp` (clicks land within 1.5 samples of the analytic positions). UI — `tempo_lane_adds_points_and_toggles_ramps`. Step-only maps render bit-identically to before (all golden tests unchanged).
 
+**Known issues**
+- The time signature is still one value for the whole song.
+- A third quick click on a tempo point counts as a triple-click and does not toggle the ramp again.
