@@ -109,6 +109,34 @@ impl Project {
         false
     }
 
+    /// Whether `src` may feed a sidechain input on `target`: not the track itself, and no
+    /// signal path (routing, sends or other sidechains) leads from `target` back to `src`.
+    pub fn sidechain_ok(&self, target: TrackId, src: TrackId) -> bool {
+        if target == src || self.track(src).is_none_or(|t| t.kind == TrackKind::Folder) {
+            return false;
+        }
+        let mut stack = vec![target];
+        let mut seen = Vec::new();
+        while let Some(t) = stack.pop() {
+            if t == src {
+                return false;
+            }
+            if seen.contains(&t) {
+                continue;
+            }
+            seen.push(t);
+            stack.extend(self.targets(t));
+            // Tracks whose devices listen to `t`.
+            stack.extend(
+                self.tracks
+                    .iter()
+                    .filter(|x| x.devices.iter().any(|d| d.sidechain == Some(t)))
+                    .map(|x| x.id),
+            );
+        }
+        true
+    }
+
     /// Bus tracks `from` may route to (output or send) without creating a loop.
     pub fn valid_bus_targets(&self, from: TrackId) -> Vec<TrackId> {
         self.tracks
@@ -366,6 +394,9 @@ pub struct DeviceSlot {
     pub bypass: bool,
     /// What it is.
     pub kind: DeviceKind,
+    /// Track whose signal (before its fader) feeds the device's sidechain input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<TrackId>,
 }
 
 /// Device types.
@@ -395,6 +426,7 @@ impl DeviceSlot {
                 params: Vec::new(),
                 samples: Vec::new(),
             },
+            sidechain: None,
         }
     }
 

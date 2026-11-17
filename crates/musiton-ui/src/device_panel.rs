@@ -34,6 +34,9 @@ pub struct DeviceType {
     pub drum_param: Option<u64>,
     /// Id of the "root key" parameter, if any.
     pub root_param: Option<u64>,
+    /// Id of the sidechain on/off switch (effects with a sidechain input). The panel
+    /// shows a source-track choice instead of the switch.
+    pub sidechain_param: Option<u64>,
 }
 
 /// Drag payload: an effect being dragged to another track.
@@ -437,6 +440,16 @@ fn effects(
                     c.remove(i);
                     actions.push(set_chain(c));
                 }
+                if ty.sidechain_param.is_some() {
+                    let mut src = d.sidechain;
+                    if sidechain_picker(ui, project, t, d, &mut src) {
+                        let mut c = chain.clone();
+                        if let Some(x) = c.get_mut(i) {
+                            x.sidechain = src;
+                        }
+                        actions.push(set_chain(c));
+                    }
+                }
             });
             if let Some(view) = input.eq_views.get(&d.id) {
                 eq_display(ui, view);
@@ -444,6 +457,43 @@ fn effects(
             param_knobs(ui, t, input.playhead, d, ty, actions);
         });
     }
+}
+
+/// "Sidechain from" choice of an effect; returns whether the user changed it.
+fn sidechain_picker(
+    ui: &mut Ui,
+    project: &Project,
+    t: &Track,
+    d: &DeviceSlot,
+    src: &mut Option<TrackId>,
+) -> bool {
+    let name = |id: Option<TrackId>| match id.and_then(|id| project.track(id)) {
+        Some(x) => x.name.clone(),
+        None => "Off".to_owned(),
+    };
+    let before = *src;
+    ui.separator();
+    ui.label("Sidechain");
+    egui::ComboBox::from_id_salt(("sidechain", d.id))
+        .width(110.0)
+        .selected_text(name(*src))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(src, None, "Off");
+            // Only sources that cannot feed back into this track.
+            for x in project
+                .tracks
+                .iter()
+                .filter(|x| project.sidechain_ok(t.id, x.id) || Some(x.id) == before)
+            {
+                ui.selectable_value(src, Some(x.id), x.name.as_str());
+            }
+        })
+        .response
+        .on_hover_text(
+            "The compressor reacts to this track's signal (before its fader) instead of its own \
+             input — e.g. duck the bass with the kick",
+        );
+    *src != before
 }
 
 /// The value automation sets for `param` of `device` at `tick` (lanes that are not Off).
@@ -473,7 +523,11 @@ fn param_knobs(
 ) {
     let track = t.id;
     ui.horizontal_wrapped(|ui| {
-        for p in ty.params {
+        for p in ty
+            .params
+            .iter()
+            .filter(|p| Some(p.id.0) != ty.sidechain_param)
+        {
             let auto = playhead.and_then(|tick| automated_value(t, d.id, p, tick));
             let mut v = auto.unwrap_or_else(|| d.param(p.id.0).unwrap_or(p.default));
             let (changed, merge) = param_widget(ui, d.id, p, &mut v, auto.is_some());

@@ -113,7 +113,7 @@ Order decided by the owner. Tick when done.
 - [x] Tempo ramps (linear tempo changes between tempo points) and a tempo lane to edit them
 - [x] MIDI CC lanes in the piano roll
 - [x] Step sequencer
-- [ ] Sidechain routing UI (the compressor already has sidechain inputs)
+- [x] Sidechain routing UI (the compressor already has sidechain inputs)
 - [ ] Comping (choose the best parts of several takes)
 - [ ] Time-stretch / warp for audio clips
 - [ ] Video track (FFmpeg, shipped as LGPL DLLs)

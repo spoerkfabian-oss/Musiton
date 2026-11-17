@@ -358,3 +358,16 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Steps have no per-step probability, swing or note length editing (use the piano roll for lengths).
 - Melodic rows show two octaves; others need "Lowest key" or scrolling.
 
+## Later list — sidechain routing
+**Built**
+- Effects with a sidechain input (the compressor) show "Sidechain: Off / <track>" in their rack header. The compressor's "Sidechain" switch is no longer shown; it follows the choice.
+- File format: `DeviceSlot.sidechain: Option<TrackId>`, omitted when unset (old files unchanged).
+- Graph: the source track's strip output *before the fader* (outputs 2/3, the pre-fader send taps) goes into the effect's inputs 2/3. So a muted or pulled-down kick still ducks the bass.
+- `Project::sidechain_ok(target, src)` refuses sources that would close a loop (the target reaching the source through routing, sends or other sidechains). The UI only offers allowed tracks, and the graph builder skips a stored source that has become a loop, instead of failing.
+
+**Tests:** `sidechain_compressor_ducks_the_bass_with_the_kick` — more than 10 dB of ducking during kick hits with the kick fader all the way down, none without a source, and a self-sidechain neither offered nor breaking the build.
+
+**Known issues**
+- Only the compressor has a sidechain input; the EQ, gate-style effects and plugins (phase 12) will follow.
+- Sidechain sources are not kept audible when the target track is soloed.
+

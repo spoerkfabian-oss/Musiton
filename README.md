@@ -15,7 +15,7 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
   - Instruments: a polysynth and a sampler with a drum mode.
   - Effects: EQ with spectrum view, compressor, delay, FDN reverb, limiter, saturation and utility.
   - Presets for all of them.
-- **Mixer:** faders, pan, mute, solo and solo-safe; sends and buses; meters in the mixer and in the track headers.
+- **Mixer:** faders, pan, mute, solo and solo-safe; sends and buses; meters in the mixer and in the track headers. Sidechain: a compressor can listen to another track (e.g. duck the bass with the kick).
 - **Automation:** lanes for volume, pan and every device parameter, with curves; read, write, touch and latch modes.
 - **Export:** WAV 16/24/32f and FLAC 16/24, with normalize, dither and stems; faster than real time.
 - **Safety:** autosave, crash recovery, a dialog for relinking missing audio files, and error dialogs instead of crashes.

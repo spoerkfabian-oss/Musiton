@@ -220,6 +220,7 @@ fn effect_types() -> Vec<musiton_ui::device_panel::DeviceType> {
             presets: Vec::new(),
             drum_param: None,
             root_param: None,
+            sidechain_param: t.sidechain_param,
         })
         .collect()
 }
@@ -590,6 +591,7 @@ impl App {
                     presets,
                     drum_param: sampler.then_some(musiton_devices::sampler::id::DRUM),
                     root_param: sampler.then_some(musiton_devices::sampler::id::ROOT),
+                    sidechain_param: None,
                 }
             })
             .collect()

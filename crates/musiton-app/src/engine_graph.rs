@@ -38,7 +38,7 @@ type TrackStructure = (
     Vec<Clip>,
     RecordSetup,
     Option<(String, Vec<SampleZone>)>,
-    Vec<(musiton_core::ids::DeviceId, String)>,
+    Vec<(musiton_core::ids::DeviceId, String, Option<TrackId>)>,
 );
 
 /// The effect devices of a track (everything after the instrument).
@@ -57,6 +57,14 @@ fn effect_params(d: &musiton_project::DeviceSlot) -> Vec<(u64, f32)> {
                 .collect()
         })
         .unwrap_or_default();
+    // The sidechain switch follows whether a source track is chosen.
+    if let Some(sw) = musiton_devices::effect_type(d.type_id()).and_then(|t| t.sidechain_param) {
+        let on = if d.sidechain.is_some() { 1.0 } else { 0.0 };
+        match out.iter_mut().find(|(id, _)| *id == sw) {
+            Some(p) => p.1 = on,
+            None => out.push((sw, on)),
+        }
+    }
     out.push((FX_BYPASS.0, if d.bypass { 1.0 } else { 0.0 }));
     out
 }
@@ -129,7 +137,7 @@ pub fn structure(project: &Project, input_channels: usize) -> Structure {
                     instrument_of(t),
                     effects_of(t)
                         .iter()
-                        .map(|d| (d.id, d.type_id().to_owned()))
+                        .map(|d| (d.id, d.type_id().to_owned(), d.sidechain))
                         .collect(),
                 )
             })
@@ -402,6 +410,8 @@ pub fn build(
 
     // Pass 1: an input node and a strip per track.
     let mut inputs = HashMap::new();
+    // Effects listening to another track: (effect node, its track, source track).
+    let mut sidechains = Vec::new();
     let mut track_strips = HashMap::new();
     for t in project
         .tracks
@@ -471,8 +481,12 @@ pub fn build(
         let mut last = head;
         for d in effects_of(t) {
             let (effect, analyzer) = musiton_devices::create_effect(d.type_id(), &effect_params(d));
+            let takes_sidechain = effect.num_inputs() >= 4;
             let node = b.add(Box::new(FxSlot::new(effect, d.bypass)));
             stereo(&mut b, last, 0, node)?;
+            if let (Some(src), true) = (d.sidechain, takes_sidechain) {
+                sidechains.push((node, t.id, src));
+            }
             fx.insert(d.id, node);
             if let Some(a) = analyzer {
                 analyzers.insert(d.id, a);
@@ -538,6 +552,18 @@ pub fn build(
             stereo(&mut b, strip, if s.pre_fader { 2 } else { 0 }, send)?;
             stereo(&mut b, send, 0, dest)?;
             sends.insert((t.id, i), send);
+        }
+    }
+
+    // Sidechains: the source track's signal before its fader (strip outputs 2, 3) into
+    // the effect's inputs 2, 3. Sources that would close a loop are left out.
+    for (node, target, src) in sidechains {
+        let Some(&strip) = track_strips.get(&src) else {
+            continue;
+        };
+        if project.sidechain_ok(target, src) {
+            b.connect(strip, 2, node, 2)?;
+            b.connect(strip, 3, node, 3)?;
         }
     }
 
@@ -817,6 +843,90 @@ mod tests {
             "{} vs {expected}",
             out[2 * 40_000]
         );
+    }
+
+    /// A compressor on the bass, sidechained from the kick, ducks the bass on every kick
+    /// hit — also when the kick's fader is down (the sidechain is taken before the fader).
+    #[test]
+    fn sidechain_compressor_ducks_the_bass_with_the_kick() {
+        use musiton_devices::effects::compressor::id;
+        use musiton_project::DeviceSlot;
+        let mut assets = AssetStore::default();
+        // Bass: a steady 0.5. Kick: full level for the first 0.1 s of every half second.
+        assets.insert(
+            AssetId(1),
+            AudioData {
+                sample_rate: 48_000,
+                channels: vec![vec![0.5; 96_000]],
+            },
+        );
+        let kick: Vec<f32> = (0..96_000)
+            .map(|i| if i % 24_000 < 4_800 { 1.0 } else { 0.0 })
+            .collect();
+        assets.insert(
+            AssetId(2),
+            AudioData {
+                sample_rate: 48_000,
+                channels: vec![kick],
+            },
+        );
+        let mut comp = DeviceSlot::builtin(musiton_core::ids::DeviceId(9), "compressor");
+        comp.set_param(id::THRESHOLD, Some(-30.0));
+        comp.set_param(id::RATIO, Some(20.0));
+        comp.set_param(id::ATTACK, Some(0.001));
+        comp.set_param(id::RELEASE, Some(0.05));
+        comp.sidechain = Some(TrackId(1));
+        let mut project = Project {
+            metronome: false,
+            ..Project::default()
+        };
+        let mut kick_track = Track {
+            id: TrackId(1),
+            clips: vec![clip(5, 2, 0, 8 * PPQ)],
+            ..Track::default()
+        };
+        kick_track.strip.gain_db = -200.0;
+        project.tracks = vec![
+            kick_track,
+            Track {
+                id: TrackId(2),
+                clips: vec![clip(6, 1, 0, 8 * PPQ)],
+                devices: vec![comp],
+                ..Track::default()
+            },
+        ];
+        let level = |project: &Project, from: usize, to: usize| {
+            let built = build(project, &assets, 48_000.0, 256, 0).unwrap();
+            let (mut h, mut e) = create(48_000.0, 256);
+            h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
+            for ((node, pid), val) in built.info.params(project, None) {
+                h.send(EngineCommand::SetParam { node, id: pid, val }).ok();
+            }
+            render_offline(&mut e, 1024, 2, 256);
+            h.send(EngineCommand::Play).ok();
+            let out = render_offline(&mut e, 96_000, 2, 256);
+            let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+            left[from..to].iter().fold(0.0_f32, |m, x| m.max(x.abs()))
+        };
+        // During the second kick hit vs. between hits.
+        let during = level(&project, 26_000, 28_000);
+        let between = level(&project, 40_000, 46_000);
+        let ducking = 20.0 * (during / between).log10();
+        assert!(ducking < -10.0, "only {ducking:.1} dB of ducking");
+
+        // Without a source the bass stays steady.
+        project.tracks[1].devices[0].sidechain = None;
+        let during = level(&project, 26_000, 28_000);
+        let between = level(&project, 40_000, 46_000);
+        assert!(
+            (during / between - 1.0).abs() < 0.01,
+            "{during} vs {between}"
+        );
+
+        // A track cannot be its own source; a loop is left out instead of failing the build.
+        assert!(!project.sidechain_ok(TrackId(2), TrackId(2)));
+        project.tracks[1].devices[0].sidechain = Some(TrackId(2));
+        assert!(build(&project, &assets, 48_000.0, 256, 0).is_ok());
     }
 
     /// Plays notes live into an armed instrument track while recording, turns the recording

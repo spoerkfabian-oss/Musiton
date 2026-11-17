@@ -59,6 +59,8 @@ pub struct EffectType {
     pub name: &'static str,
     /// Its parameters.
     pub params: &'static [ParamInfo],
+    /// The switch that makes the effect listen to its sidechain input (inputs 2 and 3).
+    pub sidechain_param: Option<u64>,
 }
 
 /// All built-in effects.
@@ -67,36 +69,43 @@ pub const EFFECTS: [EffectType; 7] = [
         type_id: "eq",
         name: "EQ",
         params: &effects::eq::PARAMS,
+        sidechain_param: None,
     },
     EffectType {
         type_id: "compressor",
         name: "Compressor",
         params: &effects::compressor::PARAMS,
+        sidechain_param: Some(effects::compressor::id::SIDECHAIN),
     },
     EffectType {
         type_id: "delay",
         name: "Delay",
         params: &effects::delay::PARAMS,
+        sidechain_param: None,
     },
     EffectType {
         type_id: "reverb",
         name: "Reverb",
         params: &effects::reverb::PARAMS,
+        sidechain_param: None,
     },
     EffectType {
         type_id: "saturation",
         name: "Saturation",
         params: &effects::saturation::PARAMS,
+        sidechain_param: None,
     },
     EffectType {
         type_id: "limiter",
         name: "Limiter",
         params: &effects::limiter::PARAMS,
+        sidechain_param: None,
     },
     EffectType {
         type_id: "utility",
         name: "Utility",
         params: &effects::utility::PARAMS,
+        sidechain_param: None,
     },
 ];
 
