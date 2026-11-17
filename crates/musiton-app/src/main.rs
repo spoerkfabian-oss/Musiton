@@ -170,7 +170,7 @@ struct GraphState {
     sent_automation: Option<musiton_engine::automation::Automation>,
     /// Notes last sent to each instrument track's node.
     sent_notes:
-        std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::MidiNote>>,
+        std::collections::HashMap<musiton_core::ids::TrackId, musiton_engine::nodes::MidiNotes>,
     /// Document revision the notes were last checked at.
     notes_rev: Option<u64>,
     /// Live MIDI captured by armed instrument tracks.
@@ -650,6 +650,16 @@ impl App {
                         channel: n.channel,
                     })
                     .collect(),
+                cc: t
+                    .cc
+                    .iter()
+                    .map(|c| musiton_project::CcEvent {
+                        tick: musiton_core::Tick(c.tick),
+                        controller: c.controller,
+                        value: c.value,
+                        channel: c.channel,
+                    })
+                    .collect(),
             };
             edits.push(musiton_project::Edit::AddTrack {
                 index: p.tracks.len() + i,
@@ -688,27 +698,41 @@ impl App {
             .tracks
             .iter()
             .filter(|t| t.kind == musiton_project::TrackKind::Instrument)
-            .map(|t| musiton_io::midi::SmfTrack {
-                name: t.name.clone(),
-                notes: t
-                    .clips
-                    .iter()
-                    .filter_map(|c| match c {
+            .map(|t| {
+                let midi_clips = || {
+                    t.clips.iter().filter_map(|c| match c {
                         musiton_project::Clip::Midi(m) => Some(m),
                         musiton_project::Clip::Audio(_) => None,
                     })
-                    .flat_map(|m| {
-                        m.notes.iter().filter(|n| n.start.0 < m.length.0).map(|n| {
-                            musiton_io::midi::SmfNote {
-                                start: m.start.0 + n.start.0,
-                                length: n.length.0.min(m.length.0 - n.start.0),
-                                key: n.pitch,
-                                velocity: n.velocity,
-                                channel: n.channel,
-                            }
+                };
+                musiton_io::midi::SmfTrack {
+                    name: t.name.clone(),
+                    cc: midi_clips()
+                        .flat_map(|m| {
+                            m.cc.iter()
+                                .filter(|c| (0..m.length.0).contains(&c.tick.0))
+                                .map(|c| musiton_io::midi::SmfCc {
+                                    tick: m.start.0 + c.tick.0,
+                                    controller: c.controller,
+                                    value: c.value,
+                                    channel: c.channel,
+                                })
                         })
-                    })
-                    .collect(),
+                        .collect(),
+                    notes: midi_clips()
+                        .flat_map(|m| {
+                            m.notes.iter().filter(|n| n.start.0 < m.length.0).map(|n| {
+                                musiton_io::midi::SmfNote {
+                                    start: m.start.0 + n.start.0,
+                                    length: n.length.0.min(m.length.0 - n.start.0),
+                                    key: n.pitch,
+                                    velocity: n.velocity,
+                                    channel: n.channel,
+                                }
+                            })
+                        })
+                        .collect(),
+                }
             })
             .filter(|t| !t.notes.is_empty())
             .collect();
@@ -1548,7 +1572,7 @@ impl App {
                     self.graph.sent_notes.insert(track, notes.clone());
                     engine.send_or_log(musiton_engine::EngineCommand::NodeData {
                         node,
-                        data: Box::new(musiton_engine::nodes::MidiNotes(notes)),
+                        data: Box::new(notes),
                     });
                 }
             }

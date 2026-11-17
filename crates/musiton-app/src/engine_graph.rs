@@ -11,9 +11,9 @@ use musiton_core::units::db_to_gain;
 use musiton_core::Tick;
 use musiton_engine::graph::{CompiledGraph, GraphBuilder, GraphError, NodeIdx};
 use musiton_engine::nodes::{
-    Analyzer, AudioInput, ClipPlayer, FxSlot, Meter, Metronome, MidiNote, MidiTrack, Mix,
-    PlayerClip, RecChunk, RecMidi, Recorder, SendGain, Strip, FX_BYPASS, MIDI_TRACK_LIVE,
-    STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
+    Analyzer, AudioInput, ClipPlayer, FxSlot, Meter, Metronome, MidiCc, MidiNote, MidiNotes,
+    MidiTrack, Mix, PlayerClip, RecChunk, RecMidi, Recorder, SendGain, Strip, FX_BYPASS,
+    MIDI_TRACK_LIVE, STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
 };
 use musiton_project::{Clip, InputRoute, OutputRoute, Project, RecordSetup, SampleZone, TrackKind};
 
@@ -89,13 +89,14 @@ fn instrument_params(t: &musiton_project::Track) -> Vec<(u64, f32)> {
         .collect()
 }
 
-/// Notes of every instrument track (what its `MidiTrack` node should play).
-pub fn all_notes(project: &Project) -> HashMap<TrackId, Vec<MidiNote>> {
+/// Notes and controller changes of every instrument track (what its `MidiTrack` node
+/// should play).
+pub fn all_notes(project: &Project) -> HashMap<TrackId, MidiNotes> {
     project
         .tracks
         .iter()
         .filter(|t| t.kind == TrackKind::Instrument)
-        .map(|t| (t.id, midi_notes(t)))
+        .map(|t| (t.id, midi_data(t)))
         .collect()
 }
 
@@ -428,7 +429,7 @@ pub fn build(
                 b.add(Box::new(ClipPlayer::new(clips)))
             }
             TrackKind::Instrument => {
-                let notes = midi_notes(t);
+                let MidiNotes { notes, ccs } = midi_data(t);
                 let rec = t.record.armed.then(|| {
                     let (tx, rx) = rtrb::RingBuffer::new(4096);
                     midi_taps.push((t.id, rx));
@@ -443,7 +444,9 @@ pub fn build(
                     .collect();
                 let instrument =
                     musiton_devices::create_instrument(&type_id, &instrument_params(t), &samples);
-                let node = b.add(Box::new(MidiTrack::new(notes, instrument, rec)));
+                let node = b.add(Box::new(
+                    MidiTrack::new(notes, instrument, rec).with_ccs(ccs),
+                ));
                 midi.insert(t.id, node);
                 node
             }
@@ -555,14 +558,26 @@ pub fn build(
     })
 }
 
-/// All notes of a track's (unmuted) MIDI clips on the timeline, cut to their clips.
-fn midi_notes(t: &musiton_project::Track) -> Vec<MidiNote> {
+/// All notes and controller changes of a track's MIDI clips on the timeline, cut to
+/// their clips.
+fn midi_data(t: &musiton_project::Track) -> MidiNotes {
     let mut out = Vec::new();
+    let mut ccs = Vec::new();
     for c in &t.clips {
         let Clip::Midi(m) = c else {
             continue;
         };
         let clip_end = m.start.0 + m.length.0;
+        ccs.extend(
+            m.cc.iter()
+                .filter(|e| e.tick.0 >= 0 && e.tick.0 < m.length.0)
+                .map(|e| MidiCc {
+                    tick: Tick(m.start.0 + e.tick.0),
+                    cc: e.controller.min(127),
+                    val: f32::from(e.value.min(127)) / 127.0,
+                    ch: e.channel.min(15),
+                }),
+        );
         for n in &m.notes {
             let start = m.start.0 + n.start.0;
             let end = (start + n.length.0).min(clip_end);
@@ -578,7 +593,8 @@ fn midi_notes(t: &musiton_project::Track) -> Vec<MidiNote> {
             });
         }
     }
-    out
+    ccs.sort_by_key(|c| c.tick);
+    MidiNotes { notes: out, ccs }
 }
 
 /// Connects output channels `first`, `first + 1` of `src` to inputs 0, 1 of `dst`.
@@ -1041,6 +1057,7 @@ mod tests {
                 start: Tick(0),
                 length: Tick(8 * PPQ),
                 notes,
+                cc: Vec::new(),
             })],
             automation: vec![AutomationLane {
                 target: ParamTarget::Device {

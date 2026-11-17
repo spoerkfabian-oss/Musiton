@@ -9,7 +9,7 @@ pub use file::{
     load, migrate, project_dir_for, save, write_file, ProjectError, CURRENT_VERSION, EXTENSION,
 };
 pub use model::{
-    Asset, AudioClip, AutoMode, AutoPoint, AutomationLane, ChannelStrip, Clip, DeviceKind,
+    Asset, AudioClip, AutoMode, AutoPoint, AutomationLane, CcEvent, ChannelStrip, Clip, DeviceKind,
     DeviceSlot, InputRoute, Marker, MidiClip, MonitorMode, Note, OutputRoute, ParamTarget, Project,
     RecordSetup, SampleZone, SendRoute, Track, TrackKind, PAN_PARAM, VOLUME_PARAM,
 };

@@ -168,6 +168,7 @@ fn to_edit(p: &mut Project, op: Op) -> Option<Edit> {
                             channel: 0,
                         })
                         .collect(),
+                    cc: Vec::new(),
                 })),
             }
         }

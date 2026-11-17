@@ -7,6 +7,8 @@ use musiton_dsp::env::Adsr;
 use musiton_dsp::filter::{FilterMode, Svf};
 use musiton_dsp::osc::{BlepOsc, Noise, Wave};
 use musiton_dsp::smooth::LinearRamp;
+
+use crate::controllers::{Change, Controllers};
 use musiton_engine::node::{AudioIo, AudioNode, Event, EventKind, ProcessContext};
 
 /// Number of voices.
@@ -15,6 +17,8 @@ pub const VOICES: usize = 16;
 const FILTER_UPDATE: usize = 8;
 /// Output headroom.
 const HEADROOM: f32 = 0.25;
+/// Vibrato depth (semitones) at full mod wheel.
+const MOD_WHEEL_VIBRATO: f32 = 0.5;
 
 const WAVES: &[&str] = &["Saw", "Square", "Triangle", "Sine"];
 const MODES: &[&str] = &["Low-pass", "High-pass", "Band-pass"];
@@ -108,6 +112,8 @@ struct Voice {
     target: f32,
     vel_gain: f32,
     age: u64,
+    /// The key was released while the sustain pedal was down.
+    pedal_held: bool,
 }
 
 /// The polysynth node (no inputs, stereo out).
@@ -125,6 +131,7 @@ pub struct Polysynth {
     /// Smoothed osc 1, osc 2 and noise levels and resonance (no zipper noise on knob moves).
     levels: [LinearRamp; 3],
     resonance: LinearRamp,
+    controllers: Controllers,
     dirty: bool,
     /// Samples rendered so far (filter updates happen on fixed song-relative samples, so
     /// output does not depend on block sizes).
@@ -156,6 +163,7 @@ impl Polysynth {
                 LinearRamp::new(0.0, 1),
             ],
             resonance: LinearRamp::new(0.2, 1),
+            controllers: Controllers::default(),
             dirty: true,
             counter: 0,
         }
@@ -223,16 +231,46 @@ impl Polysynth {
         };
         v.vel_gain = 1.0 - sens + sens * vel;
         v.age = clock;
+        v.pedal_held = false;
         v.amp.gate_on();
         v.fenv.gate_on();
         self.last_pitch = Some(p);
     }
 
     fn note_off(&mut self, key: u8) {
-        for v in self.voices.iter_mut().filter(|v| v.key == Some(key)) {
+        let sustain = self.controllers.sustain;
+        for v in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.key == Some(key) && !v.pedal_held)
+        {
+            if sustain {
+                v.pedal_held = true;
+            } else {
+                v.key = None;
+                v.amp.gate_off();
+                v.fenv.gate_off();
+            }
+        }
+    }
+
+    /// Releases every voice the sustain pedal is holding (all voices with `all`).
+    fn release_held(&mut self, all: bool) {
+        for v in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.key.is_some() && (all || v.pedal_held))
+        {
             v.key = None;
+            v.pedal_held = false;
             v.amp.gate_off();
             v.fenv.gate_off();
+        }
+    }
+
+    fn controller(&mut self, number: u8, val: f32) {
+        if self.controllers.set(number, val) == Change::PedalUp {
+            self.release_held(false);
         }
     }
 
@@ -247,14 +285,17 @@ impl Polysynth {
         let mode = FilterMode::from_index(self.v(id::FILTER_MODE));
         let env_amt = self.v(id::FILTER_ENV) * 6.0;
         let lfo_inc = self.v(id::LFO_RATE) / sr;
-        let (lfo_pitch, lfo_cut) = (self.v(id::LFO_PITCH), self.v(id::LFO_CUTOFF) * 4.0);
+        // The mod wheel adds up to half a semitone of vibrato.
+        let lfo_pitch = self.v(id::LFO_PITCH) + self.controllers.mod_wheel * MOD_WHEEL_VIBRATO;
+        let lfo_cut = self.v(id::LFO_CUTOFF) * 4.0;
         let glide = self.v(id::GLIDE);
         let glide_coef = if glide > 0.0 {
             (-4.6 / (glide * sr)).exp()
         } else {
             0.0
         };
-        self.volume.set_target(self.v(id::VOLUME));
+        self.volume
+            .set_target(self.v(id::VOLUME) * self.controllers.gain());
         self.cutoff.set_target(self.v(id::CUTOFF));
         for (ramp, p) in self
             .levels
@@ -348,12 +389,11 @@ impl AudioNode for Polysynth {
                 EventKind::NoteOn { key, vel, .. } => self.note_on(key, vel),
                 EventKind::NoteOff { key, .. } => self.note_off(key),
                 EventKind::AllNotesOff => {
-                    for k in 0..128 {
-                        self.note_off(k);
-                    }
+                    self.controllers.sustain = false;
+                    self.release_held(true);
                 }
                 EventKind::Param { id, val } => self.set_param(id, val),
-                EventKind::Cc { .. } => {}
+                EventKind::Cc { cc, val, .. } => self.controller(cc, val),
             }
         }
         self.render(io, pos, n);
@@ -482,6 +522,73 @@ mod tests {
             im -= f64::from(s) * w.sin() * win;
         }
         (re * re + im * im).sqrt()
+    }
+
+    fn ev(offset: u32, kind: EventKind) -> Event {
+        Event { offset, kind }
+    }
+
+    fn cc(offset: u32, cc: u8, val: f32) -> Event {
+        ev(offset, EventKind::Cc { ch: 0, cc, val })
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn sustain_pedal_holds_notes_until_it_is_released() {
+        let settings = [(id::AMP_S, 1.0), (id::AMP_R, 0.01)];
+        let off = |offset| ev(offset, EventKind::NoteOff { ch: 0, key: 60 });
+        // Without the pedal the note is gone shortly after the key is released.
+        let mut s = synth(&settings);
+        let out = render(&mut s, &[on(0, 60), off(4_800)], 24_000);
+        assert!(rms(&out[12_000..14_400]) < 1e-4);
+        // With the pedal down it keeps sounding until the pedal comes up.
+        let mut s = synth(&settings);
+        let events = [
+            on(0, 60),
+            cc(2_400, crate::controllers::cc::SUSTAIN, 1.0),
+            off(4_800),
+            cc(16_800, crate::controllers::cc::SUSTAIN, 0.0),
+        ];
+        let out = render(&mut s, &events, 24_000);
+        assert!(rms(&out[12_000..14_400]) > 0.01, "note not held");
+        assert!(rms(&out[21_600..24_000]) < 1e-4, "note not released");
+    }
+
+    #[test]
+    fn volume_controller_scales_the_level_and_mod_wheel_adds_vibrato() {
+        let settings = [
+            (id::OSC1_WAVE, 3.0),
+            (id::CUTOFF, 20_000.0),
+            (id::FILTER_ENV, 0.0),
+            (id::AMP_S, 1.0),
+            (id::LFO_RATE, 6.0),
+        ];
+        let mut s = synth(&settings);
+        let full = rms(&render(&mut s, &[on(0, 69)], 24_000)[12_000..]);
+        let mut s = synth(&settings);
+        let events = [cc(0, crate::controllers::cc::VOLUME, 0.5), on(0, 69)];
+        let half = rms(&render(&mut s, &events, 24_000)[12_000..]);
+        // Volume is squared: 0.5 → a quarter of the level.
+        assert!((half / full - 0.25).abs() < 0.01, "{}", half / full);
+
+        // Vibrato: the period between zero crossings starts to vary.
+        let spread = |out: &[f32]| {
+            let zc: Vec<usize> = (1..out.len())
+                .filter(|&i| out[i - 1] < 0.0 && out[i] >= 0.0)
+                .collect();
+            let periods: Vec<usize> = zc.windows(2).map(|w| w[1] - w[0]).collect();
+            periods.iter().max().unwrap() - periods.iter().min().unwrap()
+        };
+        let mut s = synth(&settings);
+        let steady = spread(&render(&mut s, &[on(0, 69)], 48_000)[4_800..]);
+        let mut s = synth(&settings);
+        let events = [cc(0, crate::controllers::cc::MOD_WHEEL, 1.0), on(0, 69)];
+        let wobble = spread(&render(&mut s, &events, 48_000)[4_800..]);
+        assert!(steady <= 1, "steady {steady}");
+        assert!(wobble >= 3, "wobble {wobble}");
     }
 
     #[test]

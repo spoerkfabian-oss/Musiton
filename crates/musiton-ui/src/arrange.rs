@@ -305,6 +305,7 @@ impl Arrange {
                         start,
                         length,
                         notes: Vec::new(),
+                        cc: Vec::new(),
                     })),
                 },
                 merge: false,

@@ -64,6 +64,11 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("Piano roll: click (Draw tool)", "Add a note"),
     ("Piano roll: right-click note", "Delete note"),
+    (
+        "Piano roll lane: drag",
+        "Draw controller values (Lane = a controller)",
+    ),
+    ("Piano roll lane: right-drag", "Erase controller values"),
 ];
 
 /// Draws the shortcut table.

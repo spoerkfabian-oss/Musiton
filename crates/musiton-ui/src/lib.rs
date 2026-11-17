@@ -2,6 +2,7 @@
 //! [`UiAction`]s that the app applies (edits go through the undo stack).
 
 pub mod arrange;
+pub mod cc_edit;
 pub mod clip_edit;
 pub mod clip_view;
 pub mod device_panel;

@@ -303,6 +303,7 @@ fn dragging_on_empty_lane_space_selects_clips_in_the_rectangle() {
                 start: Tick(k as i64 * 4 * bar),
                 length: Tick(bar),
                 notes: Vec::new(),
+                cc: Vec::new(),
             }));
         }
     }

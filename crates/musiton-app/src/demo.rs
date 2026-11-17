@@ -211,6 +211,7 @@ fn build(copies: usize) -> Project {
                     start: Tick(0),
                     length: Tick(BARS * BAR),
                     notes: part.notes,
+                    cc: Vec::new(),
                 })],
                 ..Track::default()
             };

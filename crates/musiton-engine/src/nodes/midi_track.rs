@@ -27,6 +27,28 @@ pub struct MidiNote {
     pub ch: u8,
 }
 
+/// A controller change on the timeline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MidiCc {
+    /// Position.
+    pub tick: Tick,
+    /// Controller number 0..127.
+    pub cc: u8,
+    /// Value 0..1.
+    pub val: f32,
+    /// Channel 0..15.
+    pub ch: u8,
+}
+
+/// Value a controller returns to when a clip that moved it no longer sets it.
+fn cc_default(cc: u8) -> f32 {
+    match cc {
+        7 | 11 => 1.0, // volume, expression
+        10 => 0.5,     // pan
+        _ => 0.0,
+    }
+}
+
 /// A live MIDI event captured while recording.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RecMidi {
@@ -40,6 +62,9 @@ pub struct RecMidi {
 /// Outputs whatever the instrument outputs (stereo).
 pub struct MidiTrack {
     notes: Vec<MidiNote>,
+    ccs: Vec<MidiCc>,
+    /// Controllers that clip playback has set (bit per controller number).
+    cc_touched: [u64; 2],
     instrument: Box<dyn AudioNode>,
     events: Vec<Event>,
     live: bool,
@@ -52,8 +77,15 @@ pub struct MidiTrack {
     release_clip_notes: bool,
 }
 
-/// New notes for a [`MidiTrack`] (sent with `EngineCommand::NodeData`).
-pub struct MidiNotes(pub Vec<MidiNote>);
+/// New notes and controller changes for a [`MidiTrack`] (sent with
+/// `EngineCommand::NodeData`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MidiNotes {
+    /// Notes.
+    pub notes: Vec<MidiNote>,
+    /// Controller changes.
+    pub ccs: Vec<MidiCc>,
+}
 
 impl MidiTrack {
     /// Track playing `notes` into `instrument`; live MIDI is sent to `rec` while recording.
@@ -65,6 +97,8 @@ impl MidiTrack {
         notes.sort_by_key(|n| n.start);
         Self {
             notes,
+            ccs: Vec::new(),
+            cc_touched: [0; 2],
             instrument,
             events: Vec::new(),
             live: false,
@@ -72,6 +106,48 @@ impl MidiTrack {
             expected: None,
             sounding: [0; 128],
             release_clip_notes: false,
+        }
+    }
+
+    /// Also plays the controller changes `ccs`.
+    pub fn with_ccs(mut self, mut ccs: Vec<MidiCc>) -> Self {
+        ccs.sort_by_key(|c| c.tick);
+        self.ccs = ccs;
+        self
+    }
+
+    /// Playback (re)starts at `pos`: sets every controller the clips use to the value it
+    /// has there. Controllers the clips moved earlier but do not set before `pos` return
+    /// to their default.
+    fn chase_controllers(&mut self, pos: u64, at: impl Fn(Tick) -> u64) {
+        let mut last = [(f32::NAN, 0u8); 128];
+        for c in &self.ccs {
+            if at(c.tick) >= pos {
+                break;
+            }
+            if let Some(slot) = last.get_mut(usize::from(c.cc)) {
+                *slot = (c.val, c.ch);
+            }
+        }
+        for cc in 0..128u8 {
+            let (val, ch) = last.get(usize::from(cc)).copied().unwrap_or((f32::NAN, 0));
+            let touched = self
+                .cc_touched
+                .get(usize::from(cc / 64))
+                .is_some_and(|w| w & (1 << (cc % 64)) != 0);
+            if !val.is_nan() {
+                self.touch(cc);
+                self.push(0, EventKind::Cc { ch, cc, val });
+            } else if touched {
+                let val = cc_default(cc);
+                self.push(0, EventKind::Cc { ch: 0, cc, val });
+            }
+        }
+    }
+
+    fn touch(&mut self, cc: u8) {
+        if let Some(w) = self.cc_touched.get_mut(usize::from(cc / 64)) {
+            *w |= 1 << (cc % 64);
         }
     }
 
@@ -125,6 +201,29 @@ impl AudioNode for MidiTrack {
             let sr = f64::from(ctx.sample_rate);
             let at = |t: Tick| ctx.tempo.tick_to_sample(t.0 as f64, sr).round() as u64;
             let end_tick = ctx.tempo.sample_to_tick((pos + n) as f64, sr).ceil() as i64 + 1;
+            if !continuous {
+                self.chase_controllers(pos, at);
+            }
+            for i in 0..self.ccs.len() {
+                let Some(c) = self.ccs.get(i).copied() else {
+                    break;
+                };
+                if c.tick.0 > end_tick {
+                    break;
+                }
+                let s = at(c.tick);
+                if (pos..pos + n).contains(&s) {
+                    self.touch(c.cc);
+                    self.push(
+                        (s - pos) as usize,
+                        EventKind::Cc {
+                            ch: c.ch,
+                            cc: c.cc,
+                            val: c.val,
+                        },
+                    );
+                }
+            }
             for i in 0..self.notes.len() {
                 let Some(note) = self.notes.get(i).copied() else {
                     break;
@@ -212,9 +311,13 @@ impl AudioNode for MidiTrack {
     ) -> Option<Box<dyn std::any::Any + Send>> {
         match data.downcast::<MidiNotes>() {
             Ok(mut new) => {
-                new.0.sort_unstable_by_key(|n| n.start);
-                std::mem::swap(&mut self.notes, &mut new.0);
+                new.notes.sort_unstable_by_key(|n| n.start);
+                new.ccs.sort_unstable_by_key(|c| c.tick);
+                std::mem::swap(&mut self.notes, &mut new.notes);
+                std::mem::swap(&mut self.ccs, &mut new.ccs);
                 self.release_clip_notes = true;
+                // Re-chase the controllers on the next block.
+                self.expected = None;
                 Some(new)
             }
             Err(other) => self.instrument.receive(other),

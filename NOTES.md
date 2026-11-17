@@ -311,3 +311,18 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 **Known issues**
 - The time signature is still one value for the whole song.
 - A third quick click on a tempo point counts as a triple-click and does not toggle the ramp again.
+
+## Later list — MIDI CC lanes
+**Built**
+- MIDI clips store controller changes (`MidiClip.cc: Vec<CcEvent>`: tick relative to the clip, controller, value 0–127, channel). Omitted in the file when empty, so older files are unchanged.
+- Piano roll: "Lane" chooses what the lane under the notes shows — Velocity, or a controller (Mod wheel, Volume, Pan, Expression, Sustain pedal, any CC number; controllers used in the clip are marked `*`). Drag draws values (one change per grid step, replacing what was there), right-drag erases; one stroke = one undo step.
+- Engine: `MidiTrack` plays controller changes sample-accurately. On start or after a jump it "chases" controllers: each one gets the last value set before the position; controllers that clips moved earlier but do not set before it return to their defaults (so a sustain pedal never stays down).
+- Instruments: polysynth and sampler react to sustain pedal (CC 64, holds released keys), volume (CC 7) and expression (CC 11, both squared), and the polysynth adds up to ½ semitone of vibrato with the mod wheel (CC 1).
+- MIDI recording keeps controller moves (repeated values dropped); replace mode removes the recorded controllers' old changes in the range. .mid import and export include controller changes.
+
+**Tests:** `controller_changes_play_sample_accurately_and_are_chased_after_a_jump` (engine), `sustain_pedal_holds_notes_until_it_is_released`, `volume_controller_scales_the_level_and_mod_wheel_adds_vibrato`, `pedal_edges_and_gain` (devices), `controller_moves_are_recorded_and_repeats_dropped` (app), `export_then_import_round_trips` now with controllers (io), `painting_draws_a_ramp_on_the_grid_and_replaces_what_was_there` and the piano-roll UI test `drawing_in_the_controller_lane_adds_changes_and_right_drag_erases_them`.
+
+**Known issues**
+- Pan (CC 10) and other controllers are stored and sent but the built-in instruments ignore them (pan is done by the mixer).
+- Pitch bend and aftertouch are not recorded yet.
+

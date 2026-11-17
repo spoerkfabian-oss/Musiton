@@ -244,7 +244,10 @@ fn new_notes_replace_old_ones_without_resetting_and_release_held_notes() {
     );
     // Note 60 is sounding; replace the notes with one at beat 2.
     let old = t
-        .receive(Box::new(MidiNotes(vec![note(PPQ, PPQ, 67)])))
+        .receive(Box::new(MidiNotes {
+            notes: vec![note(PPQ, PPQ, 67)],
+            ccs: Vec::new(),
+        }))
         .unwrap();
     assert!(old.downcast::<MidiNotes>().is_ok());
     run(
@@ -277,4 +280,55 @@ fn new_notes_replace_old_ones_without_resetting_and_release_held_notes() {
     );
     // Unknown data is handed back untouched.
     assert!(t.receive(Box::new(5u32)).is_some());
+}
+
+#[test]
+fn controller_changes_play_sample_accurately_and_are_chased_after_a_jump() {
+    use musiton_engine::nodes::MidiCc;
+    let cc = |tick: i64, cc: u8, val: f32| MidiCc {
+        tick: Tick(tick),
+        cc,
+        val,
+        ch: 0,
+    };
+    let log = Arc::new(Mutex::new(Vec::new()));
+    // 120 BPM: one beat = 24 000 samples. Mod wheel at beat 1 and 2, sustain at beat 3.
+    let mut t = MidiTrack::new(vec![], Box::new(Spy(log.clone())), None).with_ccs(vec![
+        cc(2 * PPQ, 1, 0.9),
+        cc(PPQ, 1, 0.4),
+        cc(3 * PPQ, 64, 1.0),
+    ]);
+    let play = |pos: u64, frames: usize| Run {
+        playing: true,
+        pos,
+        frames,
+        live: vec![],
+        recording: false,
+    };
+    let ccs = |log: &Arc<Mutex<Vec<(u64, EventKind)>>>| -> Vec<(u64, u8, f32)> {
+        log.lock()
+            .unwrap()
+            .drain(..)
+            .filter_map(|(at, k)| match k {
+                EventKind::Cc { cc, val, .. } => Some((at, cc, val)),
+                _ => None,
+            })
+            .collect()
+    };
+    // From the start: each change arrives on its exact sample, in time order.
+    run(&mut t, &[play(0, 60_000)], 256);
+    assert_eq!(ccs(&log), [(24_000, 1, 0.4), (48_000, 1, 0.9)]);
+
+    // Jump into the middle of beat 1: the mod wheel is chased to 0.4 at once.
+    run(&mut t, &[play(30_000, 256)], 256);
+    assert_eq!(ccs(&log), [(30_000, 1, 0.4)]);
+
+    // Jump past everything: both controllers get their last values.
+    run(&mut t, &[play(100_000, 256)], 256);
+    assert_eq!(ccs(&log), [(100_000, 1, 0.9), (100_000, 64, 1.0)]);
+
+    // Jump back to the start: controllers the clips moved return to their defaults
+    // (otherwise the pedal would stay down), then play normally.
+    run(&mut t, &[play(0, 256)], 256);
+    assert_eq!(ccs(&log), [(0, 1, 0.0), (0, 64, 0.0)]);
 }

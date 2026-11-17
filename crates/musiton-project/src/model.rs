@@ -630,6 +630,23 @@ pub struct MidiClip {
     pub length: Tick,
     /// Notes (start relative to the clip).
     pub notes: Vec<Note>,
+    /// Controller changes (position relative to the clip).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cc: Vec<CcEvent>,
+}
+
+/// A MIDI controller change inside a clip (mod wheel, sustain pedal, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CcEvent {
+    /// Position relative to the clip start.
+    pub tick: Tick,
+    /// Controller number 0..127.
+    pub controller: u8,
+    /// Value 0..127.
+    pub value: u8,
+    /// MIDI channel 0..15.
+    pub channel: u8,
 }
 
 /// A MIDI note.

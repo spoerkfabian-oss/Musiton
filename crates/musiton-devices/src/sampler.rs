@@ -11,6 +11,8 @@ use musiton_dsp::resample::Mipmap;
 use musiton_dsp::smooth::LinearRamp;
 use musiton_engine::node::{AudioIo, AudioNode, Event, EventKind, ProcessContext};
 
+use crate::controllers::{Change, Controllers};
+
 /// Number of voices.
 pub const VOICES: usize = 16;
 /// Shortest loop in frames.
@@ -93,6 +95,8 @@ struct Voice {
     age: u64,
     one_shot: bool,
     playing: bool,
+    /// The key was released while the sustain pedal was down.
+    pedal_held: bool,
 }
 
 /// The sampler node (no inputs, stereo out).
@@ -104,6 +108,7 @@ pub struct Sampler {
     sample_rate: f32,
     clock: u64,
     volume: LinearRamp,
+    controllers: Controllers,
     dirty: bool,
 }
 
@@ -117,6 +122,7 @@ impl Sampler {
             sample_rate: 48_000.0,
             clock: 0,
             volume: LinearRamp::new(0.8, 1),
+            controllers: Controllers::default(),
             dirty: true,
         }
     }
@@ -170,17 +176,33 @@ impl Sampler {
         v.age = clock;
         v.one_shot = drum;
         v.playing = true;
+        v.pedal_held = false;
         v.env.gate_on();
     }
 
     fn note_off(&mut self, key: u8) {
+        let sustain = self.controllers.sustain;
         for v in self
             .voices
             .iter_mut()
-            .filter(|v| v.key == Some(key) && !v.one_shot)
+            .filter(|v| v.key == Some(key) && !v.one_shot && !v.pedal_held)
         {
-            v.key = None;
-            v.env.gate_off();
+            if sustain {
+                v.pedal_held = true;
+            } else {
+                v.key = None;
+                v.env.gate_off();
+            }
+        }
+    }
+
+    fn controller(&mut self, number: u8, val: f32) {
+        if self.controllers.set(number, val) == Change::PedalUp {
+            for v in self.voices.iter_mut().filter(|v| v.pedal_held) {
+                v.key = None;
+                v.pedal_held = false;
+                v.env.gate_off();
+            }
         }
     }
 
@@ -209,7 +231,8 @@ impl Sampler {
             f64::from(self.v(id::LOOP_START)),
             f64::from(self.v(id::LOOP_END)),
         );
-        self.volume.set_target(self.v(id::VOLUME));
+        self.volume
+            .set_target(self.v(id::VOLUME) * self.controllers.gain());
         for i in from..to {
             let vol = self.volume.next_value();
             let mut out = [0.0_f32; 2];
@@ -279,13 +302,15 @@ impl AudioNode for Sampler {
                 EventKind::NoteOn { key, vel, .. } => self.note_on(key, vel),
                 EventKind::NoteOff { key, .. } => self.note_off(key),
                 EventKind::AllNotesOff => {
+                    self.controllers.sustain = false;
                     for v in &mut self.voices {
                         v.key = None;
+                        v.pedal_held = false;
                         v.env.gate_off();
                     }
                 }
                 EventKind::Param { id, val } => self.set_param(id, val),
-                EventKind::Cc { .. } => {}
+                EventKind::Cc { cc, val, .. } => self.controller(cc, val),
             }
         }
         self.render(io, pos, n);

@@ -1,5 +1,6 @@
 //! Built-in instruments and effects for Musiton (they implement `musiton_engine::node::AudioNode`).
 
+pub mod controllers;
 pub mod effects;
 pub mod polysynth;
 pub mod sampler;

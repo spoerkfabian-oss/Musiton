@@ -5,8 +5,9 @@ use std::collections::HashSet;
 use egui::{Color32, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui};
 use musiton_core::ids::{ClipId, TrackId};
 use musiton_core::{Tick, TimeSig};
-use musiton_project::{Clip, Edit, MidiClip, Note, Project};
+use musiton_project::{CcEvent, Clip, Edit, MidiClip, Note, Project};
 
+use crate::cc_edit;
 use crate::note_edit;
 use crate::snap::Snap;
 use crate::view::TimelineView;
@@ -61,6 +62,12 @@ pub struct PianoRoll {
     last_len: i64,
     /// Scroll to the clip's notes on the next frame.
     center: bool,
+    /// What the lane under the notes shows: velocities (`None`) or a controller.
+    pub lane: Option<u8>,
+    /// Controller changes while a stroke is being drawn (committed on release).
+    cc_working: Option<Vec<CcEvent>>,
+    /// Last pointer position of the stroke: (tick, value).
+    cc_stroke: Option<(i64, u8)>,
 }
 
 impl Default for PianoRoll {
@@ -84,6 +91,9 @@ impl Default for PianoRoll {
             preview_key: None,
             last_len: 240,
             center: false,
+            lane: None,
+            cc_working: None,
+            cc_stroke: None,
         }
     }
 }
@@ -96,6 +106,8 @@ impl PianoRoll {
             self.selected.clear();
             self.drag = None;
             self.working = None;
+            self.cc_working = None;
+            self.cc_stroke = None;
             self.view.scroll = 0.0;
             self.center = true;
         }
@@ -158,7 +170,12 @@ impl PianoRoll {
         let notes = self.working.clone().unwrap_or_else(|| clip.notes.clone());
         self.keyboard(ui, keys, &mut actions);
         self.grid_ui(ui, grid, track, &clip, &notes, sig, &mut actions);
-        self.velocity_ui(ui, vel_rect, &notes);
+        match self.lane {
+            None => self.velocity_ui(ui, vel_rect, &notes),
+            Some(controller) => {
+                self.cc_ui(ui, vel_rect, track, &clip, controller, sig, &mut actions);
+            }
+        }
         self.finish_drag(ui, grid, vel_rect, track, &clip, sig, &mut actions);
         actions
     }
@@ -236,12 +253,173 @@ impl PianoRoll {
                 }
             }
             ui.separator();
+            self.lane_picker(ui, clip);
+            ui.separator();
             ui.weak(format!(
                 "{} notes, {} selected",
                 clip.notes.len(),
                 self.selected.len()
             ));
         });
+    }
+
+    /// Chooses what the lane under the notes shows.
+    fn lane_picker(&mut self, ui: &mut Ui, clip: &MidiClip) {
+        let label = |lane: Option<u8>| match lane {
+            None => "Velocity".to_owned(),
+            Some(c) => {
+                // Controllers that have changes in this clip are marked.
+                let used = clip.cc.iter().any(|e| e.controller == c);
+                format!("{}{}", cc_edit::name(c), if used { " *" } else { "" })
+            }
+        };
+        ui.label("Lane");
+        egui::ComboBox::from_id_salt("pr_lane")
+            .width(150.0)
+            .selected_text(label(self.lane))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.lane, None, label(None));
+                for (c, _) in cc_edit::NAMED {
+                    ui.selectable_value(&mut self.lane, Some(c), label(Some(c)));
+                }
+                // Other controllers this clip uses (e.g. from an imported MIDI file).
+                let mut others: Vec<u8> = clip
+                    .cc
+                    .iter()
+                    .map(|e| e.controller)
+                    .filter(|c| !cc_edit::NAMED.iter().any(|(n, _)| n == c))
+                    .collect();
+                others.sort_unstable();
+                others.dedup();
+                for c in others {
+                    ui.selectable_value(&mut self.lane, Some(c), label(Some(c)));
+                }
+            })
+            .response
+            .on_hover_text("What the lane under the notes shows and edits");
+        if let Some(c) = &mut self.lane {
+            ui.add(egui::DragValue::new(c).range(0..=127).prefix("CC "))
+                .on_hover_text("Controller number");
+        }
+    }
+
+    /// The controller lane: the controller's values as steps. Drag with the left button
+    /// to draw values (one per grid step), with the right button to erase.
+    #[allow(clippy::too_many_arguments)]
+    fn cc_ui(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        track: TrackId,
+        clip: &MidiClip,
+        controller: u8,
+        sig: TimeSig,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::from_gray(16));
+        painter.hline(
+            rect.x_range(),
+            rect.top(),
+            Stroke::new(1.0, Color32::from_gray(60)),
+        );
+        let height = rect.height() - 4.0;
+        let y_of = |v: u8| rect.bottom() - height * f32::from(v) / 127.0;
+        let at = |p: Pos2| {
+            let tick = self.view.tick(p.x - rect.left()) as i64;
+            let value = ((rect.bottom() - p.y) / height * 127.0)
+                .round()
+                .clamp(0.0, 127.0) as u8;
+            (tick, value)
+        };
+
+        let resp = ui.interact(rect, ui.scope_id().with("pr_cc"), Sense::click_and_drag());
+        let (pos, primary, secondary) = ui.input(|i| {
+            (
+                i.pointer.latest_pos(),
+                i.pointer.primary_down(),
+                i.pointer.secondary_down(),
+            )
+        });
+        if let (true, Some(p)) = (resp.is_pointer_button_down_on(), pos) {
+            if primary || secondary {
+                let cur = at(p);
+                let prev = self.cc_stroke.unwrap_or(cur);
+                let events = self.cc_working.get_or_insert_with(|| clip.cc.clone());
+                if primary {
+                    let step = self.snap.step(sig).unwrap_or(30);
+                    cc_edit::paint(events, controller, prev, cur, step, clip.length.0);
+                } else {
+                    cc_edit::erase(events, controller, prev.0, cur.0);
+                }
+                self.cc_stroke = Some(cur);
+            }
+        } else if !primary && !secondary {
+            self.cc_stroke = None;
+            if let Some(events) = self.cc_working.take() {
+                if events != clip.cc {
+                    let mut c = clip.clone();
+                    c.cc = events;
+                    actions.push(UiAction::Edit {
+                        edit: Edit::ReplaceClip {
+                            track,
+                            clip: Clip::Midi(c),
+                        },
+                        merge: false,
+                    });
+                }
+            }
+        }
+
+        let events = self.cc_working.as_ref().unwrap_or(&clip.cc);
+        let mut mine: Vec<&CcEvent> = events
+            .iter()
+            .filter(|e| e.controller == controller)
+            .collect();
+        mine.sort_by_key(|e| e.tick);
+        let color = Color32::from_rgb(120, 200, 150);
+        let clip_end = rect.left() + self.view.x(clip.length.0 as f64);
+        for (i, e) in mine.iter().enumerate() {
+            let x0 = rect.left() + self.view.x(e.tick.0 as f64);
+            let x1 = mine
+                .get(i + 1)
+                .map_or(clip_end, |n| rect.left() + self.view.x(n.tick.0 as f64));
+            if x1 < rect.left() || x0 > rect.right() {
+                continue;
+            }
+            let y = y_of(e.value);
+            painter.rect_filled(
+                Rect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, rect.bottom())),
+                0.0,
+                color.gamma_multiply(0.25),
+            );
+            painter.line_segment(
+                [Pos2::new(x0, y), Pos2::new(x1, y)],
+                Stroke::new(1.5, color),
+            );
+            painter.circle_filled(Pos2::new(x0, y), 2.5, color);
+        }
+        if mine.is_empty() {
+            painter.text(
+                Pos2::new(rect.left() + 8.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                format!(
+                    "{}: drag to draw values, right-drag to erase",
+                    cc_edit::name(controller)
+                ),
+                egui::FontId::proportional(11.0),
+                Color32::from_gray(150),
+            );
+        }
+        if let Some(p) = resp.hover_pos() {
+            let (tick, _) = at(p);
+            let value = cc_edit::value_at(events, controller, tick)
+                .map_or("not set".to_owned(), |v| v.to_string());
+            resp.on_hover_text(format!(
+                "{}: {value}\nDrag: draw · right-drag: erase",
+                cc_edit::name(controller)
+            ));
+        }
     }
 
     fn sel(&self) -> Vec<usize> {

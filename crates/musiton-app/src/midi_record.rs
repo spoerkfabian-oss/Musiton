@@ -6,12 +6,13 @@ use musiton_core::ids::{ClipId, TrackId};
 use musiton_core::Tick;
 use musiton_engine::node::EventKind;
 use musiton_engine::nodes::RecMidi;
-use musiton_project::{Clip, Edit, MidiClip, Note, Project};
+use musiton_project::{CcEvent, Clip, Edit, MidiClip, Note, Project};
 
-/// Builds the edit that adds a clip with the recorded notes to `track`.
-/// Positions are moved `latency` frames earlier; notes still held at the end close at
-/// `stop`. The clip spans whole bars. In replace mode (not `overdub`), notes of other
-/// clips on the track that start inside the recorded range are removed.
+/// Builds the edit that adds a clip with the recorded notes and controller moves to
+/// `track`. Positions are moved `latency` frames earlier; notes still held at the end
+/// close at `stop`. The clip spans whole bars. In replace mode (not `overdub`), notes of
+/// other clips on the track that start inside the recorded range are removed, and so are
+/// their changes of the controllers that were recorded.
 pub fn to_edit(
     project: &mut Project,
     track: TrackId,
@@ -28,6 +29,9 @@ pub fn to_edit(
     };
     let mut open: HashMap<(u8, u8), (Tick, u8)> = HashMap::new();
     let mut notes: Vec<(Tick, Tick, u8, u8, u8)> = Vec::new();
+    // (position, controller, value, channel); repeated values are dropped.
+    let mut ccs: Vec<(Tick, u8, u8, u8)> = Vec::new();
+    let mut last_cc: HashMap<(u8, u8), u8> = HashMap::new();
     for e in events {
         match e.kind {
             EventKind::NoteOn { ch, key, vel } => {
@@ -39,6 +43,12 @@ pub fn to_edit(
                     notes.push((start, tick(e.pos).max(Tick(start.0 + 1)), key, v, ch));
                 }
             }
+            EventKind::Cc { ch, cc, val } => {
+                let value = (val * 127.0).round().clamp(0.0, 127.0) as u8;
+                if last_cc.insert((ch, cc), value) != Some(value) {
+                    ccs.push((tick(e.pos), cc, value, ch));
+                }
+            }
             _ => {}
         }
     }
@@ -46,12 +56,20 @@ pub fn to_edit(
     for ((ch, key), (start, v)) in open {
         notes.push((start, end_all.max(Tick(start.0 + 1)), key, v, ch));
     }
-    if notes.is_empty() {
+    if notes.is_empty() && ccs.is_empty() {
         return None;
     }
     let bar = project.time_sig.ticks_per_bar();
-    let first = notes.iter().map(|n| n.0 .0).min()?;
-    let last = notes.iter().map(|n| n.1 .0).max()?;
+    let starts = notes
+        .iter()
+        .map(|n| n.0 .0)
+        .chain(ccs.iter().map(|c| c.0 .0));
+    let ends = notes
+        .iter()
+        .map(|n| n.1 .0)
+        .chain(ccs.iter().map(|c| c.0 .0 + 1));
+    let first = starts.min()?;
+    let last = ends.max()?;
     let start = first.div_euclid(bar) * bar;
     let end = (last + bar - 1).div_euclid(bar) * bar;
 
@@ -65,7 +83,12 @@ pub fn to_edit(
                     let abs = m.start.0 + n.start.0;
                     !(start..end).contains(&abs)
                 });
-                if kept.notes.len() != m.notes.len() {
+                kept.cc.retain(|c| {
+                    let abs = m.start.0 + c.tick.0;
+                    !((start..end).contains(&abs)
+                        && last_cc.contains_key(&(c.channel, c.controller)))
+                });
+                if kept.notes.len() != m.notes.len() || kept.cc.len() != m.cc.len() {
                     edits.push(Edit::ReplaceClip {
                         track,
                         clip: Clip::Midi(kept),
@@ -92,6 +115,15 @@ pub fn to_edit(
             start: Tick(start),
             length: Tick(end - start),
             notes: clip_notes,
+            cc: ccs
+                .iter()
+                .map(|&(t, controller, value, channel)| CcEvent {
+                    tick: Tick(t.0 - start),
+                    controller,
+                    value,
+                    channel,
+                })
+                .collect(),
         })),
     });
     Some(Edit::Batch(edits))
@@ -191,5 +223,33 @@ mod tests {
             .collect();
         assert_eq!(counts, vec![0, 1]);
         assert!(to_edit(&mut p, TrackId(1), &[], 0, 0, 48_000.0, false).is_none());
+    }
+
+    #[test]
+    fn controller_moves_are_recorded_and_repeats_dropped() {
+        let mut p = project();
+        let cc = |pos: u64, val: f32| RecMidi {
+            pos,
+            kind: EventKind::Cc { ch: 0, cc: 1, val },
+        };
+        // One beat = 24 000 samples at 120 BPM / 48 kHz.
+        let events = [
+            ev(0, true, 60),
+            cc(24_000, 0.5),
+            cc(30_000, 0.5),
+            cc(48_000, 1.0),
+            ev(60_000, false, 60),
+        ];
+        let edit = to_edit(&mut p, TrackId(1), &events, 0, 96_000, 48_000.0, false).unwrap();
+        UndoStack::default().perform(&mut p, edit, false).unwrap();
+        let Clip::Midi(m) = &p.tracks[0].clips[0] else {
+            panic!("no MIDI clip");
+        };
+        let got: Vec<(i64, u8, u8)> =
+            m.cc.iter()
+                .map(|c| (c.tick.0, c.controller, c.value))
+                .collect();
+        assert_eq!(got, [(PPQ, 1, 64), (2 * PPQ, 1, 127)]);
+        assert_eq!(m.notes.len(), 1);
     }
 }

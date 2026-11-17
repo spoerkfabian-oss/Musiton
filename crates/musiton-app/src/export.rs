@@ -258,6 +258,7 @@ mod tests {
                 start: Tick(0),
                 length: Tick(8 * PPQ),
                 notes,
+                cc: Vec::new(),
             })],
             automation: vec![AutomationLane {
                 target: ParamTarget::Device {

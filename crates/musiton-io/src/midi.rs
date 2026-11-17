@@ -91,6 +91,19 @@ pub struct SmfNote {
     pub channel: u8,
 }
 
+/// A controller change in a MIDI file, in Musiton ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmfCc {
+    /// Position.
+    pub tick: i64,
+    /// Controller number 0..127.
+    pub controller: u8,
+    /// Value 0..127.
+    pub value: u8,
+    /// Channel 0..15.
+    pub channel: u8,
+}
+
 /// One track of a MIDI file.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SmfTrack {
@@ -98,6 +111,8 @@ pub struct SmfTrack {
     pub name: String,
     /// Notes sorted by start.
     pub notes: Vec<SmfNote>,
+    /// Controller changes sorted by position.
+    pub cc: Vec<SmfCc>,
 }
 
 /// Errors reading or writing MIDI files.
@@ -142,6 +157,15 @@ pub fn read_smf(path: &Path) -> Result<(Vec<SmfTrack>, Option<f64>), MidiFileErr
                     let (key, on_vel) = match message {
                         MidiMessage::NoteOn { key, vel } => (key.as_int(), vel.as_int()),
                         MidiMessage::NoteOff { key, .. } => (key.as_int(), 0),
+                        MidiMessage::Controller { controller, value } => {
+                            t.cc.push(SmfCc {
+                                tick,
+                                controller: controller.as_int(),
+                                value: value.as_int(),
+                                channel: ch,
+                            });
+                            continue;
+                        }
                         _ => continue,
                     };
                     if on_vel > 0 {
@@ -162,6 +186,7 @@ pub fn read_smf(path: &Path) -> Result<(Vec<SmfTrack>, Option<f64>), MidiFileErr
         }
         if !t.notes.is_empty() {
             t.notes.sort_by_key(|n| (n.start, n.key));
+            t.cc.sort_by_key(|c| c.tick);
             out.push(t);
         }
     }
@@ -186,37 +211,39 @@ pub fn write_smf(path: &Path, bpm: f64, tracks: &[SmfTrack]) -> Result<(), MidiF
         },
     ]);
     for t in tracks {
-        // (tick, is_on, note)
-        let mut evs: Vec<(i64, bool, SmfNote)> = Vec::new();
+        // (tick, order at the same tick: note-offs, controllers, note-ons, message)
+        let mut evs: Vec<(i64, u8, u8, MidiMessage)> = Vec::new();
         for n in &t.notes {
-            evs.push((n.start.max(0), true, *n));
-            evs.push((n.start.max(0) + n.length.max(1), false, *n));
+            let key = u7::new(n.key.min(127));
+            let vel = u7::new(n.velocity.clamp(1, 127));
+            let ch = n.channel.min(15);
+            evs.push((n.start.max(0), 2, ch, MidiMessage::NoteOn { key, vel }));
+            let off = MidiMessage::NoteOff {
+                key,
+                vel: u7::new(0),
+            };
+            evs.push((n.start.max(0) + n.length.max(1), 0, ch, off));
         }
-        evs.sort_by_key(|(t, on, _)| (*t, *on));
+        for c in &t.cc {
+            let message = MidiMessage::Controller {
+                controller: u7::new(c.controller.min(127)),
+                value: u7::new(c.value.min(127)),
+            };
+            evs.push((c.tick.max(0), 1, c.channel.min(15), message));
+        }
+        evs.sort_by_key(|(t, order, _, _)| (*t, *order));
         let mut track = vec![TrackEvent {
             delta: u28::new(0),
             kind: TrackEventKind::Meta(MetaMessage::TrackName(t.name.as_bytes())),
         }];
         let mut last = 0i64;
-        for (tick, on, n) in evs {
+        for (tick, _, ch, message) in evs {
             let delta = u28::new((tick - last).clamp(0, 0x0FFF_FFFF) as u32);
             last = tick;
-            let key = u7::new(n.key.min(127));
-            let message = if on {
-                MidiMessage::NoteOn {
-                    key,
-                    vel: u7::new(n.velocity.clamp(1, 127)),
-                }
-            } else {
-                MidiMessage::NoteOff {
-                    key,
-                    vel: u7::new(0),
-                }
-            };
             track.push(TrackEvent {
                 delta,
                 kind: TrackEventKind::Midi {
-                    channel: u4::new(n.channel.min(15)),
+                    channel: u4::new(ch),
                     message,
                 },
             });
@@ -266,6 +293,20 @@ mod tests {
                         channel: 2,
                     },
                 ],
+                cc: vec![
+                    SmfCc {
+                        tick: 0,
+                        controller: 64,
+                        value: 127,
+                        channel: 0,
+                    },
+                    SmfCc {
+                        tick: 480,
+                        controller: 1,
+                        value: 33,
+                        channel: 0,
+                    },
+                ],
             },
             SmfTrack {
                 name: "Bass".into(),
@@ -276,6 +317,7 @@ mod tests {
                     velocity: 127,
                     channel: 1,
                 }],
+                cc: Vec::new(),
             },
         ];
         write_smf(&path, 97.0, &tracks).unwrap();
