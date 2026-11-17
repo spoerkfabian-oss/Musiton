@@ -11,6 +11,7 @@ pub mod note_edit;
 pub mod piano_roll;
 pub mod shortcuts;
 pub mod snap;
+pub mod step_seq;
 pub mod view;
 
 use musiton_core::Tick;

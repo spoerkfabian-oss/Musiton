@@ -167,6 +167,7 @@ struct App {
     arrange: Arrange,
     mixer: musiton_ui::mixer::Mixer,
     piano_roll: musiton_ui::piano_roll::PianoRoll,
+    steps: musiton_ui::step_seq::StepSequencer,
     device_panel: musiton_ui::device_panel::DevicePanel,
     /// User presets per device type: (name, values).
     user_presets: presets::PresetMap,
@@ -253,6 +254,7 @@ struct GraphState {
 enum BottomTab {
     #[default]
     Editor,
+    Steps,
     Device,
     Mixer,
 }
@@ -280,6 +282,7 @@ impl App {
             arrange: Arrange::new(),
             mixer: musiton_ui::mixer::Mixer::default(),
             piano_roll: musiton_ui::piano_roll::PianoRoll::default(),
+            steps: musiton_ui::step_seq::StepSequencer::default(),
             device_panel: musiton_ui::device_panel::DevicePanel::default(),
             user_presets: presets::load_all(),
             bottom_tab: BottomTab::default(),
@@ -1887,7 +1890,13 @@ impl App {
                 UiAction::OpenEditor { track, clip } => {
                     self.piano_roll.open(track, clip);
                     self.arrange.selected = Some(track);
-                    self.bottom_tab = BottomTab::Editor;
+                    // Drum tracks open in the step sequencer; others in the piano roll,
+                    // unless the step sequencer is already showing.
+                    if self.drum_pads(track).is_some() {
+                        self.bottom_tab = BottomTab::Steps;
+                    } else if self.bottom_tab != BottomTab::Steps {
+                        self.bottom_tab = BottomTab::Editor;
+                    }
                 }
                 UiAction::Locate(tick) => {
                     if let Some((_, engine)) = &mut self.output {
@@ -1900,6 +1909,36 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Drum pads (key, name) of `track` when its instrument is a sampler in drum mode.
+    fn drum_pads(&self, track: musiton_core::ids::TrackId) -> Option<Vec<(u8, String)>> {
+        let t = self.doc.project.track(track)?;
+        let d = t.devices.first()?;
+        let drum = d.type_id() == musiton_devices::SAMPLER
+            && d.param(musiton_devices::sampler::id::DRUM).unwrap_or(0.0) > 0.5;
+        if !drum {
+            return None;
+        }
+        let first = musiton_ui::device_panel::FIRST_PAD;
+        let pads = musiton_ui::device_panel::PADS;
+        Some(
+            (first..first + pads)
+                .map(|key| {
+                    let sample = d.samples().iter().find(|z| z.key == key).and_then(|z| {
+                        let a = self.doc.project.assets.iter().find(|a| a.id == z.asset)?;
+                        Some(
+                            Path::new(&a.file)
+                                .file_stem()?
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
+                    });
+                    let name = musiton_ui::device_panel::key_name(key);
+                    (key, sample.map_or(name.clone(), |s| format!("{name} {s}")))
+                })
+                .collect(),
+        )
     }
 
     /// Playhead in ticks and whether the transport runs.
@@ -1920,13 +1959,29 @@ impl App {
 
     fn bottom_panel(&mut self, ui: &mut egui::Ui) -> Vec<UiAction> {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.bottom_tab, BottomTab::Editor, "Editor");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Editor, "Editor")
+                .on_hover_text("Piano roll of the open MIDI clip");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Steps, "Steps")
+                .on_hover_text("Step sequencer for the open MIDI clip");
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Device, "Device");
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Mixer, "Mixer");
         });
         ui.separator();
         match self.bottom_tab {
             BottomTab::Editor => self.piano_roll.ui(ui, &self.doc.project),
+            BottomTab::Steps => {
+                let clip = self.piano_roll.clip;
+                let pads = clip.and_then(|(t, _)| self.drum_pads(t));
+                let input = musiton_ui::step_seq::StepInput {
+                    clip,
+                    playhead: self.playhead().0,
+                    pads: pads.as_deref(),
+                };
+                if self.playhead().1 {
+                    ui.ctx().request_repaint_after(Duration::from_millis(30));
+                }
+                self.steps.ui(ui, &self.doc.project, &input)
+            }
             BottomTab::Device => {
                 let types = self.device_types();
                 let project = &self.doc.project;

@@ -340,3 +340,21 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 **Known issues**
 - Under Wine without a GPU, wgpu always fails first; the restart costs about a second. On real Windows PCs wgpu (DirectX 12/Vulkan) is expected to work directly.
 
+## Later list — step sequencer
+**Built**
+- Bottom panel tab "Steps": the MIDI clip that is open in the editor, shown as a grid of rows × steps (1/8, 1/16, 1/32). Click toggles a step; dragging paints (on or off, depending on the first cell); Shift+click accents a step (velocity 127, drawn orange). One stroke = one undo step. The step at the playhead is outlined.
+- Rows: for a sampler in drum mode, one row per pad (C2…D#3, named after the pad's sample). For other instruments, two octaves from "Lowest key"; opening a clip moves them to the C below its lowest note.
+- Double-clicking a clip of a drum-mode track opens it in "Steps"; other clips open in the piano roll unless "Steps" is already showing.
+
+**Decisions**
+- The sequencer edits the clip's ordinary notes (a lit cell = a note starting inside that step; new steps are one step long, velocity 100). No new data type, so playback, export, undo, MIDI export and the piano roll keep working unchanged, and patterns can be refined in the piano roll.
+- The number of steps follows the clip length.
+
+**Tests:** `steps_turn_on_and_off_and_accent` (pure functions) and the UI test `clicking_and_dragging_sets_steps_and_shift_click_accents` (click, drag-paint, accent, drag-erase).
+
+**Found while testing:** UI tests behave differently with `cargo test -p musiton-ui` and `cargo test --workspace`. In the workspace build egui gets its default fonts through eframe's features, so text-sized widgets (toolbars) are wider. Tests that probe for positions must not depend on toolbar sizes.
+
+**Known issues**
+- Steps have no per-step probability, swing or note length editing (use the piano roll for lengths).
+- Melodic rows show two octaves; others need "Lowest key" or scrolling.
+
