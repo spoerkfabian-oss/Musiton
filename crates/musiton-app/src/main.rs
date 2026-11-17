@@ -47,16 +47,27 @@ const APP_NAME: &str = "Musiton";
 /// How long status messages stay visible.
 const STATUS_TIME: Duration = Duration::from_secs(5);
 
+/// Set (to anything) when Musiton restarts itself with the OpenGL renderer.
+const RENDERER_ENV: &str = "MUSITON_RENDERER";
+
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,wgpu=warn")),
-        )
-        .init();
+    let log_path = init_logging();
+    // Panics also go into the log file (release builds have no console).
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        default_hook(info);
+    }));
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting {APP_NAME}");
 
     let open_arg = std::env::args_os().nth(1).map(PathBuf::from);
+    let opengl = std::env::var_os(RENDERER_ENV).is_some_and(|v| v == "opengl");
     let options = eframe::NativeOptions {
+        renderer: if opengl {
+            eframe::Renderer::Glow
+        } else {
+            eframe::Renderer::Wgpu
+        },
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
             .with_inner_size([1280.0, 800.0])
@@ -66,12 +77,69 @@ fn main() -> anyhow::Result<()> {
             ),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         APP_NAME,
         options,
         Box::new(|_cc| Ok(Box::new(App::new(open_arg)))),
-    )
-    .map_err(|e| anyhow::anyhow!("failed to start UI: {e}"))
+    );
+    let Err(e) = result else {
+        return Ok(());
+    };
+    tracing::error!("the window could not be opened: {e}");
+    // The graphics driver may not support the default renderer (wgpu: DirectX 12 /
+    // Vulkan). A window can only be created once per process, so restart with OpenGL.
+    if !opengl {
+        let restarted = std::env::current_exe().and_then(|exe| {
+            std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1))
+                .env(RENDERER_ENV, "opengl")
+                .spawn()
+        });
+        match restarted {
+            Ok(_) => {
+                tracing::info!("restarted with the OpenGL renderer");
+                return Ok(());
+            }
+            Err(err) => tracing::error!("restart with OpenGL failed: {err}"),
+        }
+    }
+    let log = log_path.map_or_else(String::new, |p| format!("\n\nDetails: {}", p.display()));
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Musiton could not start")
+        .set_description(format!(
+            "The window could not be opened with your graphics driver.\n\n{e}\n\n\
+             Updating the graphics driver usually helps.{log}"
+        ))
+        .show();
+    Err(anyhow::anyhow!("failed to start UI: {e}"))
+}
+
+/// Logs to stderr and to `musiton.log` in the data folder (rewritten at every start), so
+/// problems can be traced on PCs without a console. Returns the log file's path.
+fn init_logging() -> Option<PathBuf> {
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,wgpu=warn"));
+    let file = Settings::data_dir().and_then(|dir| {
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join("musiton.log");
+        Some((std::fs::File::create(&path).ok()?, path))
+    });
+    match file {
+        Some((file, path)) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file).and(std::io::stderr))
+                .init();
+            Some(path)
+        }
+        None => {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+            None
+        }
+    }
 }
 
 /// Something that has to wait until the user decided about unsaved changes.
@@ -1952,9 +2020,14 @@ impl App {
             .default_size(340.0)
             .min_size(80.0)
             .show(ui, |ui| {
-                bottom_actions = self.bottom_panel(ui);
-                // Keep the panel at its (resizable) height even with little content.
-                ui.allocate_space(ui.available_size());
+                // The content gets exactly the panel's area: a resizable panel takes the
+                // size its content uses, so content asking for a little more each frame
+                // (the mixer's scroll area) would otherwise make it grow over the window.
+                let rect = ui.available_rect_before_wrap();
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                child.set_clip_rect(rect.intersect(ui.clip_rect()));
+                bottom_actions = self.bottom_panel(&mut child);
+                ui.allocate_rect(rect, egui::Sense::hover());
             });
         egui::Panel::left("browser")
             .resizable(true)
@@ -2174,7 +2247,7 @@ impl eframe::App for App {
         self.error_dialog(&ctx);
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // A broken session keeps its lock so the emergency save is offered next start.
         if !self.broken {
             if let Some(lock) = self.session.take() {

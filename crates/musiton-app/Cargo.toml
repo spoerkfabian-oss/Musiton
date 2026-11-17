@@ -61,5 +61,5 @@ role = "editor"
 [dev-dependencies]
 hound = "3.5"
 
-[target.'cfg(windows)'.build-dependencies]
+[build-dependencies]
 winresource = "0.1"

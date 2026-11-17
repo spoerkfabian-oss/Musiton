@@ -326,3 +326,17 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Pan (CC 10) and other controllers are stored and sent but the built-in instruments ignore them (pan is done by the mixer).
 - Pitch bend and aftertouch are not recorded yet.
 
+## Debug pass and Windows .exe
+**Found and fixed**
+- **The bottom panel grew over the whole window** after switching to the Mixer tab (also with an empty song). The resizable panel adopts the size its content uses, and the mixer's scroll area asked for slightly more each frame. The panel content now gets exactly the panel's area (clipped, the mixer scrolls).
+- **Silent exit when the graphics driver cannot run wgpu** (release builds have no console, so nothing was visible). Musiton now restarts itself with the OpenGL renderer (`MUSITON_RENDERER=opengl`, eframe `glow` feature). If that fails too, it shows an error dialog that names the log file.
+- **No log in release builds:** everything is now also written to `musiton.log` in the data folder (rewritten at every start), including panics.
+- **App icon missing in cross-compiled exes:** `build.rs` now checks the *target* OS, so the MinGW `windres` embeds the icon when building on Linux.
+
+**Windows .exe**
+- The installer workflow additionally uploads **Musiton-portable** (`Musiton.exe`, no installation).
+- Cross-build on Linux: `x86_64-pc-windows-gnu` with MinGW, stripped to ~29 MB, imports only Windows system DLLs. Smoke-tested under Wine 9: wgpu has no GPU there and fails, the OpenGL fallback starts; the demo song plays with audio (16 % CPU); the mixer, device and editor tabs work.
+
+**Known issues**
+- Under Wine without a GPU, wgpu always fails first; the restart costs about a second. On real Windows PCs wgpu (DirectX 12/Vulkan) is expected to work directly.
+

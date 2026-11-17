@@ -21,7 +21,7 @@ musiton-ui = { path = "crates/musiton-ui" }
 
 anyhow = "1"
 assert_no_alloc = "1.1"
-eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "glow", "wayland", "x11"] }
 egui = "0.37"
 proptest = "1"
 ron = "0.12"

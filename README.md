@@ -22,13 +22,34 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 
 ## Install (Windows)
 
-Every push to `main` builds an installer.
+Every push to `main` builds Windows downloads.
 
 1. On GitHub, open **Actions → Windows installer**.
-2. Open the latest green run and download the **Musiton-setup** artifact.
-3. Unzip it and run the `.exe`.
+2. Open the latest green run.
+3. Download one of its two artifacts:
+   - **Musiton-setup**: an installer. It adds a Start-menu entry and lets double-clicking a `.musiton` project open Musiton.
+   - **Musiton-portable**: just `Musiton.exe`. Unzip it anywhere and double-click it; nothing is installed.
 
-The installer also registers `.musiton` files, so double-clicking a project opens it in Musiton.
+If Musiton does not start, look at `%APPDATA%\Musiton\data\musiton.log`. If the graphics driver cannot run the default renderer, Musiton restarts itself with OpenGL. If that also fails, it shows a message instead of closing silently.
+
+### Building the .exe on Linux
+
+A Windows `.exe` can also be cross-compiled on Linux with MinGW (this is how the cloud test builds are made):
+
+```bash
+sudo apt-get install -y mingw-w64
+```
+```bash
+rustup target add x86_64-pc-windows-gnu
+```
+```bash
+cargo build --release -p musiton-app --target x86_64-pc-windows-gnu
+```
+```bash
+x86_64-w64-mingw32-strip -o Musiton.exe target/x86_64-pc-windows-gnu/release/musiton.exe
+```
+
+The result needs only DLLs that every Windows has. The official downloads are built natively by GitHub Actions (MSVC).
 
 ## Build from source
 
