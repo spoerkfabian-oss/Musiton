@@ -16,6 +16,7 @@ use musiton_project::{
 
 use crate::clip_edit;
 use crate::clip_view::{paint_clip, ClipPaint, TITLE_HEIGHT};
+use crate::comp;
 use crate::snap::Snap;
 use crate::view::TimelineView;
 use crate::UiAction;
@@ -133,6 +134,12 @@ pub struct Arrange {
     collapsed: HashSet<TrackId>,
     /// Show the tempo lane under the ruler.
     pub show_tempo: bool,
+    /// Show the takes of audio tracks as rows under them (comping).
+    pub show_takes: bool,
+    /// Take swipe in progress: track, take, start tick.
+    take_drag: Option<(TrackId, AssetId, f64)>,
+    /// A comp to apply once the project is mutable again: track, take, range.
+    pending_comp: Option<(TrackId, AssetId, Tick, Tick)>,
     /// Tempo point being dragged: its index and the BPM range of the lane at drag start.
     tempo_drag: Option<(usize, f64, f64)>,
 }
@@ -219,7 +226,7 @@ impl Arrange {
             .auto_shrink([false, false])
             .show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
                 for r in range {
-                    let Some(&(i, extra)) = rows.get(r) else {
+                    let Some(&(i, kind)) = rows.get(r) else {
                         continue;
                     };
                     let Some(track) = project.tracks.get(i) else {
@@ -233,7 +240,11 @@ impl Arrange {
                         Rect::from_min_size(row.0.min, egui::vec2(HEADER_WIDTH, ROW_HEIGHT));
                     let lane =
                         Rect::from_min_max(Pos2::new(header.right(), row.0.top()), row.0.max);
-                    if let Some(target) = extra {
+                    if let RowKind::Take(asset, n) = kind {
+                        self.take_lane(ui, track, asset, n, (header, lane), &grid, project);
+                        continue;
+                    }
+                    if let RowKind::Lane(target) = kind {
                         let rects = (header, lane);
                         self.extra_lane(
                             ui,
@@ -295,6 +306,19 @@ impl Arrange {
         }
         self.update_box_select(ui);
         self.update_drag(ui, project, &mut actions);
+        if let Some((track, take, t0, t1)) = self.pending_comp.take() {
+            if let Some(t) = project.track(track).cloned() {
+                let sr = f64::from(project.sample_rate);
+                let tempo = project.tempo.clone();
+                let mut next = || ClipId(project.alloc_id());
+                if let Some(new) = comp::comp(&t.clips, take, (t0, t1), &tempo, sr, &mut next) {
+                    actions.push(UiAction::Edit {
+                        edit: comp::edits(&t, &new),
+                        merge: false,
+                    });
+                }
+            }
+        }
         if let Some((track, start, length)) = self.pending_clip.take() {
             let clip = ClipId(project.alloc_id());
             actions.push(UiAction::Edit {
@@ -449,6 +473,10 @@ impl Arrange {
                 .on_hover_text("Show and edit automation (A)");
             ui.toggle_value(&mut self.show_tempo, "Tempo")
                 .on_hover_text("Show the tempo lane: tempo changes and ramps");
+            ui.toggle_value(&mut self.show_takes, "Takes")
+                .on_hover_text(
+                    "Show recorded takes under their tracks: drag over a take to use it there",
+                );
             ui.toggle_value(&mut self.follow, "Follow")
                 .on_hover_text("Scroll with the playhead");
             ui.separator();
@@ -1656,13 +1684,21 @@ impl Arrange {
     /// Rows of the track list: (track index, extra automation lane). In automation view
     /// every lane with points (other than the one shown over the clips) gets its own row
     /// under its track.
-    fn rows(&self, project: &Project) -> Vec<(usize, Option<ParamTarget>)> {
+    fn rows(&self, project: &Project) -> Vec<(usize, RowKind)> {
         let mut rows = Vec::with_capacity(project.tracks.len());
         for (i, t) in project.tracks.iter().enumerate() {
             if project.ancestors(t.id).any(|f| self.collapsed.contains(&f)) {
                 continue;
             }
-            rows.push((i, None));
+            rows.push((i, RowKind::Track));
+            if self.show_takes {
+                rows.extend(
+                    comp::takes(t)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(n, a)| (i, RowKind::Take(a, n + 1))),
+                );
+            }
             if !self.automation_view || t.kind == TrackKind::Folder {
                 continue;
             }
@@ -1671,10 +1707,141 @@ impl Arrange {
                 t.automation
                     .iter()
                     .filter(|l| l.target != shown && !l.points.is_empty())
-                    .map(|l| (i, Some(l.target))),
+                    .map(|l| (i, RowKind::Lane(l.target))),
             );
         }
         rows
+    }
+
+    /// A take row: the take's clips (bright where it plays, dim where another take plays).
+    /// Dragging over it uses this take for that range; clicking a piece uses it there.
+    #[allow(clippy::too_many_arguments)]
+    fn take_lane(
+        &mut self,
+        ui: &mut Ui,
+        track: &Track,
+        asset: AssetId,
+        n: usize,
+        (header, rect): (Rect, Rect),
+        grid: &[GridLine],
+        project: &Project,
+    ) {
+        let visuals = ui.visuals().clone();
+        let painter = ui.painter_at(header.union(rect));
+        painter.rect_filled(
+            header.shrink2(egui::vec2(0.0, 1.0)),
+            2.0,
+            visuals.faint_bg_color,
+        );
+        let [r, g, b] = track.color;
+        let color = Color32::from_rgb(r, g, b);
+        painter.rect_filled(
+            Rect::from_min_size(header.min, egui::vec2(6.0, header.height())),
+            0.0,
+            color.gamma_multiply(0.5),
+        );
+        painter.text(
+            header.left_center() + egui::vec2(16.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            format!("Take {n}"),
+            egui::FontId::proportional(13.0),
+            visuals.text_color(),
+        );
+        painter.rect_filled(
+            rect.shrink2(egui::vec2(0.0, 1.0)),
+            0.0,
+            visuals.extreme_bg_color,
+        );
+        for l in grid.iter().filter(|l| l.level >= 2) {
+            painter.vline(
+                rect.left() + l.x,
+                rect.y_range(),
+                Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.25)),
+            );
+        }
+        let x_of = |t: i64| rect.left() + self.view.x(t as f64);
+        let pieces: Vec<(i64, i64, bool)> = track
+            .clips
+            .iter()
+            .filter_map(|c| match c {
+                Clip::Audio(a) if a.asset == asset => {
+                    Some((a.start.0, a.start.0 + a.length.0, !a.muted))
+                }
+                _ => None,
+            })
+            .collect();
+        for &(s, e, active) in &pieces {
+            let r = Rect::from_min_max(
+                Pos2::new(x_of(s), rect.top() + 4.0),
+                Pos2::new(x_of(e), rect.bottom() - 4.0),
+            );
+            if r.right() < rect.left() || r.left() > rect.right() {
+                continue;
+            }
+            let fill = if active {
+                color.gamma_multiply(0.85)
+            } else {
+                color.gamma_multiply(0.2)
+            };
+            painter.rect_filled(r, 3.0, fill);
+            if active {
+                painter.rect_stroke(
+                    r,
+                    3.0,
+                    Stroke::new(1.0, Color32::WHITE),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+
+        let resp = ui.interact(
+            rect,
+            ui.scope_id().with(("take", track.id, asset)),
+            Sense::click_and_drag(),
+        );
+        let tick_at = |x: f32| self.view.tick(x - rect.left()).max(0.0);
+        let sig = project.time_sig;
+        if resp.clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let t = tick_at(p.x) as i64;
+                if let Some(&(s, e, _)) = pieces.iter().find(|(s, e, _)| (*s..*e).contains(&t)) {
+                    self.pending_comp = Some((track.id, asset, Tick(s), Tick(e)));
+                }
+            }
+        }
+        if resp.drag_started() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                self.take_drag = Some((track.id, asset, tick_at(p.x)));
+            }
+        }
+        if let Some((tid, a, from)) = self.take_drag.filter(|d| d.0 == track.id && d.1 == asset) {
+            let to = ui
+                .input(|i| i.pointer.latest_pos())
+                .map_or(from, |p| tick_at(p.x));
+            let (t0, t1) = (
+                self.snap.round(from.min(to), sig),
+                self.snap.round(from.max(to), sig),
+            );
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(x_of(t0.0), rect.top()),
+                    Pos2::new(x_of(t1.0), rect.bottom()),
+                ),
+                0.0,
+                visuals.selection.bg_fill.gamma_multiply(0.35),
+            );
+            if !ui.input(|i| i.pointer.primary_down()) {
+                self.take_drag = None;
+                if t1 > t0 {
+                    self.pending_comp = Some((tid, a, t0, t1));
+                }
+            }
+        }
+        if resp.hovered() && self.take_drag.is_none() {
+            resp.on_hover_text(format!(
+                "Take {n}: drag to use it for a range, click a piece to use it there"
+            ));
+        }
     }
 
     /// An extra automation row: name and mode on the left, the curve on the right.
@@ -1997,6 +2164,17 @@ fn move_into_folder(project: &Project, id: TrackId, folder: Option<TrackId>) -> 
         edit: Edit::Batch(edits),
         merge: false,
     })
+}
+
+/// What a row of the track list shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RowKind {
+    /// The track itself.
+    Track,
+    /// An extra automation lane of the track.
+    Lane(ParamTarget),
+    /// A recorded take of the track (asset, number shown).
+    Take(AssetId, usize),
 }
 
 /// Height of the tempo lane.

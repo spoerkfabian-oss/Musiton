@@ -5,6 +5,7 @@ pub mod arrange;
 pub mod cc_edit;
 pub mod clip_edit;
 pub mod clip_view;
+pub mod comp;
 pub mod device_panel;
 pub mod mixer;
 pub mod note_edit;

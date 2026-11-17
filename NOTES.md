@@ -371,3 +371,18 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Only the compressor has a sidechain input; the EQ, gate-style effects and plugins (phase 12) will follow.
 - Sidechain sources are not kept audible when the target track is soloed.
 
+## Later list — comping
+**Built**
+- Toolbar "Takes": every audio track with overlapping recordings gets one row per take under it ("Take 1" = oldest). Pieces where the take plays are bright, the rest dim.
+- Drag over a take row: that take plays in the (snapped) range, the others are muted there. Click a piece: the take plays for that piece. Each comp is one undo step.
+- Comping splits the clips at the range edges (the right parts continue the audio where the left parts stopped) and puts short fades (`COMP_FADE`, 1/128 note ≈ 15 ms at 120 BPM) on the cuts, so switching takes does not click.
+
+**Decisions**
+- No new data type: takes are the audio clips of a track that overlap clips of another recording. Clips of one recording share an audio file, so a take = an asset. Comps are ordinary clip edits (split, mute/unmute), so playback, export and undo need no changes, and comps stay editable by hand.
+
+**Tests:** `comping_a_range_switches_takes_there_only_and_undoes_in_one_step` (exactly one take plays everywhere, fades at the cuts, source offsets continue, undo restores the original), `tracks_without_overlaps_have_no_takes`, UI test `swiping_over_a_take_row_comps_that_range`.
+
+**Known issues**
+- Imported files that happen to overlap on a track also appear as takes.
+- The cut fades dip the level slightly around each cut (no overlapping crossfade).
+

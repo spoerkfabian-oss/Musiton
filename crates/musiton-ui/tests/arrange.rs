@@ -438,3 +438,87 @@ fn tempo_lane_adds_points_and_toggles_ramps() {
         "double-click did not turn the ramp on"
     );
 }
+
+#[test]
+fn swiping_over_a_take_row_comps_that_range() {
+    use musiton_core::ids::{AssetId, ClipId};
+    use musiton_core::{SamplePos, Tick, PPQ};
+    use musiton_project::{AudioClip, Clip, UndoStack};
+    let bar = 4 * PPQ;
+    let ctx = egui::Context::default();
+    let mut p = project_with_tracks(1);
+    let take = |id, asset, muted| {
+        Clip::Audio(AudioClip {
+            id: ClipId(id),
+            asset: AssetId(asset),
+            start: Tick(0),
+            length: Tick(4 * bar),
+            source_offset: SamplePos(0),
+            muted,
+            ..AudioClip::default()
+        })
+    };
+    p.tracks[0].clips = vec![take(10, 1, true), take(11, 2, false)];
+    let mut arrange = Arrange::new();
+    arrange.show_takes = true;
+    arrange.follow = false;
+    frame(&ctx, &mut arrange, &mut p, vec![]);
+
+    let lane_x = 8.0 + musiton_ui::arrange::HEADER_WIDTH;
+    let px_bar = 120.0;
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    // Take 1 is the row right below the track: probe downwards for a swipe that comps.
+    let mut done = None;
+    for y in (80..260).step_by(8) {
+        let from = Pos2::new(lane_x + 1.1 * px_bar, y as f32);
+        let to = Pos2::new(lane_x + 1.9 * px_bar, y as f32);
+        frame(
+            &ctx,
+            &mut arrange,
+            &mut p,
+            vec![egui::Event::PointerMoved(from), button(from, true)],
+        );
+        for k in 1..=6 {
+            let pos = from + (to - from) * (k as f32 / 6.0);
+            frame(
+                &ctx,
+                &mut arrange,
+                &mut p,
+                vec![egui::Event::PointerMoved(pos)],
+            );
+        }
+        let mut actions = frame(&ctx, &mut arrange, &mut p, vec![button(to, false)]);
+        actions.extend(frame(&ctx, &mut arrange, &mut p, vec![]));
+        // A swipe on the track row itself moves the clip instead: keep probing until an
+        // edit makes take 1 play in bar 2.
+        for a in actions {
+            let UiAction::Edit { edit, .. } = a else {
+                continue;
+            };
+            let mut trial = p.clone();
+            if UndoStack::default()
+                .perform(&mut trial, edit, false)
+                .is_ok()
+                && musiton_ui::comp::active_take(&trial.tracks[0], bar + bar / 2)
+                    == Some(AssetId(1))
+            {
+                done = Some(trial);
+            }
+        }
+        if done.is_some() {
+            break;
+        }
+    }
+    let p = done.expect("no comp edit from swiping over the take row");
+    let t = &p.tracks[0];
+    let plays = |tick: i64| musiton_ui::comp::active_take(t, tick).map(|a| a.0);
+    // Snap "Bar": the swipe from bar 2.1 to 2.9 rounds to bars 1…2 (ticks 3840…7680).
+    assert_eq!(plays(bar / 2), Some(2));
+    assert_eq!(plays(bar + bar / 2), Some(1));
+    assert_eq!(plays(3 * bar), Some(2));
+}

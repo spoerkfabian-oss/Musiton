@@ -64,6 +64,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("Piano roll: click (Draw tool)", "Add a note"),
     ("Piano roll: right-click note", "Delete note"),
+    ("Takes row: drag", "Use this take for the range (comping)"),
+    ("Takes row: click a piece", "Use this take for that piece"),
     ("Steps: click / drag", "Turn steps on or off"),
     ("Steps: Shift+click", "Accent a step (velocity 127)"),
     (

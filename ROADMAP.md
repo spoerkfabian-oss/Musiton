@@ -114,7 +114,7 @@ Order decided by the owner. Tick when done.
 - [x] MIDI CC lanes in the piano roll
 - [x] Step sequencer
 - [x] Sidechain routing UI (the compressor already has sidechain inputs)
-- [ ] Comping (choose the best parts of several takes)
+- [x] Comping (choose the best parts of several takes)
 - [ ] Time-stretch / warp for audio clips
 - [ ] Video track (FFmpeg, shipped as LGPL DLLs)
 - [ ] With phase 12: CLAP hosting (`clack-host`), LV2 on Linux, out-of-process plugin sandbox
