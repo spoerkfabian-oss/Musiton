@@ -48,6 +48,8 @@ pub(crate) trait Processor: Send {
     );
     /// Stops every sounding note.
     fn reset(&mut self);
+    /// For handing the processor back to its controller at shutdown.
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any>;
 }
 
 /// The UI-thread half of a plugin.
@@ -60,11 +62,13 @@ pub(crate) trait Controller {
     fn state(&self) -> Result<Vec<u8>, PluginError>;
     fn set_state(&self, state: &[u8]) -> Result<(), PluginError>;
     fn latency(&self) -> u32;
+    /// Shuts the plugin down; `processor` is the processing half (UI thread).
+    fn shutdown(&self, processor: Box<dyn std::any::Any>);
 }
 
 /// What the plugin's nodes share.
 struct Shared {
-    processor: UnsafeCell<Box<dyn Processor>>,
+    processor: UnsafeCell<Option<Box<dyn Processor>>>,
     /// Ticket of the node that processes now.
     owner: AtomicU64,
     next_ticket: AtomicU64,
@@ -104,7 +108,7 @@ impl Plugin {
         let latency = controller.latency();
         Self {
             shared: Arc::new(Shared {
-                processor: UnsafeCell::new(processor),
+                processor: UnsafeCell::new(Some(processor)),
                 owner: AtomicU64::new(0),
                 next_ticket: AtomicU64::new(1),
                 edits: UnsafeCell::new(rx),
@@ -129,9 +133,7 @@ impl Plugin {
     ) -> Result<Self, PluginError> {
         match format {
             PluginFormat::Vst3 => crate::vst3_plugin::load(path, id, sample_rate, max_block),
-            PluginFormat::Clap => Err(PluginError::Failed(
-                "CLAP instances are not supported yet".into(),
-            )),
+            PluginFormat::Clap => crate::clap::instantiate(path, id, sample_rate, max_block),
         }
     }
 
@@ -211,6 +213,17 @@ impl Plugin {
     }
 }
 
+impl Drop for Plugin {
+    fn drop(&mut self) {
+        // With no node left, the processing half comes back for an orderly shutdown.
+        if let Some(shared) = Arc::get_mut(&mut self.shared) {
+            if let Some(p) = shared.processor.get_mut().take() {
+                self.controller.shutdown(p.into_any());
+            }
+        }
+    }
+}
+
 /// Parameter changes a node can take per block.
 const MAX_PARAM_CHANGES: usize = 512;
 
@@ -265,14 +278,22 @@ impl AudioNode for PluginNode {
             }
         }
         // SAFETY: see `Shared`: only the owning node, only on the audio thread.
-        let processor = unsafe { &mut *self.shared.processor.get() };
-        processor.process(ctx, io, events, &self.changes);
+        match unsafe { &mut *self.shared.processor.get() } {
+            Some(processor) => processor.process(ctx, io, events, &self.changes),
+            None => {
+                for ch in io.outputs() {
+                    ch.fill(0.0);
+                }
+            }
+        }
     }
 
     fn reset(&mut self) {
         if self.shared.owner.load(Ordering::Acquire) == self.ticket {
             // SAFETY: as in `process`.
-            unsafe { (*self.shared.processor.get()).reset() };
+            if let Some(p) = unsafe { &mut *self.shared.processor.get() } {
+                p.reset();
+            }
         }
     }
 

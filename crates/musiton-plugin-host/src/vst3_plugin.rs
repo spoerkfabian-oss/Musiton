@@ -606,6 +606,10 @@ impl Processor for Vst3Processor {
     fn reset(&mut self) {
         self.all_notes_off(0);
     }
+
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
 }
 
 /// The UI-thread half.
@@ -718,6 +722,11 @@ impl Controller for Vst3Controller {
     fn latency(&self) -> u32 {
         // SAFETY: plain query.
         unsafe { self.core.processor.getLatencySamples() }
+    }
+
+    fn shutdown(&self, processor: Box<dyn std::any::Any>) {
+        // The processor only holds a reference to the shared core.
+        drop(processor);
     }
 }
 

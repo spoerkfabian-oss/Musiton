@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+clack-extensions = { version = "0.2", features = ["clack-host", "params", "state", "audio-ports", "latency", "note-ports", "gui", "log", "timer", "thread-check"] }
 clack-host = "0.2"
 libloading = "0.9.1"
 musiton-core.workspace = true

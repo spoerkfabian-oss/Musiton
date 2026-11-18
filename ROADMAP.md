@@ -115,6 +115,6 @@ Order decided by the owner. Tick when done.
 - [x] Comping (choose the best parts of several takes)
 - [x] Time-stretch / warp for audio clips
 - [x] Video track (FFmpeg, shipped as an LGPL `ffmpeg.exe`)
-- [ ] With phase 12: CLAP hosting (`clack-host`), out-of-process plugin sandbox (per plugin, optional)
+- [ ] With phase 12: CLAP hosting (`clack-host`; instances done, app integration with VST3), out-of-process plugin sandbox (per plugin, optional)
 
 Dropped by owner decision: ASIO (proprietary SDK), LV2 (almost only on Linux). WASAPI stays the Windows backend.
