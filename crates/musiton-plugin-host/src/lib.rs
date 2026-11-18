@@ -91,9 +91,18 @@ pub enum PluginError {
     Failed(String),
 }
 
+/// Plugins are loaded, scanned and shut down one at a time per process: many plugins
+/// keep global state that is not safe to set up or tear down from two threads at once.
+pub(crate) fn lifecycle_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Lists the plugins in one plugin file. Loads foreign code: call it only in a process
 /// that may crash (the scanner).
 pub fn scan_file(path: &Path) -> Result<Vec<PluginInfo>, PluginError> {
+    let _one_at_a_time = lifecycle_lock();
     match PluginFormat::of(path) {
         Some(PluginFormat::Vst3) => vst3_module::scan(path),
         Some(PluginFormat::Clap) => clap::scan(path),

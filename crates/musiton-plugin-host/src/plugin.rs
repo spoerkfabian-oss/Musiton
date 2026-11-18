@@ -7,6 +7,7 @@
 //! between two graphs the instance is never processed twice per block.
 
 use std::cell::UnsafeCell;
+use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -93,8 +94,9 @@ unsafe impl Send for Shared {}
 /// Drop it on the UI thread after every node of it is gone (plugins expect to be shut
 /// down on the thread that created them).
 pub struct Plugin {
-    shared: Arc<Shared>,
-    controller: Box<dyn Controller>,
+    // Both are dropped by hand in `Drop`, under the lifecycle lock.
+    shared: ManuallyDrop<Arc<Shared>>,
+    controller: ManuallyDrop<Box<dyn Controller>>,
     edits_tx: rtrb::Producer<(u32, f64)>,
     format: PluginFormat,
 }
@@ -109,7 +111,7 @@ impl Plugin {
         let (tx, rx) = rtrb::RingBuffer::new(1024);
         let latency = controller.latency();
         Self {
-            shared: Arc::new(Shared {
+            shared: ManuallyDrop::new(Arc::new(Shared {
                 processor: UnsafeCell::new(Some(processor)),
                 owner: AtomicU64::new(0),
                 next_ticket: AtomicU64::new(1),
@@ -118,8 +120,8 @@ impl Plugin {
                 busy: AtomicBool::new(false),
                 inputs,
                 outputs,
-            }),
-            controller,
+            })),
+            controller: ManuallyDrop::new(controller),
             edits_tx: tx,
             format,
         }
@@ -134,6 +136,7 @@ impl Plugin {
         sample_rate: f64,
         max_block: usize,
     ) -> Result<Self, PluginError> {
+        let _one_at_a_time = crate::lifecycle_lock();
         match format {
             PluginFormat::Vst3 => crate::vst3_plugin::load(path, id, sample_rate, max_block),
             PluginFormat::Clap => crate::clap::instantiate(path, id, sample_rate, max_block),
@@ -152,7 +155,7 @@ impl Plugin {
 
     /// Makes engine nodes of this instance on any thread (e.g. for an export).
     pub fn source(&self) -> NodeSource {
-        NodeSource(self.shared.clone())
+        NodeSource(Arc::clone(&self.shared))
     }
 
     /// Whether engine nodes of it still exist (in a graph or waiting to be freed).
@@ -218,11 +221,17 @@ impl Plugin {
 
 impl Drop for Plugin {
     fn drop(&mut self) {
+        let _one_at_a_time = crate::lifecycle_lock();
         // With no node left, the processing half comes back for an orderly shutdown.
         if let Some(shared) = Arc::get_mut(&mut self.shared) {
             if let Some(p) = shared.processor.get_mut().take() {
                 self.controller.shutdown(p.into_any());
             }
+        }
+        // SAFETY: both fields are dropped exactly once, here, and never used afterwards.
+        unsafe {
+            ManuallyDrop::drop(&mut self.shared);
+            ManuallyDrop::drop(&mut self.controller);
         }
     }
 }
