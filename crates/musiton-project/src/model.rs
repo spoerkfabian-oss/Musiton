@@ -428,6 +428,21 @@ pub enum DeviceKind {
         #[serde(default)]
         samples: Vec<SampleZone>,
     },
+    /// A VST3 or CLAP plugin. Its settings are the plugin's own state, saved next to the
+    /// song file as `plugins/<device id>.state`.
+    Plugin {
+        /// "VST3" or "CLAP".
+        format: String,
+        /// The plugin file or bundle.
+        path: String,
+        /// The plugin's id inside the file.
+        plugin_id: String,
+        /// Display name.
+        name: String,
+        /// Whether it is an instrument.
+        #[serde(default)]
+        instrument: bool,
+    },
 }
 
 impl DeviceSlot {
@@ -449,13 +464,20 @@ impl DeviceSlot {
     pub fn type_id(&self) -> &str {
         match &self.kind {
             DeviceKind::Builtin { type_id, .. } => type_id,
+            DeviceKind::Plugin { plugin_id, .. } => plugin_id,
         }
     }
 
-    /// Changed parameter values.
+    /// Whether it is a VST3/CLAP plugin.
+    pub fn is_plugin(&self) -> bool {
+        matches!(self.kind, DeviceKind::Plugin { .. })
+    }
+
+    /// Changed parameter values (built-in devices; plugins keep their own state).
     pub fn params(&self) -> &[(u64, f32)] {
         match &self.kind {
             DeviceKind::Builtin { params, .. } => params,
+            DeviceKind::Plugin { .. } => &[],
         }
     }
 
@@ -469,7 +491,9 @@ impl DeviceSlot {
 
     /// Sets (`Some`) or resets to default (`None`) a parameter; returns the old value.
     pub fn set_param(&mut self, id: u64, value: Option<f32>) -> Option<f32> {
-        let DeviceKind::Builtin { params, .. } = &mut self.kind;
+        let DeviceKind::Builtin { params, .. } = &mut self.kind else {
+            return None;
+        };
         let old = params
             .iter()
             .position(|(p, _)| *p == id)
@@ -485,6 +509,7 @@ impl DeviceSlot {
     pub fn samples(&self) -> &[SampleZone] {
         match &self.kind {
             DeviceKind::Builtin { samples, .. } => samples,
+            DeviceKind::Plugin { .. } => &[],
         }
     }
 }

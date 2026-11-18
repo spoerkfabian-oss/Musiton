@@ -260,6 +260,7 @@ mod tests {
         let out = crate::export::render_project(
             &project,
             &AssetStore::default(),
+            &crate::engine_graph::PluginNodes::default(),
             0,
             frames,
             &|_| {},
@@ -292,6 +293,7 @@ mod tests {
         crate::export::render_project(
             &project,
             &AssetStore::default(),
+            &crate::engine_graph::PluginNodes::default(),
             0,
             48_000 * secs,
             &|_| {},

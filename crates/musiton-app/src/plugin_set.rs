@@ -1,0 +1,398 @@
+//! The plugin instances of the open song (UI thread).
+//!
+//! Instances are created when a plugin device appears in the song and kept until another
+//! song is opened, so undoing and redoing the removal of a plugin keeps its settings.
+//! A plugin's settings are its own state, saved as `plugins/<device id>.state` next to the
+//! song file (and next to the autosave copy).
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use musiton_core::ids::DeviceId;
+use musiton_plugin_host::{Plugin, PluginFormat};
+use musiton_project::{DeviceKind, Project};
+use musiton_ui::device_panel::PluginView;
+
+use crate::engine_graph::{PluginNodes, PluginParams};
+
+/// Where the state of plugin device `id` is saved inside `dir` (a `plugins/` folder).
+pub fn state_file(dir: &Path, id: DeviceId) -> PathBuf {
+    dir.join(format!("{}.state", id.0))
+}
+
+/// The `plugins/` folder next to the song file `song`.
+pub fn states_dir(song: &Path) -> Option<PathBuf> {
+    Some(song.parent()?.join("plugins"))
+}
+
+/// The plugin devices of `project`: (device, kind).
+fn plugin_devices(project: &Project) -> impl Iterator<Item = (DeviceId, &DeviceKind)> {
+    project
+        .tracks
+        .iter()
+        .flat_map(|t| &t.devices)
+        .filter(|d| d.is_plugin())
+        .map(|d| (d.id, &d.kind))
+}
+
+/// Loads the plugin of `kind` and gives it the saved state from `state`, if any.
+fn instantiate(
+    kind: &DeviceKind,
+    state: Option<&[u8]>,
+    rate: f64,
+    block: usize,
+) -> Result<Plugin, String> {
+    let DeviceKind::Plugin {
+        format,
+        path,
+        plugin_id,
+        ..
+    } = kind
+    else {
+        return Err("not a plugin".into());
+    };
+    let format = match format.as_str() {
+        "VST3" => PluginFormat::Vst3,
+        "CLAP" => PluginFormat::Clap,
+        other => return Err(format!("unknown plugin format {other}")),
+    };
+    let plugin =
+        Plugin::load(format, Path::new(path), plugin_id, rate, block).map_err(|e| e.to_string())?;
+    if let Some(state) = state {
+        if let Err(e) = plugin.set_state(state) {
+            tracing::warn!("restoring the state of {path} failed: {e}");
+        }
+    }
+    Ok(plugin)
+}
+
+/// Plugin instances of the song.
+pub struct PluginSet {
+    instances: HashMap<DeviceId, Plugin>,
+    /// Devices whose plugin could not be loaded, with the reason.
+    failed: HashMap<DeviceId, String>,
+    /// Instances that are no longer used but may still be in a graph; dropped once free.
+    retired: Vec<Plugin>,
+    /// Where saved states are read from.
+    state_dir: Option<PathBuf>,
+    rate: f64,
+    block: usize,
+}
+
+impl Default for PluginSet {
+    fn default() -> Self {
+        Self {
+            instances: HashMap::new(),
+            failed: HashMap::new(),
+            retired: Vec::new(),
+            state_dir: None,
+            rate: 48_000.0,
+            block: 1024,
+        }
+    }
+}
+
+impl PluginSet {
+    /// Forgets all instances (another song was opened); states load from `state_dir`.
+    pub fn reset(&mut self, state_dir: Option<PathBuf>) {
+        self.retired.extend(self.instances.drain().map(|(_, p)| p));
+        self.failed.clear();
+        self.state_dir = state_dir;
+    }
+
+    /// Sets the engine's sample rate and block size; reloads every instance (keeping its
+    /// state) when they change. Returns whether anything was reloaded.
+    pub fn configure(&mut self, project: &Project, rate: f64, block: usize) -> bool {
+        if (rate - self.rate).abs() < 0.5 && block == self.block {
+            return false;
+        }
+        self.rate = rate;
+        self.block = block;
+        let kinds: HashMap<DeviceId, DeviceKind> = plugin_devices(project)
+            .map(|(id, k)| (id, k.clone()))
+            .collect();
+        let old: Vec<(DeviceId, Plugin)> = self.instances.drain().collect();
+        for (id, plugin) in old {
+            let state = plugin.state().ok();
+            if let Some(kind) = kinds.get(&id) {
+                match instantiate(kind, state.as_deref(), rate, block) {
+                    Ok(p) => {
+                        self.instances.insert(id, p);
+                    }
+                    Err(e) => {
+                        self.failed.insert(id, e);
+                    }
+                }
+            }
+            self.retired.push(plugin);
+        }
+        true
+    }
+
+    /// Loads the plugins of devices that appeared in `project`. Returns whether any
+    /// instance was added.
+    pub fn sync(&mut self, project: &Project) -> bool {
+        let mut added = false;
+        let todo: Vec<(DeviceId, DeviceKind)> = plugin_devices(project)
+            .filter(|(id, _)| !self.instances.contains_key(id) && !self.failed.contains_key(id))
+            .map(|(id, k)| (id, k.clone()))
+            .collect();
+        for (id, kind) in todo {
+            let state = self
+                .state_dir
+                .as_deref()
+                .and_then(|d| std::fs::read(state_file(d, id)).ok());
+            match instantiate(&kind, state.as_deref(), self.rate, self.block) {
+                Ok(p) => {
+                    self.instances.insert(id, p);
+                    added = true;
+                }
+                Err(e) => {
+                    tracing::warn!("loading plugin device {} failed: {e}", id.0);
+                    self.failed.insert(id, e);
+                }
+            }
+        }
+        added
+    }
+
+    /// Node makers and parameter lists for building a graph.
+    pub fn nodes(&self) -> PluginNodes {
+        PluginNodes {
+            sources: self
+                .instances
+                .iter()
+                .map(|(id, p)| (*id, p.source()))
+                .collect(),
+            params: self.params(),
+        }
+    }
+
+    /// Parameter names of every instance (for automation lanes).
+    pub fn params(&self) -> PluginParams {
+        self.instances
+            .iter()
+            .map(|(id, p)| {
+                (
+                    *id,
+                    p.params()
+                        .iter()
+                        .filter(|x| x.automatable)
+                        .map(|x| (x.id, x.name.clone()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// What the device panel shows for device `id`.
+    pub fn view(&self, id: DeviceId) -> Option<PluginView> {
+        if let Some(e) = self.failed.get(&id) {
+            return Some(PluginView {
+                error: Some(e.clone()),
+                ..PluginView::default()
+            });
+        }
+        let p = self.instances.get(&id)?;
+        Some(PluginView {
+            params: p
+                .params()
+                .iter()
+                .map(|x| {
+                    let v = p.param_value(x.id);
+                    (x.id, x.name.clone(), v, p.param_text(x.id, v))
+                })
+                .collect(),
+            error: None,
+            has_editor: false,
+        })
+    }
+
+    /// Shows a new parameter value in the plugin (the engine gets it separately).
+    pub fn set_param(&self, id: DeviceId, param: u32, value: f64) {
+        if let Some(p) = self.instances.get(&id) {
+            p.set_param(param, value);
+        }
+    }
+
+    /// Passes edits from the plugins' own editors on and frees retired instances.
+    /// Returns whether a plugin changed a parameter (the song then has unsaved changes).
+    pub fn poll(&mut self) -> bool {
+        let mut changed = false;
+        for p in self.instances.values_mut() {
+            changed |= p
+                .take_edits()
+                .iter()
+                .any(|e| matches!(e, musiton_plugin_host::Edit::Perform(..)));
+        }
+        self.retired.retain(Plugin::in_use);
+        changed
+    }
+
+    /// Writes the state of every plugin device of `project` into `dir`.
+    pub fn save_states(&self, project: &Project, dir: &Path) -> Result<(), String> {
+        let ids: Vec<DeviceId> = plugin_devices(project).map(|(id, _)| id).collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        for id in ids {
+            if let Some(p) = self.instances.get(&id) {
+                let state = p.state().map_err(|e| e.to_string())?;
+                std::fs::write(state_file(dir, id), state).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Fresh instances with the current states at `rate`, for an export (it must not
+    /// share instances with the live engine). Keep the returned plugins alive until the
+    /// export has finished.
+    pub fn for_export(
+        &self,
+        project: &Project,
+        rate: f64,
+        block: usize,
+    ) -> (Vec<Plugin>, PluginNodes) {
+        let mut keep = Vec::new();
+        let mut nodes = PluginNodes::default();
+        for (id, kind) in plugin_devices(project) {
+            let Some(live) = self.instances.get(&id) else {
+                continue;
+            };
+            let state = live.state().ok();
+            match instantiate(kind, state.as_deref(), rate, block) {
+                Ok(p) => {
+                    nodes.sources.insert(id, p.source());
+                    keep.push(p);
+                }
+                Err(e) => tracing::warn!("plugin for export failed: {e}"),
+            }
+        }
+        (keep, nodes)
+    }
+
+    /// Hands plugins (e.g. of a finished export) over to be freed once unused.
+    pub fn retire(&mut self, plugins: Vec<Plugin>) {
+        self.retired.extend(plugins);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use musiton_project::{DeviceSlot, Track, TrackKind};
+
+    fn kars_project() -> Option<Project> {
+        let path = PathBuf::from("/usr/lib/clap/Kars.clap");
+        let info = musiton_plugin_host::scan_file(&path)
+            .ok()?
+            .into_iter()
+            .next()?;
+        let mut p = Project::default();
+        p.tracks.push(Track {
+            kind: TrackKind::Instrument,
+            devices: vec![DeviceSlot {
+                id: DeviceId(5),
+                bypass: false,
+                sidechain: None,
+                kind: DeviceKind::Plugin {
+                    format: "CLAP".into(),
+                    path: path.display().to_string(),
+                    plugin_id: info.id,
+                    name: info.name,
+                    instrument: true,
+                },
+            }],
+            ..Track::default()
+        });
+        Some(p)
+    }
+
+    #[test]
+    fn plugin_states_are_saved_and_reloaded() {
+        let Some(project) = kars_project() else {
+            eprintln!("test plugin not installed; skipping");
+            return;
+        };
+        let mut set = PluginSet::default();
+        assert!(set.sync(&project));
+        assert!(!set.sync(&project));
+        let view = set.view(DeviceId(5)).unwrap();
+        assert!(view.error.is_none() && !view.params.is_empty());
+        let dir = std::env::temp_dir().join(format!("musiton-pstate-{}", std::process::id()));
+        set.save_states(&project, &dir).unwrap();
+        assert!(state_file(&dir, DeviceId(5)).is_file());
+
+        // Another song folder with the same device reads the saved state.
+        let mut again = PluginSet::default();
+        again.reset(Some(dir.clone()));
+        assert!(again.sync(&project));
+        assert!(again.nodes().sources.contains_key(&DeviceId(5)));
+        // A new rate reloads the instance.
+        assert!(again.configure(&project, 44_100.0, 512));
+        assert!(again.view(DeviceId(5)).is_some_and(|v| v.error.is_none()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A missing plugin shows why.
+        let mut broken = project.clone();
+        if let DeviceKind::Plugin { path, .. } = &mut broken.tracks[0].devices[0].kind {
+            *path = "/nonexistent/X.clap".into();
+        }
+        let mut set = PluginSet::default();
+        set.sync(&broken);
+        assert!(set.view(DeviceId(5)).is_some_and(|v| v.error.is_some()));
+    }
+
+    #[test]
+    fn a_plugin_synth_track_renders_its_notes() {
+        use musiton_core::ids::ClipId;
+        use musiton_core::{Tick, PPQ};
+        use musiton_project::{Clip, MidiClip, Note};
+        use std::sync::atomic::AtomicBool;
+        let Some(mut project) = kars_project() else {
+            eprintln!("test plugin not installed; skipping");
+            return;
+        };
+        project.tracks[0].clips.push(Clip::Midi(MidiClip {
+            id: ClipId(9),
+            start: Tick(0),
+            length: Tick(4 * PPQ),
+            notes: vec![Note {
+                start: Tick(0),
+                length: Tick(2 * PPQ),
+                pitch: 60,
+                velocity: 100,
+                channel: 0,
+            }],
+            cc: Vec::new(),
+        }));
+        let mut set = PluginSet::default();
+        set.sync(&project);
+        let (_keep, nodes) = set.for_export(&project, 48_000.0, crate::export::BLOCK);
+        let out = crate::export::render_project(
+            &project,
+            &crate::assets::AssetStore::default(),
+            &nodes,
+            0,
+            48_000,
+            &|_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let peak = out[0].iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.01, "peak {peak}");
+        // Without the plugin loaded the track stays silent.
+        let silent = crate::export::render_project(
+            &project,
+            &crate::assets::AssetStore::default(),
+            &PluginNodes::default(),
+            0,
+            24_000,
+            &|_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(silent[0].iter().all(|s| *s == 0.0));
+    }
+}

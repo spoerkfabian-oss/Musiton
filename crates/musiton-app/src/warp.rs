@@ -188,6 +188,7 @@ mod tests {
         let out = crate::export::render_project(
             &project,
             &assets,
+            &crate::engine_graph::PluginNodes::default(),
             0,
             192_000,
             &|_| {},

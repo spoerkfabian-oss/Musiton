@@ -87,7 +87,7 @@ Work order from here: phase 12 together with the plugin-related "Later" items.
 ## Phase 12 — VST3 hosting
 - [x] Decide: own host layer on `vst3` bindings vs `vst3-host` crate (spike + write decision to NOTES.md)
 - [x] Out-of-process scanner (`musiton --scan`) with timeout + blacklist; plugin cache JSON; plugin list by vendor/category (Options → Plugins…)
-- [ ] Load instrument + effect plugins, audio + MIDI events, parameters (incl. automation), state save/restore in project
+- [x] Load instrument + effect plugins, audio + MIDI events, parameters (incl. automation), state save/restore in project
 - [ ] Plugin editor in its own native window (HWND), resizable if supported
 - [ ] Plugin delay compensation (PDC)
 **Done when:** Vital, Surge XT, Dexed and Valhalla Supermassive load, play, automate, save and reload correctly; a crashing plugin during scan doesn't affect the DAW.

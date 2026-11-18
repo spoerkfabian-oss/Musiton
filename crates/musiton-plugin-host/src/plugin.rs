@@ -7,7 +7,7 @@
 //! between two graphs the instance is never processed twice per block.
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use musiton_core::ids::ParamId;
@@ -75,13 +75,15 @@ struct Shared {
     /// Edits made in the plugin's own editor, on their way to the processor.
     edits: UnsafeCell<rtrb::Consumer<(u32, f64)>>,
     latency: AtomicU32,
+    /// Set while a node is inside `process` (guards against two threads at once).
+    busy: AtomicBool,
     inputs: usize,
     outputs: usize,
 }
 
-// SAFETY: the processor and the edit consumer are only touched by the node that owns the
-// instance, and all nodes run on the single audio thread (graphs are processed one after
-// the other). The UI side never touches them.
+// SAFETY: the processor and the edit consumer are only touched inside `process`/`reset` of
+// a node that owns the instance and holds the `busy` flag, so never by two threads at
+// once. The UI side never touches them.
 unsafe impl Sync for Shared {}
 // SAFETY: as above; the processor itself is `Send`.
 unsafe impl Send for Shared {}
@@ -113,6 +115,7 @@ impl Plugin {
                 next_ticket: AtomicU64::new(1),
                 edits: UnsafeCell::new(rx),
                 latency: AtomicU32::new(latency),
+                busy: AtomicBool::new(false),
                 inputs,
                 outputs,
             }),
@@ -144,12 +147,12 @@ impl Plugin {
 
     /// A new engine node playing this instance (it takes over from older nodes).
     pub fn node(&self) -> Box<dyn AudioNode> {
-        Box::new(PluginNode {
-            shared: self.shared.clone(),
-            ticket: self.shared.next_ticket.fetch_add(1, Ordering::Relaxed),
-            pending: Vec::with_capacity(MAX_PARAM_CHANGES),
-            changes: Vec::with_capacity(MAX_PARAM_CHANGES),
-        })
+        self.source().node()
+    }
+
+    /// Makes engine nodes of this instance on any thread (e.g. for an export).
+    pub fn source(&self) -> NodeSource {
+        NodeSource(self.shared.clone())
     }
 
     /// Whether engine nodes of it still exist (in a graph or waiting to be freed).
@@ -224,6 +227,22 @@ impl Drop for Plugin {
     }
 }
 
+/// Creates engine nodes for a plugin instance; can be sent to other threads.
+#[derive(Clone)]
+pub struct NodeSource(Arc<Shared>);
+
+impl NodeSource {
+    /// A node that takes over the instance from older nodes.
+    pub fn node(&self) -> Box<dyn AudioNode> {
+        Box::new(PluginNode {
+            shared: self.0.clone(),
+            ticket: self.0.next_ticket.fetch_add(1, Ordering::Relaxed),
+            pending: Vec::with_capacity(MAX_PARAM_CHANGES),
+            changes: Vec::with_capacity(MAX_PARAM_CHANGES),
+        })
+    }
+}
+
 /// Parameter changes a node can take per block.
 const MAX_PARAM_CHANGES: usize = 512;
 
@@ -235,6 +254,14 @@ pub struct PluginNode {
     pending: Vec<ParamChange>,
     /// The changes of the current block.
     changes: Vec<ParamChange>,
+}
+
+impl PluginNode {
+    fn silence(io: &mut AudioIo) {
+        for ch in io.outputs() {
+            ch.fill(0.0);
+        }
+    }
 }
 
 impl AudioNode for PluginNode {
@@ -252,13 +279,21 @@ impl AudioNode for PluginNode {
         // The newest node owns the instance; older ones (still cross-fading) go silent.
         let owner = self.shared.owner.load(Ordering::Acquire);
         if owner > self.ticket {
-            for ch in io.outputs() {
-                ch.fill(0.0);
-            }
+            Self::silence(io);
             return;
         }
         if owner < self.ticket {
             self.shared.owner.store(self.ticket, Ordering::Release);
+        }
+        // Only one thread may be inside the plugin at a time; never wait for it.
+        if self
+            .shared
+            .busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            Self::silence(io);
+            return;
         }
         self.changes.clear();
         self.changes.append(&mut self.pending);
@@ -280,20 +315,25 @@ impl AudioNode for PluginNode {
         // SAFETY: see `Shared`: only the owning node, only on the audio thread.
         match unsafe { &mut *self.shared.processor.get() } {
             Some(processor) => processor.process(ctx, io, events, &self.changes),
-            None => {
-                for ch in io.outputs() {
-                    ch.fill(0.0);
-                }
-            }
+            None => Self::silence(io),
         }
+        self.shared.busy.store(false, Ordering::Release);
     }
 
     fn reset(&mut self) {
-        if self.shared.owner.load(Ordering::Acquire) == self.ticket {
-            // SAFETY: as in `process`.
+        let owner = self.shared.owner.load(Ordering::Acquire) == self.ticket;
+        if owner
+            && self
+                .shared
+                .busy
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        {
+            // SAFETY: as in `process`: owner and holder of the busy flag.
             if let Some(p) = unsafe { &mut *self.shared.processor.get() } {
                 p.reset();
             }
+            self.shared.busy.store(false, Ordering::Release);
         }
     }
 

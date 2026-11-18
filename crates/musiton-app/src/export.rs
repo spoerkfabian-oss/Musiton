@@ -13,7 +13,8 @@ use crate::assets::AssetStore;
 use crate::engine_graph;
 
 /// Engine block size used for exports.
-const BLOCK: usize = 512;
+/// Block size of offline renders.
+pub const BLOCK: usize = 512;
 /// Frames rendered (stopped) before playback starts, so the graph has faded in.
 const PRE_ROLL: usize = 1024;
 /// Frames rendered per progress update.
@@ -62,6 +63,7 @@ pub fn song_end(project: &Project) -> Tick {
 pub fn render_project(
     project: &Project,
     assets: &AssetStore,
+    plugins: &engine_graph::PluginNodes,
     start: u64,
     frames: usize,
     progress: &dyn Fn(f32),
@@ -72,7 +74,7 @@ pub fn render_project(
     let sr = project.sample_rate as f32;
     let mut assets = assets.clone();
     crate::warp::render_missing(&project, &mut assets, project.sample_rate);
-    let built = engine_graph::build(&project, &assets, sr, BLOCK, 0).ok()?;
+    let built = engine_graph::build(&project, &assets, plugins, sr, BLOCK, 0).ok()?;
     let params = built.info.params(&project, None);
     let automation = built.info.automation(&project, &[]);
     let (mut h, mut e) = create(sr, BLOCK);
@@ -146,6 +148,7 @@ pub fn start(
     job: ExportJob,
     project: Project,
     assets: AssetStore,
+    plugins: engine_graph::PluginNodes,
     song_name: String,
 ) -> ExportTask {
     let progress = Arc::new(AtomicU32::new(0));
@@ -155,7 +158,7 @@ pub fn start(
     let spawned = std::thread::Builder::new()
         .name("musiton-export".into())
         .spawn(move || {
-            let _ = tx.send(run(&job, &project, &assets, &song_name, &p, &c));
+            let _ = tx.send(run(&job, &project, &assets, &plugins, &song_name, &p, &c));
         });
     if let Err(e) = spawned {
         tracing::error!("cannot start export thread: {e}");
@@ -171,6 +174,7 @@ fn run(
     job: &ExportJob,
     project: &Project,
     assets: &AssetStore,
+    plugins: &engine_graph::PluginNodes,
     song: &str,
     progress: &AtomicU32,
     cancel: &AtomicBool,
@@ -215,8 +219,8 @@ fn run(
     for (k, (path, p)) in renders.iter().enumerate() {
         let report =
             |x: f32| progress.store(((k as f32 + x) / total * 1000.0) as u32, Ordering::Relaxed);
-        let audio =
-            render_project(p, assets, start, frames, &report, cancel).ok_or("Export cancelled.")?;
+        let audio = render_project(p, assets, plugins, start, frames, &report, cancel)
+            .ok_or("Export cancelled.")?;
         write_export(path, &audio, project.sample_rate, job.options).map_err(|e| e.to_string())?;
         written.push(path.clone());
     }
@@ -314,6 +318,7 @@ mod tests {
             &job,
             &project,
             &AssetStore::default(),
+            &engine_graph::PluginNodes::default(),
             "Song",
             &progress,
             &AtomicBool::new(false),
@@ -329,6 +334,7 @@ mod tests {
         let direct = render_project(
             &project,
             &AssetStore::default(),
+            &engine_graph::PluginNodes::default(),
             0,
             exported.frames(),
             &|_| {},
@@ -376,6 +382,7 @@ mod tests {
             &job,
             &project,
             &AssetStore::default(),
+            &engine_graph::PluginNodes::default(),
             "Song",
             &AtomicU32::new(0),
             &AtomicBool::new(false),
@@ -389,6 +396,7 @@ mod tests {
             &job,
             &project,
             &AssetStore::default(),
+            &engine_graph::PluginNodes::default(),
             "Song",
             &AtomicU32::new(0),
             &AtomicBool::new(true)

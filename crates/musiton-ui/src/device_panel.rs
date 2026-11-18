@@ -73,6 +73,116 @@ pub struct PanelInput<'a> {
     pub eq_views: &'a HashMap<DeviceId, EqView>,
     /// Song position in ticks while playing (knobs then show automated values).
     pub playhead: Option<f64>,
+    /// Installed plugins that can be added.
+    pub plugins: &'a [PluginChoice],
+    /// What to show for a plugin device (`None` while it is not loaded).
+    pub plugin_view: &'a dyn Fn(DeviceId) -> Option<PluginView>,
+}
+
+/// An installed plugin offered in the instrument and effect menus.
+#[derive(Debug, Clone)]
+pub struct PluginChoice {
+    /// Display name ("Surge XT (CLAP)").
+    pub label: String,
+    /// Maker (menus group by it).
+    pub vendor: String,
+    /// The device to create.
+    pub kind: DeviceKind,
+    /// Whether it is an instrument.
+    pub instrument: bool,
+}
+
+/// The state of a loaded plugin device, for its panel.
+#[derive(Debug, Clone, Default)]
+pub struct PluginView {
+    /// Its parameters: (id, name, value 0..1, value as text).
+    pub params: Vec<(u32, String, f64, String)>,
+    /// Why it could not be loaded.
+    pub error: Option<String>,
+    /// Whether it has its own editor window.
+    pub has_editor: bool,
+}
+
+/// A device slot for plugin `choice` with id `id`.
+fn plugin_slot(id: DeviceId, choice: &PluginChoice) -> DeviceSlot {
+    DeviceSlot {
+        id,
+        bypass: false,
+        kind: choice.kind.clone(),
+        sidechain: None,
+    }
+}
+
+/// Generic controls of a plugin device: an editor button and a slider per parameter.
+fn plugin_body(ui: &mut Ui, d: &DeviceSlot, input: &PanelInput, actions: &mut Vec<UiAction>) {
+    let Some(view) = (input.plugin_view)(d.id) else {
+        ui.weak("Loading…");
+        return;
+    };
+    if let Some(e) = &view.error {
+        ui.colored_label(ui.visuals().warn_fg_color, format!("Not loaded: {e}"));
+        return;
+    }
+    if view.has_editor && ui.button("Open editor").clicked() {
+        actions.push(UiAction::OpenPluginEditor(d.id));
+    }
+    egui::CollapsingHeader::new(format!("Parameters ({})", view.params.len()))
+        .id_salt(("plugin-params", d.id))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .id_salt(("plugin-params-scroll", d.id))
+                .show(ui, |ui| {
+                    for (id, name, value, text) in &view.params {
+                        ui.horizontal(|ui| {
+                            let mut v = *value;
+                            let r = ui.add(
+                                egui::Slider::new(&mut v, 0.0..=1.0)
+                                    .show_value(false)
+                                    .text(name),
+                            );
+                            ui.weak(text);
+                            if r.changed() {
+                                actions.push(UiAction::PluginParam {
+                                    device: d.id,
+                                    param: *id,
+                                    value: v,
+                                });
+                            }
+                        });
+                    }
+                });
+        });
+}
+
+/// Choice of instrument: built-in types, then instrument plugins. Returns the new slot.
+fn instrument_menu(
+    ui: &mut Ui,
+    selected: &str,
+    types: &[DeviceType],
+    plugins: &[PluginChoice],
+    slot_id: DeviceId,
+) -> Option<DeviceSlot> {
+    let mut out = None;
+    egui::ComboBox::from_id_salt("instrument_type")
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            for d in types {
+                if ui.selectable_label(d.name == selected, d.name).clicked() {
+                    out = Some(DeviceSlot::builtin(slot_id, d.type_id));
+                }
+            }
+            let instruments: Vec<&PluginChoice> = plugins.iter().filter(|p| p.instrument).collect();
+            if !instruments.is_empty() {
+                ui.separator();
+                for p in instruments {
+                    if ui.selectable_label(p.label == selected, &p.label).clicked() {
+                        out = Some(plugin_slot(slot_id, p));
+                    }
+                }
+            }
+        });
+    out
 }
 
 /// Panel state.
@@ -194,6 +304,25 @@ impl DevicePanel {
     ) {
         let types = input.instruments;
         let slot = t.devices.first().cloned();
+        if let Some(d) = slot.as_ref().filter(|d| d.is_plugin()) {
+            let DeviceKind::Plugin { name, .. } = &d.kind else {
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.strong(&t.name);
+                ui.label("Instrument");
+                if let Some(new) = instrument_menu(ui, name, types, input.plugins, d.id) {
+                    let mut devices = t.devices.clone();
+                    devices[0] = new;
+                    actions.push(UiAction::NewDevice {
+                        track: t.id,
+                        devices,
+                    });
+                }
+            });
+            plugin_body(ui, d, input, actions);
+            return;
+        }
         let current = slot
             .as_ref()
             .map_or(types.first().map_or("", |d| d.type_id), |s| s.type_id());
@@ -219,16 +348,10 @@ impl DevicePanel {
         ui.horizontal(|ui| {
             ui.strong(&t.name);
             ui.label("Instrument");
-            let mut chosen = ty.type_id;
-            egui::ComboBox::from_id_salt("instrument_type")
-                .selected_text(ty.name)
-                .show_ui(ui, |ui| {
-                    for d in types {
-                        ui.selectable_value(&mut chosen, d.type_id, d.name);
-                    }
-                });
-            if chosen != ty.type_id {
-                actions.push(replace_instrument(DeviceSlot::builtin(slot_id, chosen)));
+            if let Some(new) = instrument_menu(ui, ty.name, types, input.plugins, slot_id) {
+                if new.type_id() != ty.type_id {
+                    actions.push(replace_instrument(new));
+                }
             }
             ui.separator();
             ui.menu_button("Presets", |ui| {
@@ -237,7 +360,10 @@ impl DevicePanel {
                         let mut d = DeviceSlot::builtin(slot_id, ty.type_id);
                         let DeviceKind::Builtin {
                             params, samples, ..
-                        } = &mut d.kind;
+                        } = &mut d.kind
+                        else {
+                            continue;
+                        };
                         *params = values.clone();
                         *samples = slot
                             .as_ref()
@@ -381,6 +507,31 @@ fn effects(
                     ui.close();
                 }
             }
+            let fx: Vec<&PluginChoice> = input.plugins.iter().filter(|p| !p.instrument).collect();
+            if !fx.is_empty() {
+                ui.separator();
+                ui.menu_button("Plugins", |ui| {
+                    let mut vendors: Vec<&str> = fx.iter().map(|p| p.vendor.as_str()).collect();
+                    vendors.dedup();
+                    for vendor in vendors {
+                        let label = if vendor.is_empty() {
+                            "(unknown maker)"
+                        } else {
+                            vendor
+                        };
+                        ui.menu_button(label, |ui| {
+                            for p in fx.iter().filter(|p| p.vendor == vendor) {
+                                if ui.button(&p.label).clicked() {
+                                    let mut c = chain.clone();
+                                    c.push(plugin_slot(DeviceId(project.next_id), p));
+                                    actions.push(set_chain(c));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                });
+            }
         });
         if chain.is_empty() {
             ui.weak("No effects yet.");
@@ -389,8 +540,11 @@ fn effects(
         }
     });
     for (i, d) in chain.iter().enumerate() {
-        let Some(ty) = input.effects.iter().find(|x| x.type_id == d.type_id()) else {
-            continue;
+        let ty = input.effects.iter().find(|x| x.type_id == d.type_id());
+        let name = match (&d.kind, ty) {
+            (DeviceKind::Plugin { name, .. }, _) => name.as_str(),
+            (_, Some(ty)) => ty.name,
+            _ => continue,
         };
         ui.group(|ui| {
             ui.horizontal(|ui| {
@@ -402,7 +556,7 @@ fn effects(
                         device: d.id,
                     },
                     |ui| {
-                        ui.strong(ty.name);
+                        ui.strong(name);
                     },
                 );
                 let mut on = !d.bypass;
@@ -440,7 +594,7 @@ fn effects(
                     c.remove(i);
                     actions.push(set_chain(c));
                 }
-                if ty.sidechain_param.is_some() {
+                if ty.is_some_and(|ty| ty.sidechain_param.is_some()) {
                     let mut src = d.sidechain;
                     if sidechain_picker(ui, project, t, d, &mut src) {
                         let mut c = chain.clone();
@@ -454,7 +608,10 @@ fn effects(
             if let Some(view) = input.eq_views.get(&d.id) {
                 eq_display(ui, view);
             }
-            param_knobs(ui, t, input.playhead, d, ty, actions);
+            match ty {
+                Some(ty) => param_knobs(ui, t, input.playhead, d, ty, actions),
+                None => plugin_body(ui, d, input, actions),
+            }
         });
     }
 }

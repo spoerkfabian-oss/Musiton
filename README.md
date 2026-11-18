@@ -11,6 +11,7 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 - **Audio:** import of WAV, FLAC, MP3, OGG and AIFF; recording with punch-in/out, loop takes and latency compensation. Comping: "Takes" shows every recorded take under its track; drag over a take to use it for that range. Warp: right-click a clip → "Warp to tempo" to make loops follow the song tempo (pitch stays).
 - **MIDI:** keyboard input, recording (replace or overdub), piano roll with velocity and controller lanes (mod wheel, volume, pan, expression, sustain pedal, any CC) and quantize, and .mid import/export including controllers.
 - **Step sequencer:** the "Steps" tab shows the open MIDI clip as a grid (1/8, 1/16 or 1/32 steps); drum-mode samplers get one row per pad; Shift+click accents a step.
+- **Plugins:** VST3 and CLAP instruments and effects (Options → Plugins… lists what was found; plugins are scanned in a separate process, so a crashing plugin cannot take Musiton down). Their settings are saved with the song.
 - **Instruments and effects:**
   - Instruments: a polysynth and a sampler with a drum mode.
   - Effects: EQ with spectrum view, compressor, delay, FDN reverb, limiter, saturation and utility.

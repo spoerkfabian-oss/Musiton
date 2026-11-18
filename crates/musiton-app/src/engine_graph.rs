@@ -176,6 +176,28 @@ pub struct BuiltGraph {
     pub record_dropped: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// Parameter names of loaded plugin devices: (plugin parameter id, name).
+pub type PluginParams = HashMap<musiton_core::ids::DeviceId, Vec<(u32, String)>>;
+
+/// The loaded plugin instances a graph can use.
+#[derive(Clone, Default)]
+pub struct PluginNodes {
+    /// Node makers per plugin device.
+    pub sources: HashMap<musiton_core::ids::DeviceId, musiton_plugin_host::NodeSource>,
+    /// Their parameters (for automation).
+    pub params: PluginParams,
+}
+
+impl PluginNodes {
+    /// A node for plugin device `id`, if it is loaded.
+    fn node(
+        &self,
+        id: musiton_core::ids::DeviceId,
+    ) -> Option<Box<dyn musiton_engine::node::AudioNode>> {
+        Some(self.sources.get(&id)?.node())
+    }
+}
+
 /// Mixer nodes and meters of a built graph.
 #[derive(Default)]
 pub struct GraphInfo {
@@ -191,6 +213,8 @@ pub struct GraphInfo {
     fx: HashMap<musiton_core::ids::DeviceId, NodeIdx>,
     /// Spectrum taps of EQ devices.
     pub analyzers: HashMap<musiton_core::ids::DeviceId, Arc<Analyzer>>,
+    /// Parameters of the plugin devices.
+    plugin_params: PluginParams,
 }
 
 /// Mixer parameter values of `project` for the given nodes.
@@ -246,6 +270,7 @@ pub use musiton_project::{PAN_PARAM, VOLUME_PARAM};
 /// Everything a track's lanes can automate: (target, display name, parameter scale).
 pub fn automation_targets(
     t: &musiton_project::Track,
+    plugin_params: &PluginParams,
 ) -> Vec<(
     musiton_project::ParamTarget,
     String,
@@ -257,6 +282,20 @@ pub fn automation_targets(
         (ParamTarget::Pan, "Pan".to_owned(), PAN_PARAM),
     ];
     for (i, d) in t.devices.iter().enumerate() {
+        if let musiton_project::DeviceKind::Plugin { name, .. } = &d.kind {
+            // Plugin parameters are 0..1.
+            for (id, pname) in plugin_params.get(&d.id).into_iter().flatten() {
+                out.push((
+                    ParamTarget::Device {
+                        device: d.id,
+                        param: u64::from(*id),
+                    },
+                    format!("{name}: {pname}"),
+                    musiton_core::params::ParamInfo::new(u64::from(*id), "", 0.0, 1.0, 0.0),
+                ));
+            }
+            continue;
+        }
         let instrument = i == 0 && t.kind == TrackKind::Instrument;
         let (name, params): (&str, &[musiton_core::params::ParamInfo]) = if instrument {
             musiton_devices::instrument_type(d.type_id()).map_or(("?", &[]), |x| (x.name, x.params))
@@ -299,7 +338,7 @@ impl GraphInfo {
                 Some((*self.strips.get(&Some(track))?, STRIP_PAN, PAN_PARAM, false))
             }
             ParamTarget::Device { device, param } => {
-                let info = automation_targets(t)
+                let info = automation_targets(t, &self.plugin_params)
                     .into_iter()
                     .find(|(x, _, _)| *x == target)
                     .map(|(_, _, i)| i)?;
@@ -374,6 +413,7 @@ impl GraphInfo {
 pub fn build(
     project: &Project,
     assets: &AssetStore,
+    plugins: &PluginNodes,
     sample_rate: f32,
     max_block: usize,
     input_channels: usize,
@@ -462,8 +502,15 @@ pub fn build(
                         Some((z.key, assets.audio_at(z.asset, sample_rate as u32)?.clone()))
                     })
                     .collect();
-                let instrument =
-                    musiton_devices::create_instrument(&type_id, &instrument_params(t), &samples);
+                let instrument = match t.devices.first().filter(|d| d.is_plugin()) {
+                    // A plugin that is not loaded stays silent.
+                    Some(d) => plugins.node(d.id).unwrap_or_else(|| Box::new(Mix::new(2))),
+                    None => musiton_devices::create_instrument(
+                        &type_id,
+                        &instrument_params(t),
+                        &samples,
+                    ),
+                };
                 let node = b.add(Box::new(
                     MidiTrack::new(notes, instrument, rec).with_ccs(ccs),
                 ));
@@ -490,7 +537,15 @@ pub fn build(
         };
         let mut last = head;
         for d in effects_of(t) {
-            let (effect, analyzer) = musiton_devices::create_effect(d.type_id(), &effect_params(d));
+            let (effect, analyzer) = if d.is_plugin() {
+                // A plugin that is not loaded is left out (the signal passes by).
+                match plugins.node(d.id) {
+                    Some(node) => (node, None),
+                    None => continue,
+                }
+            } else {
+                musiton_devices::create_effect(d.type_id(), &effect_params(d))
+            };
             let takes_sidechain = effect.num_inputs() >= 4;
             let node = b.add(Box::new(FxSlot::new(effect, d.bypass)));
             stereo(&mut b, last, 0, node)?;
@@ -587,6 +642,7 @@ pub fn build(
             midi,
             fx,
             analyzers,
+            plugin_params: plugins.params.clone(),
         },
         record_taps,
         midi_taps,
@@ -714,7 +770,9 @@ mod tests {
         });
 
         let (mut h, mut e) = create(48_000.0, 512);
-        let g = build(&project, &assets, 48_000.0, 512, 0).unwrap().graph;
+        let g = build(&project, &assets, &PluginNodes::default(), 48_000.0, 512, 0)
+            .unwrap()
+            .graph;
         h.send(EngineCommand::SwapGraph(Box::new(g))).ok();
         render_offline(&mut e, 2_048, 2, 512); // graph fade-in while stopped
         h.send(EngineCommand::SetTempoMap(Box::new(project.tempo.clone())))
@@ -770,7 +828,9 @@ mod tests {
         }
         let (mut h, mut e) = create(48_000.0, 256);
         h.send(EngineCommand::SwapGraph(Box::new(
-            build(&project, &assets, 48_000.0, 256, 0).unwrap().graph,
+            build(&project, &assets, &PluginNodes::default(), 48_000.0, 256, 0)
+                .unwrap()
+                .graph,
         )))
         .ok();
         render_offline(&mut e, 1024, 2, 256);
@@ -820,7 +880,7 @@ mod tests {
         project.tracks = vec![drums, bus(2), bus(3)];
 
         let run = |project: &Project| {
-            let built = build(project, &assets, 48_000.0, 256, 0).unwrap();
+            let built = build(project, &assets, &PluginNodes::default(), 48_000.0, 256, 0).unwrap();
             let (mut h, mut e) = create(48_000.0, 256);
             h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
             render_offline(&mut e, 1024, 2, 256);
@@ -907,7 +967,7 @@ mod tests {
             },
         ];
         let level = |project: &Project, from: usize, to: usize| {
-            let built = build(project, &assets, 48_000.0, 256, 0).unwrap();
+            let built = build(project, &assets, &PluginNodes::default(), 48_000.0, 256, 0).unwrap();
             let (mut h, mut e) = create(48_000.0, 256);
             h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
             for ((node, pid), val) in built.info.params(project, None) {
@@ -937,7 +997,7 @@ mod tests {
         // A track cannot be its own source; a loop is left out instead of failing the build.
         assert!(!project.sidechain_ok(TrackId(2), TrackId(2)));
         project.tracks[1].devices[0].sidechain = Some(TrackId(2));
-        assert!(build(&project, &assets, 48_000.0, 256, 0).is_ok());
+        assert!(build(&project, &assets, &PluginNodes::default(), 48_000.0, 256, 0).is_ok());
     }
 
     /// Plays notes live into an armed instrument track while recording, turns the recording
@@ -965,7 +1025,15 @@ mod tests {
         // with tick resolution: 1 tick = 25 samples here.)
         let block = 250;
         let start = |project: &Project, live: bool| {
-            let mut built = build(project, &assets, 48_000.0, block, 0).unwrap();
+            let mut built = build(
+                project,
+                &assets,
+                &PluginNodes::default(),
+                48_000.0,
+                block,
+                0,
+            )
+            .unwrap();
             let (mut h, mut e) = create(48_000.0, block);
             let params = built.info.params(project, live.then_some(TrackId(1)));
             h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
@@ -1079,7 +1147,7 @@ mod tests {
             fx,
         ];
 
-        let built = build(&project, &assets, 48_000.0, 256, 0).unwrap();
+        let built = build(&project, &assets, &PluginNodes::default(), 48_000.0, 256, 0).unwrap();
         let params = built.info.params(&project, None);
         let (mut h, mut e) = create(48_000.0, 256);
         h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
@@ -1134,7 +1202,7 @@ mod tests {
         };
         t.devices.push(DeviceSlot::builtin(DeviceId(9), "eq"));
         project.tracks.push(t);
-        let built = build(&project, &assets, 48_000.0, 256, 0).unwrap();
+        let built = build(&project, &assets, &PluginNodes::default(), 48_000.0, 256, 0).unwrap();
         let analyzer = built.info.analyzers[&DeviceId(9)].clone();
         let (mut h, mut e) = create(48_000.0, 256);
         h.send(EngineCommand::SwapGraph(Box::new(built.graph))).ok();
@@ -1207,7 +1275,7 @@ mod tests {
             ..Track::default()
         });
         let render = |project: &Project, block: usize, automate: bool| {
-            let built = build(project, &assets, 48_000.0, 512, 0).unwrap();
+            let built = build(project, &assets, &PluginNodes::default(), 48_000.0, 512, 0).unwrap();
             let auto = built.info.automation(project, &[]);
             assert_eq!(auto.0.len(), 1);
             let params = built.info.params(project, None);

@@ -60,6 +60,17 @@ pub enum UiAction {
         /// Pad key in drum mode; `None` = the melodic sample.
         key: Option<u8>,
     },
+    /// Move a parameter of a plugin device (normalized value).
+    PluginParam {
+        /// The device.
+        device: musiton_core::ids::DeviceId,
+        /// The plugin's parameter id.
+        param: u32,
+        /// New value 0..1.
+        value: f64,
+    },
+    /// Open the plugin's own editor window.
+    OpenPluginEditor(musiton_core::ids::DeviceId),
     /// Save the current settings as a user preset.
     SavePreset {
         /// Device type.

@@ -12,6 +12,7 @@ mod engine_graph;
 mod export;
 mod export_dialog;
 mod midi_record;
+mod plugin_set;
 mod plugins;
 mod presets;
 mod relink;
@@ -194,6 +195,10 @@ struct App {
     video: video_view::VideoView,
     /// Installed plugins and their scanner.
     plugins: plugins::Plugins,
+    /// Plugin instances of the open song.
+    plugin_set: plugin_set::PluginSet,
+    /// Plugin instances used by a running export.
+    export_plugins: Vec<musiton_plugin_host::Plugin>,
     /// Background time-stretching of warped clips.
     warping: Option<std::sync::mpsc::Receiver<Vec<(u64, musiton_core::audio::AudioData)>>>,
     graph: GraphState,
@@ -225,6 +230,27 @@ struct App {
 }
 
 /// Effect types for the device panel.
+/// Installed plugins as choices for the device panel menus.
+fn plugin_choices(
+    plugins: &[musiton_plugin_host::PluginInfo],
+) -> Vec<musiton_ui::device_panel::PluginChoice> {
+    plugins
+        .iter()
+        .map(|p| musiton_ui::device_panel::PluginChoice {
+            label: format!("{} ({})", p.name, p.format.name()),
+            vendor: p.vendor.clone(),
+            instrument: p.instrument,
+            kind: musiton_project::DeviceKind::Plugin {
+                format: p.format.name().to_owned(),
+                path: p.path.display().to_string(),
+                plugin_id: p.id.clone(),
+                name: p.name.clone(),
+                instrument: p.instrument,
+            },
+        })
+        .collect()
+}
+
 fn effect_types() -> Vec<musiton_ui::device_panel::DeviceType> {
     musiton_devices::EFFECTS
         .iter()
@@ -312,6 +338,8 @@ impl App {
             warping: None,
             video: video_view::VideoView::default(),
             plugins: plugins::Plugins::new(Settings::data_dir().map(|d| d.join("plugins.json"))),
+            plugin_set: plugin_set::PluginSet::default(),
+            export_plugins: Vec::new(),
             graph: GraphState::default(),
             browser: Browser::default(),
             input: None,
@@ -549,7 +577,21 @@ impl App {
                     path,
                 };
                 let assets = self.assets.clone();
-                self.export_task = Some(export::start(job, self.doc.project.clone(), assets, name));
+                // The export gets its own plugin instances at the song's rate.
+                let (keep, plugins) = self.plugin_set.for_export(
+                    &self.doc.project,
+                    f64::from(self.doc.project.sample_rate),
+                    export::BLOCK,
+                );
+                let old = std::mem::replace(&mut self.export_plugins, keep);
+                self.plugin_set.retire(old);
+                self.export_task = Some(export::start(
+                    job,
+                    self.doc.project.clone(),
+                    assets,
+                    plugins,
+                    name,
+                ));
             }
         }
         let Some(task) = &self.export_task else {
@@ -558,6 +600,8 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(50));
         if let Some(result) = task.result() {
             self.export_task = None;
+            let done = std::mem::take(&mut self.export_plugins);
+            self.plugin_set.retire(done);
             match result {
                 Ok(files) => self.set_status(format!(
                     "Exported {}",
@@ -1118,6 +1162,11 @@ impl App {
     fn save_to(&mut self, path: &Path) -> bool {
         match self.doc.save_to(path) {
             Ok(()) => {
+                if let Some(dir) = plugin_set::states_dir(path) {
+                    if let Err(e) = self.plugin_set.save_states(&self.doc.project, &dir) {
+                        self.error = Some(format!("A plugin's settings could not be saved: {e}"));
+                    }
+                }
                 self.settings.add_recent(path);
                 self.save_settings();
                 self.set_status(format!("Saved {}", path.display()));
@@ -1399,6 +1448,9 @@ impl App {
 
     /// Loads the audio files of the current project and resets clip selection.
     fn load_assets(&mut self) {
+        // A new song: its plugins load from the states saved next to it.
+        self.plugin_set
+            .reset(self.doc.path.as_deref().and_then(plugin_set::states_dir));
         self.arrange.selected_clips.clear();
         self.arrange.selected = None;
         self.relink.missing = self.assets.load_project(&self.doc.project, self.doc.dir());
@@ -1679,6 +1731,40 @@ impl App {
         }
     }
 
+    /// Moves a plugin parameter from the device panel: the plugin's controller and the
+    /// engine both get the value.
+    fn set_plugin_param(&mut self, device: musiton_core::ids::DeviceId, param: u32, value: f64) {
+        self.plugin_set.set_param(device, param, value);
+        self.doc.settings_changed();
+        let project = &self.doc.project;
+        let Some(track) = project
+            .tracks
+            .iter()
+            .find(|t| t.devices.iter().any(|d| d.id == device))
+        else {
+            return;
+        };
+        let target = musiton_project::ParamTarget::Device {
+            device,
+            param: u64::from(param),
+        };
+        if let (Some((node, id, _, _)), Some((_, e))) = (
+            self.graph.info.resolve(project, track.id, target),
+            &mut self.output,
+        ) {
+            e.send_or_log(musiton_engine::EngineCommand::SetParam {
+                node,
+                id,
+                val: value as f32,
+            });
+        }
+    }
+
+    /// Opens the editor window of a plugin device.
+    fn open_plugin_editor(&mut self, device: musiton_core::ids::DeviceId) {
+        tracing::info!("plugin editor requested for device {}", device.0);
+    }
+
     /// Rebuilds the engine graph when the project structure or the loaded audio changed,
     /// and sends changed mixer values as parameter commands.
     fn update_graph(&mut self) {
@@ -1686,6 +1772,16 @@ impl App {
         let Some((_, engine)) = &mut self.output else {
             return;
         };
+        // Plugin instances follow the engine's rate and the song's plugin devices.
+        let reloaded = self.plugin_set.configure(
+            &self.doc.project,
+            f64::from(engine.sample_rate()),
+            engine.max_block(),
+        );
+        if reloaded | self.plugin_set.sync(&self.doc.project) {
+            self.graph.structure = None;
+            self.graph.revision = None;
+        }
         if self.graph.revision != Some(self.doc.revision)
             || self.graph.asset_gen != self.assets.generation
         {
@@ -1700,6 +1796,7 @@ impl App {
                 match engine_graph::build(
                     &self.doc.project,
                     &self.assets,
+                    &self.plugin_set.nodes(),
                     engine.sample_rate(),
                     engine.max_block(),
                     input_channels,
@@ -1812,7 +1909,7 @@ impl App {
             ParamTarget::Volume => engine_graph::VOLUME_PARAM.to_normalized(t.strip.gain_db),
             ParamTarget::Pan => engine_graph::PAN_PARAM.to_normalized(t.strip.pan),
             ParamTarget::Device { device, param } => {
-                let info = engine_graph::automation_targets(t)
+                let info = engine_graph::automation_targets(t, &self.plugin_set.params())
                     .into_iter()
                     .find(|(x, _, _)| *x == target)
                     .map(|(_, _, i)| i);
@@ -1967,6 +2064,12 @@ impl App {
                     }
                 }
                 UiAction::Import { files, track, at } => self.import(files, track, at),
+                UiAction::PluginParam {
+                    device,
+                    param,
+                    value,
+                } => self.set_plugin_param(device, param, value),
+                UiAction::OpenPluginEditor(device) => self.open_plugin_editor(device),
                 UiAction::PreviewNote { on, key } => {
                     if let Some((_, e)) = &mut self.output {
                         e.send_or_log(musiton_engine::EngineCommand::PreviewNote {
@@ -2117,6 +2220,9 @@ impl App {
                 ui.ctx().request_repaint_after(Duration::from_millis(50));
                 let effects = effect_types();
                 let eq_views = self.eq_views();
+                let plugin_choices = plugin_choices(&self.plugins.cache.plugins);
+                let plugin_set = &self.plugin_set;
+                let plugin_view = |id| plugin_set.view(id);
                 let input = musiton_ui::device_panel::PanelInput {
                     track: self.arrange.selected,
                     instruments: &types,
@@ -2124,6 +2230,8 @@ impl App {
                     asset_name: &name,
                     eq_views: &eq_views,
                     playhead: self.playhead().0,
+                    plugins: &plugin_choices,
+                    plugin_view: &plugin_view,
                 };
                 let project = &self.doc.project;
                 egui::ScrollArea::vertical()
@@ -2223,13 +2331,14 @@ impl App {
             });
         let (playhead, playing) = self.playhead();
         let mut actions = Vec::new();
+        let plugin_params = self.plugin_set.params();
         egui::CentralPanel::default_margins().show(ui, |ui| {
             let auto_targets: std::collections::HashMap<_, _> = self
                 .doc
                 .project
                 .tracks
                 .iter()
-                .map(|t| (t.id, engine_graph::automation_targets(t)))
+                .map(|t| (t.id, engine_graph::automation_targets(t, &plugin_params)))
                 .collect();
             let levels: std::collections::HashMap<_, _> = self
                 .graph
@@ -2253,6 +2362,9 @@ impl App {
         self.update_conversion();
         self.update_warps();
         self.update_video(&ctx);
+        if self.plugin_set.poll() {
+            self.doc.settings_changed();
+        }
         if self.plugins.update() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -2312,7 +2424,14 @@ impl App {
             .doc
             .autosave_if_due(Settings::data_dir().as_deref(), interval)
         {
-            Some(Ok(path)) => tracing::info!("autosaved to {}", path.display()),
+            Some(Ok(path)) => {
+                tracing::info!("autosaved to {}", path.display());
+                if let Some(dir) = plugin_set::states_dir(&path) {
+                    if let Err(e) = self.plugin_set.save_states(&self.doc.project, &dir) {
+                        tracing::warn!("autosaving plugin states failed: {e}");
+                    }
+                }
+            }
             Some(Err(e)) => self.set_status(format!("Autosave failed: {e}")),
             None => {}
         }
@@ -2361,6 +2480,7 @@ impl App {
                     self.stop_and_rewind();
                     self.doc = doc;
                     self.load_assets();
+                    self.plugin_set.reset(plugin_set::states_dir(&r.autosave));
                     self.set_status("Backup restored – save to keep it.");
                 }
                 Err(e) => self.error = Some(format!("The backup could not be restored: {e}")),
