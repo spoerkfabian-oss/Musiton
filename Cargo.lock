@@ -2425,6 +2425,7 @@ dependencies = [
  "libloading 0.9.1",
  "musiton-core",
  "musiton-engine",
+ "rtrb",
  "serde",
  "thiserror 2.0.21",
  "tracing",

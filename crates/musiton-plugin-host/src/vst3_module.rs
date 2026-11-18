@@ -1,6 +1,7 @@
 //! Loading a VST3 module (shared library) and reading its class factory.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 
 use vst3::ComPtr;
 use vst3::Steinberg::{
@@ -50,8 +51,29 @@ pub(crate) struct Module {
 unsafe impl Send for Module {}
 
 impl Module {
+    /// The module of `bundle`, loaded once per process: every user shares it, and it
+    /// exits and unloads when the last one lets go (loading or unloading one module
+    /// twice at the same time crashes some plugins).
+    pub(crate) fn shared(bundle: &Path) -> Result<Arc<Self>, PluginError> {
+        static LOADED: Mutex<Vec<(PathBuf, Weak<Module>)>> = Mutex::new(Vec::new());
+        let mut loaded = LOADED
+            .lock()
+            .map_err(|_| PluginError::Failed("module registry".into()))?;
+        loaded.retain(|(_, m)| m.strong_count() > 0);
+        if let Some(m) = loaded
+            .iter()
+            .find(|(p, _)| p == bundle)
+            .and_then(|(_, m)| m.upgrade())
+        {
+            return Ok(m);
+        }
+        let m = Arc::new(Self::load(bundle)?);
+        loaded.push((bundle.to_owned(), Arc::downgrade(&m)));
+        Ok(m)
+    }
+
     /// Loads the module of `bundle` and calls its entry function.
-    pub(crate) fn load(bundle: &Path) -> Result<Self, PluginError> {
+    fn load(bundle: &Path) -> Result<Self, PluginError> {
         let binary = binary_path(bundle)?;
         let fail = |reason: String| PluginError::Load {
             path: binary.clone(),
@@ -141,7 +163,7 @@ pub(crate) fn tuid_hex(id: &TUID) -> String {
 
 /// Lists the audio processor classes of a `.vst3` bundle.
 pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginInfo>, PluginError> {
-    let module = Module::load(bundle)?;
+    let module = Module::shared(bundle)?;
     let factory = module
         .factory()
         .ok_or_else(|| PluginError::Failed("no factory".into()))?;

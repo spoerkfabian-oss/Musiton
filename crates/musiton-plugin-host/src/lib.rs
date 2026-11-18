@@ -12,7 +12,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 mod clap;
+mod plugin;
+mod vst3_host;
 mod vst3_module;
+mod vst3_plugin;
+
+pub use plugin::{Edit, Plugin, PluginNode, PluginParam};
 
 /// Plugin formats Musiton hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

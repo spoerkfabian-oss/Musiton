@@ -13,6 +13,7 @@ clack-host = "0.2"
 libloading = "0.9.1"
 musiton-core.workspace = true
 musiton-engine.workspace = true
+rtrb = "0.4"
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tracing.workspace = true

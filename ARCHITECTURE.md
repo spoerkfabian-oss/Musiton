@@ -30,7 +30,7 @@ musiton/
 │  │                        # recording disk thread, WAV/FLAC export, video via an ffmpeg child process
 │  ├─ musiton-project/      # project model (source of truth), RON save/load + migrations, Edit/undo
 │  ├─ musiton-ui/           # egui views: arrangement, piano roll, mixer, device panel, shortcuts
-│  ├─ musiton-plugin-host/  # VST3 + CLAP hosting (scanning so far); the only crate allowed to use `unsafe`
+│  ├─ musiton-plugin-host/  # VST3 + CLAP hosting (scanning; VST3 instances); the only crate allowed to use `unsafe`
 │  └─ musiton-app/          # the `musiton` binary: wires everything; settings, autosave, crash recovery,
 │                           # project → engine graph translation, export, demo song, installer config;
 │                           # `musiton --scan <file>` is the out-of-process plugin scanner
