@@ -421,4 +421,4 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - No video lane with thumbnails in the arrangement yet; the start is set numerically in the video window.
 - No relink dialog for a moved video; remove and import it again.
 - No video export (audio export only).
-- The installer is about 80–100 MB larger because of `ffmpeg.exe`.
+- `ffmpeg.exe` makes the downloads bigger: the installer is about 49 MB and the zipped portable download about 65 MB (first build with FFmpeg, run #24).
