@@ -435,7 +435,9 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - In the app: instrument tracks offer installed instrument plugins in the "Instrument" menu, and "+ Add effect → Plugins → <maker>" lists effect plugins. A plugin device shows a slider per parameter (with the plugin's own value text); plugin parameters appear in the automation lanes ("<plugin>: <parameter>", 0..1) and play back like built-in ones.
 - Project format: `DeviceKind::Plugin { format, path, plugin_id, name, instrument }`. The plugin's settings are its own state, written to `plugins/<device id>.state` next to the song file on save, and next to the autosave copy on autosave. Instances live until another song is opened, so undoing the removal of a plugin keeps its settings. A plugin that cannot be loaded shows why in its panel; an instrument then stays silent and an effect is left out of the chain.
 - Instances follow the audio device's rate and block size (they are reloaded with their state when these change). An export gets its own instances at the song's rate, created from the current states, so it never touches the live ones.
+- Plugin editors (Windows): "Open editor" in the plugin's panel opens its own editor in a native window titled "<plugin> – <track>". VST3 through `IPlugView` with our `IPlugFrame` (size wishes are applied on the next frame), CLAP through the `gui` extension (embedded, `win32`). Resizable editors get a sizing border; user resizes go to the plugin, the plugin's own size changes resize the window. Closing the window detaches the editor. On Linux no editor windows are offered (generic sliders only).
 - Each plugin library is loaded once per process and shared (`Module::shared`); it exits and unloads when its last instance is gone. Loading/unloading one library twice at the same time crashed the DPF test plugins.
+- Loading, scanning and shutting down plugins happen one at a time per process (`lifecycle_lock`). Parallel tests on CI crashed with heap corruption (`free(): invalid size`) when two threads set up or tore down plugins at once; the app only does this on the UI thread anyway.
 
 **Decisions**
 - Own host layer on the raw `vst3` bindings (MIT/Apache, generated from Steinberg's SDK headers, which are MIT-licensed since SDK 3.8), not `vst3-host`: Musiton needs real-time-safe processing inside its own engine node, its own parameter/automation path and its own state handling, which a ready-made host would hide. CLAP uses `clack-host`.
@@ -447,6 +449,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 
 **Known issues (so far)**
 - Moving a control in a plugin's own editor marks the song as changed, but is not recorded as automation yet.
+- The editor windows could not be tried in the cloud (no Windows plugins there); they are compile-checked for Windows only. First real test: on the owner's PC.
 - Plugin settings changes are not part of undo (the plugin keeps its own state).
 - Autosave writes plugin states only when the song itself changed since the last autosave.
 - Stems of an export are rendered one after another with the same export instances, so a long reverb tail of one stem can reach the start of the next.

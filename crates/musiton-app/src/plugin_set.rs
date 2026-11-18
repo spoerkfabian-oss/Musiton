@@ -95,6 +95,9 @@ impl Default for PluginSet {
 impl PluginSet {
     /// Forgets all instances (another song was opened); states load from `state_dir`.
     pub fn reset(&mut self, state_dir: Option<PathBuf>) {
+        for p in self.instances.values_mut() {
+            p.close_editor();
+        }
         self.retired.extend(self.instances.drain().map(|(_, p)| p));
         self.failed.clear();
         self.state_dir = state_dir;
@@ -204,7 +207,7 @@ impl PluginSet {
                 })
                 .collect(),
             error: None,
-            has_editor: false,
+            has_editor: p.has_editor(),
         })
     }
 
@@ -215,11 +218,21 @@ impl PluginSet {
         }
     }
 
+    /// Opens the editor window of device `id` titled `title`.
+    pub fn open_editor(&mut self, id: DeviceId, title: &str) -> Result<(), String> {
+        let p = self
+            .instances
+            .get_mut(&id)
+            .ok_or_else(|| "the plugin is not loaded".to_owned())?;
+        p.open_editor(title).map_err(|e| e.to_string())
+    }
+
     /// Passes edits from the plugins' own editors on and frees retired instances.
     /// Returns whether a plugin changed a parameter (the song then has unsaved changes).
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         for p in self.instances.values_mut() {
+            p.poll_editor();
             changed |= p
                 .take_edits()
                 .iter()

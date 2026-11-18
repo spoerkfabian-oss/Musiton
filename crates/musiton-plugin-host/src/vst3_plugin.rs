@@ -30,13 +30,15 @@ use vst3::Steinberg::Vst::{
     SymbolicSampleSizes_::kSample32,
 };
 use vst3::Steinberg::{
-    kResultOk, FUnknown, IBStream, IPluginBase, IPluginBaseTrait, IPluginFactoryTrait, TUID,
+    kPlatformTypeHWND, kResultOk, FUnknown, IBStream, IPlugFrame, IPlugView, IPlugViewTrait,
+    IPluginBase, IPluginBaseTrait, IPluginFactoryTrait, ViewRect, TUID,
 };
 use vst3::{ComPtr, ComWrapper, Interface};
 
 use crate::plugin::{Controller, ParamChange, Plugin, PluginParam, Processor};
 use crate::vst3_host::{
     read_wide, ComponentHandler, Edit, EventList, HostApplication, MemoryStream, ParameterChanges,
+    PlugFrame,
 };
 use crate::vst3_module::Module;
 use crate::{PluginError, PluginFormat};
@@ -314,7 +316,12 @@ pub(crate) fn load(
         sample_rate,
         cc_params,
     );
-    let controller = Vst3Controller { core, params };
+    let controller = Vst3Controller {
+        core,
+        params,
+        view: std::cell::RefCell::new(None),
+        frame: ComWrapper::new(PlugFrame::default()),
+    };
     // Musiton feeds and takes stereo on the main buses (plus a stereo sidechain input).
     let inputs = if in_channels.is_empty() {
         0
@@ -616,6 +623,9 @@ impl Processor for Vst3Processor {
 struct Vst3Controller {
     core: Arc<Core>,
     params: Vec<PluginParam>,
+    /// The open editor view and the frame it reports size wishes to.
+    view: std::cell::RefCell<Option<ComPtr<IPlugView>>>,
+    frame: ComWrapper<PlugFrame>,
 }
 
 impl Vst3Controller {
@@ -727,6 +737,92 @@ impl Controller for Vst3Controller {
     fn shutdown(&self, processor: Box<dyn std::any::Any>) {
         // The processor only holds a reference to the shared core.
         drop(processor);
+    }
+
+    fn has_editor(&self) -> bool {
+        self.core.controller.is_some()
+    }
+
+    fn attach_editor(
+        &self,
+        parent: crate::window::Handle,
+    ) -> Result<((i32, i32), bool), PluginError> {
+        self.detach_editor();
+        let c = self
+            .core
+            .controller
+            .as_ref()
+            .ok_or_else(|| failed("no editor"))?;
+        // SAFETY: "editor" is a NUL-terminated view type; we own the returned reference.
+        let view = unsafe { ComPtr::from_raw(c.createView(c"editor".as_ptr())) }
+            .ok_or_else(|| failed("the plugin has no editor"))?;
+        // SAFETY: plain calls on the view, with our frame (kept alive by `self`) and the
+        // native window handle of the editor window.
+        unsafe {
+            if view.isPlatformTypeSupported(kPlatformTypeHWND) != kResultOk {
+                return Err(failed("the editor does not support this system's windows"));
+            }
+            if let Some(f) = self.frame.as_com_ref::<IPlugFrame>() {
+                view.setFrame(f.as_ptr());
+            }
+            if view.attached(parent, kPlatformTypeHWND) != kResultOk {
+                view.setFrame(std::ptr::null_mut());
+                return Err(failed("the editor could not be opened"));
+            }
+        }
+        let mut rect: ViewRect = zeroed();
+        // SAFETY: out pointer.
+        let size = if unsafe { view.getSize(&mut rect) } == kResultOk {
+            (rect.right - rect.left, rect.bottom - rect.top)
+        } else {
+            (640, 480)
+        };
+        // SAFETY: plain query.
+        let resizable = unsafe { view.canResize() } == kResultOk;
+        *self.view.borrow_mut() = Some(view);
+        Ok((size, resizable))
+    }
+
+    fn detach_editor(&self) {
+        if let Some(view) = self.view.borrow_mut().take() {
+            // SAFETY: plain calls; the view is released afterwards.
+            unsafe {
+                view.removed();
+                view.setFrame(std::ptr::null_mut());
+            }
+        }
+        self.frame.request.set(None);
+    }
+
+    fn editor_size_request(&self) -> Option<(i32, i32)> {
+        let (w, h) = self.frame.request.take()?;
+        if let Some(view) = self.view.borrow().as_ref() {
+            let mut rect = ViewRect {
+                left: 0,
+                top: 0,
+                right: w,
+                bottom: h,
+            };
+            // SAFETY: valid rectangle; the window gets this size right after.
+            unsafe { view.onSize(&mut rect) };
+        }
+        Some((w, h))
+    }
+
+    fn editor_resized(&self, width: i32, height: i32) {
+        if let Some(view) = self.view.borrow().as_ref() {
+            let mut rect = ViewRect {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
+            // SAFETY: valid rectangle.
+            unsafe {
+                view.checkSizeConstraint(&mut rect);
+                view.onSize(&mut rect);
+            }
+        }
     }
 }
 

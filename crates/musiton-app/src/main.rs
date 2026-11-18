@@ -1762,7 +1762,23 @@ impl App {
 
     /// Opens the editor window of a plugin device.
     fn open_plugin_editor(&mut self, device: musiton_core::ids::DeviceId) {
-        tracing::info!("plugin editor requested for device {}", device.0);
+        let p = &self.doc.project;
+        let title = p
+            .tracks
+            .iter()
+            .find_map(|t| {
+                let d = t.devices.iter().find(|d| d.id == device)?;
+                match &d.kind {
+                    musiton_project::DeviceKind::Plugin { name, .. } => {
+                        Some(format!("{name} – {}", t.name))
+                    }
+                    musiton_project::DeviceKind::Builtin { .. } => None,
+                }
+            })
+            .unwrap_or_else(|| "Plugin".to_owned());
+        if let Err(e) = self.plugin_set.open_editor(device, &title) {
+            self.set_status(format!("The plugin editor could not be opened: {e}"));
+        }
     }
 
     /// Rebuilds the engine graph when the project structure or the loaded audio changed,

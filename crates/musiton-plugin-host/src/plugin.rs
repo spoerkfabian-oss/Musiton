@@ -65,6 +65,20 @@ pub(crate) trait Controller {
     fn latency(&self) -> u32;
     /// Shuts the plugin down; `processor` is the processing half (UI thread).
     fn shutdown(&self, processor: Box<dyn std::any::Any>);
+    /// Whether the plugin has its own editor for this system's windows.
+    fn has_editor(&self) -> bool;
+    /// Puts the editor into the native window `parent`; returns its size and whether it
+    /// can be resized.
+    fn attach_editor(
+        &self,
+        parent: crate::window::Handle,
+    ) -> Result<((i32, i32), bool), PluginError>;
+    /// Takes the editor out of its window.
+    fn detach_editor(&self);
+    /// A size the editor asked for since the last call.
+    fn editor_size_request(&self) -> Option<(i32, i32)>;
+    /// The user resized the editor's window to this inner size.
+    fn editor_resized(&self, width: i32, height: i32);
 }
 
 /// What the plugin's nodes share.
@@ -99,6 +113,8 @@ pub struct Plugin {
     controller: ManuallyDrop<Box<dyn Controller>>,
     edits_tx: rtrb::Producer<(u32, f64)>,
     format: PluginFormat,
+    /// The open editor window.
+    editor: Option<crate::window::Window>,
 }
 
 impl Plugin {
@@ -124,6 +140,7 @@ impl Plugin {
             controller: ManuallyDrop::new(controller),
             edits_tx: tx,
             format,
+            editor: None,
         }
     }
 
@@ -213,6 +230,75 @@ impl Plugin {
         self.controller.set_state(state)
     }
 
+    /// Whether the plugin's own editor can be shown (Windows only).
+    pub fn has_editor(&self) -> bool {
+        crate::window::SUPPORTED && self.controller.has_editor()
+    }
+
+    /// Whether its editor window is open.
+    pub fn editor_open(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// Opens the plugin's own editor in a window titled `title` (or brings it to the
+    /// front). UI thread only.
+    pub fn open_editor(&mut self, title: &str) -> Result<(), PluginError> {
+        if let Some(w) = &self.editor {
+            w.show();
+            return Ok(());
+        }
+        if !self.has_editor() {
+            return Err(PluginError::Failed("this plugin has no editor here".into()));
+        }
+        let window = crate::window::Window::new(title, 640, 480, true)
+            .ok_or_else(|| PluginError::Failed("the editor window could not be created".into()))?;
+        let ((w, h), resizable) = self.controller.attach_editor(window.handle())?;
+        // Recreate fixed-size editors without a sizing border.
+        let window = if resizable {
+            window
+        } else {
+            // The plugin leaves the window before it is destroyed (end of this block).
+            let _old = window;
+            self.controller.detach_editor();
+            let fixed = crate::window::Window::new(title, w, h, false).ok_or_else(|| {
+                PluginError::Failed("the editor window could not be created".into())
+            })?;
+            self.controller.attach_editor(fixed.handle())?;
+            fixed
+        };
+        window.set_client_size(w, h);
+        window.show();
+        self.editor = Some(window);
+        Ok(())
+    }
+
+    /// Closes the editor window, if open.
+    pub fn close_editor(&mut self) {
+        // The plugin leaves the window before it is destroyed (end of this block).
+        if let Some(_window) = self.editor.take() {
+            self.controller.detach_editor();
+        }
+    }
+
+    /// Keeps the editor window in step with the plugin: closes it when the user closed
+    /// it, and passes size changes both ways. Call once per frame (UI thread).
+    pub fn poll_editor(&mut self) {
+        let Some(w) = &self.editor else {
+            return;
+        };
+        if w.closed() {
+            self.close_editor();
+            return;
+        }
+        if let Some((width, height)) = self.controller.editor_size_request() {
+            w.set_client_size(width, height);
+            // Our own resize shows up as a user resize; it is already applied.
+            let _ = w.take_resized();
+        } else if let Some((width, height)) = w.take_resized() {
+            self.controller.editor_resized(width, height);
+        }
+    }
+
     /// Processing delay in frames.
     pub fn latency(&self) -> u32 {
         self.shared.latency.load(Ordering::Relaxed)
@@ -221,6 +307,7 @@ impl Plugin {
 
 impl Drop for Plugin {
     fn drop(&mut self) {
+        self.close_editor();
         let _one_at_a_time = crate::lifecycle_lock();
         // With no node left, the processing half comes back for an orderly shutdown.
         if let Some(shared) = Arc::get_mut(&mut self.shared) {

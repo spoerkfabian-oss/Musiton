@@ -16,6 +16,7 @@ mod plugin;
 mod vst3_host;
 mod vst3_module;
 mod vst3_plugin;
+mod window;
 
 pub use plugin::{Edit, NodeSource, Plugin, PluginNode, PluginParam};
 

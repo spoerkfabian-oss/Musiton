@@ -17,7 +17,7 @@ use vst3::Steinberg::Vst::{
 };
 use vst3::Steinberg::{
     int32, int64, kInvalidArgument, kNoInterface, kResultFalse, kResultOk, tresult, uint32,
-    FIDString, IBStream, IBStreamTrait, TUID,
+    FIDString, IBStream, IBStreamTrait, IPlugFrame, IPlugFrameTrait, IPlugView, ViewRect, TUID,
 };
 use vst3::{Class, ComWrapper, Interface};
 
@@ -627,5 +627,28 @@ impl IMessageTrait for Message {
         self.attributes
             .as_com_ref::<IAttributeList>()
             .map_or(std::ptr::null_mut(), |r| r.as_ptr())
+    }
+}
+
+/// Receives size requests from a plugin's editor; the host applies them on its next poll.
+#[derive(Default)]
+pub(crate) struct PlugFrame {
+    pub(crate) request: Cell<Option<(i32, i32)>>,
+}
+
+impl Class for PlugFrame {
+    type Interfaces = (IPlugFrame,);
+}
+
+impl IPlugFrameTrait for PlugFrame {
+    unsafe fn resizeView(&self, _view: *mut IPlugView, new_size: *mut ViewRect) -> tresult {
+        // SAFETY: the plugin passes a valid rectangle (checked for null).
+        match unsafe { new_size.as_ref() } {
+            Some(r) => {
+                self.request.set(Some((r.right - r.left, r.bottom - r.top)));
+                kResultOk
+            }
+            None => kInvalidArgument,
+        }
     }
 }

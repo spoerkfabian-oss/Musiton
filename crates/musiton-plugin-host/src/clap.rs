@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
+use clack_extensions::gui::{GuiApiType, GuiConfiguration, GuiSize, PluginGui, Window};
 use clack_extensions::latency::PluginLatency;
 use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
 use clack_extensions::state::PluginState;
@@ -203,6 +204,7 @@ pub(crate) fn instantiate(
         instance: RefCell::new(instance),
         params,
         ranges,
+        editor_size: std::cell::Cell::new(None),
         _entry: entry,
     };
     Ok(Plugin::new(
@@ -469,6 +471,8 @@ struct ClapController {
     instance: RefCell<PluginInstance<ClapHost>>,
     params: Vec<PluginParam>,
     ranges: Vec<Range>,
+    /// Size of the open editor (`None` while closed).
+    editor_size: std::cell::Cell<Option<(i32, i32)>>,
     /// Keeps the library loaded while the instance lives.
     _entry: PluginEntry,
 }
@@ -570,6 +574,99 @@ impl Controller for ClapController {
         handle
             .get_extension::<PluginLatency>()
             .map_or(0, |l| l.get(&handle))
+    }
+
+    fn has_editor(&self) -> bool {
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        handle.get_extension::<PluginGui>().is_some_and(|g| {
+            g.is_api_supported(
+                &handle,
+                GuiConfiguration {
+                    api_type: GuiApiType::WIN32,
+                    is_floating: false,
+                },
+            )
+        })
+    }
+
+    fn attach_editor(
+        &self,
+        parent: crate::window::Handle,
+    ) -> Result<((i32, i32), bool), PluginError> {
+        self.detach_editor();
+        let failed = |what: &str| PluginError::Failed(what.into());
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        let gui = handle
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| failed("the plugin has no editor"))?;
+        gui.create(
+            &handle,
+            GuiConfiguration {
+                api_type: GuiApiType::WIN32,
+                is_floating: false,
+            },
+        )
+        .map_err(|_| failed("the editor could not be created"))?;
+        // SAFETY: `parent` is the live native window that holds the editor until
+        // `detach_editor` is called.
+        let attached = unsafe { gui.set_parent(&handle, Window::from_win32_hwnd(parent)) };
+        if attached.is_err() {
+            gui.destroy(&handle);
+            return Err(failed("the editor could not be opened"));
+        }
+        let size = gui
+            .get_size(&handle)
+            .map_or((640, 480), |s| (s.width as i32, s.height as i32));
+        let resizable = gui.can_resize(&handle);
+        let _ = gui.show(&handle);
+        self.editor_size.set(Some(size));
+        Ok((size, resizable))
+    }
+
+    fn detach_editor(&self) {
+        if self.editor_size.take().is_none() {
+            return;
+        }
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        if let Some(gui) = handle.get_extension::<PluginGui>() {
+            gui.destroy(&handle);
+        }
+    }
+
+    fn editor_size_request(&self) -> Option<(i32, i32)> {
+        let known = self.editor_size.get()?;
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        let gui = handle.get_extension::<PluginGui>()?;
+        let now = gui
+            .get_size(&handle)
+            .map(|s| (s.width as i32, s.height as i32))?;
+        (now != known).then(|| {
+            self.editor_size.set(Some(now));
+            now
+        })
+    }
+
+    fn editor_resized(&self, width: i32, height: i32) {
+        if self.editor_size.get().is_none() {
+            return;
+        }
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        if let Some(gui) = handle.get_extension::<PluginGui>() {
+            if gui.can_resize(&handle) {
+                let size = GuiSize {
+                    width: width.max(1) as u32,
+                    height: height.max(1) as u32,
+                };
+                if gui.set_size(&handle, size).is_ok() {
+                    self.editor_size.set(Some((width, height)));
+                }
+            }
+        }
     }
 
     fn shutdown(&self, processor: Box<dyn Any>) {
