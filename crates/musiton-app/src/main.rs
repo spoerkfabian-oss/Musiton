@@ -18,6 +18,7 @@ mod session;
 mod settings;
 mod settings_dialog;
 mod transport;
+mod warp;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -180,6 +181,8 @@ struct App {
     converting: Option<std::sync::mpsc::Receiver<assets::Converted>>,
     /// Assets whose conversion failed (not retried; they play interpolated).
     conversion_failed: std::collections::HashSet<(musiton_core::ids::AssetId, u32)>,
+    /// Background time-stretching of warped clips.
+    warping: Option<std::sync::mpsc::Receiver<Vec<(u64, musiton_core::audio::AudioData)>>>,
     graph: GraphState,
     browser: Browser,
     input: Option<musiton_io::audio::AudioInputStream>,
@@ -293,6 +296,7 @@ impl App {
             relink: relink::RelinkDialog::default(),
             converting: None,
             conversion_failed: std::collections::HashSet::new(),
+            warping: None,
             graph: GraphState::default(),
             browser: Browser::default(),
             input: None,
@@ -1461,6 +1465,47 @@ impl App {
         }
     }
 
+    /// Collects finished warp renderings and starts rendering the missing ones (one batch
+    /// at a time, so dragging the tempo does not pile up work).
+    fn update_warps(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        if let Some(rx) = &self.warping {
+            match rx.try_recv() {
+                Ok(done) => {
+                    for (k, audio) in done {
+                        self.assets.insert_warped(k, audio);
+                    }
+                    self.warping = None;
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => self.warping = None,
+            }
+        }
+        let Some((_, engine)) = &self.output else {
+            return;
+        };
+        let rate = engine.sample_rate() as u32;
+        let (keys, jobs) = warp::todo(&self.doc.project, &self.assets, rate);
+        self.assets.keep_warped(&keys);
+        if jobs.is_empty() {
+            return;
+        }
+        let tempo = self.doc.project.tempo.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("warp".into())
+            .spawn(move || {
+                let done = jobs
+                    .into_iter()
+                    .map(|(k, clip, audio)| (k, warp::render(&clip, &audio, &tempo, rate)))
+                    .collect();
+                let _ = tx.send(done);
+            });
+        if spawned.is_ok() {
+            self.warping = Some(rx);
+        }
+    }
+
     /// Starts importing `files`; the first goes to `track`, others onto new tracks.
     fn import(
         &mut self,
@@ -2132,6 +2177,7 @@ impl App {
         self.apply_actions(bottom_actions);
         self.finish_imports();
         self.update_conversion();
+        self.update_warps();
         self.finish_recordings();
         self.finish_midi_recordings();
         self.update_automation_recording(&ctx);

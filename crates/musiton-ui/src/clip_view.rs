@@ -3,7 +3,7 @@
 use egui::{Color32, FontId, Mesh, Painter, Pos2, Rect, Stroke};
 use musiton_core::audio::Peaks;
 use musiton_core::TempoMap;
-use musiton_project::Clip;
+use musiton_project::{AudioClip, Clip};
 
 use crate::view::TimelineView;
 
@@ -62,6 +62,15 @@ pub fn paint_clip(painter: &Painter, p: &ClipPaint) {
         FontId::proportional(11.0),
         Color32::BLACK,
     );
+    if let Clip::Audio(AudioClip { warp: Some(w), .. }) = p.clip {
+        painter.with_clip_rect(rect.intersect(p.clip_to)).text(
+            Pos2::new(rect.right() - 4.0, rect.top() + 1.0),
+            egui::Align2::RIGHT_TOP,
+            format!("warp {:.0}", w.bpm),
+            FontId::proportional(10.0),
+            Color32::from_black_alpha(160),
+        );
+    }
 
     if let Clip::Midi(m) = p.clip {
         let area = Rect::from_min_max(
@@ -143,14 +152,13 @@ fn paint_waveform(
     color: Color32,
 ) {
     let sr = f64::from(peaks.sample_rate.max(1));
-    let start_secs = p.tempo.tick_to_seconds(a.start.0 as f64);
     let visible = rect.intersect(p.clip_to);
     if visible.width() <= 0.0 || peaks.frames == 0 {
         return;
     }
     let frame_at = |x: f32| -> f64 {
         let tick = p.view.tick(x - p.lane_left);
-        a.source_offset.0 as f64 + (p.tempo.tick_to_seconds(tick) - start_secs) * sr
+        a.source_offset.0 as f64 + a.source_secs(p.tempo, tick) * sr
     };
     let frames_per_px = (frame_at(visible.left() + 1.0) - frame_at(visible.left())).abs();
     let Some((level, bucket)) = peaks.level_for(frames_per_px) else {

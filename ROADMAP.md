@@ -115,7 +115,7 @@ Order decided by the owner. Tick when done.
 - [x] Step sequencer
 - [x] Sidechain routing UI (the compressor already has sidechain inputs)
 - [x] Comping (choose the best parts of several takes)
-- [ ] Time-stretch / warp for audio clips
+- [x] Time-stretch / warp for audio clips
 - [ ] Video track (FFmpeg, shipped as LGPL DLLs)
 - [ ] With phase 12: CLAP hosting (`clack-host`), LV2 on Linux, out-of-process plugin sandbox
 

@@ -70,7 +70,9 @@ pub fn render_project(
     let mut project = project.clone();
     project.metronome = false;
     let sr = project.sample_rate as f32;
-    let built = engine_graph::build(&project, assets, sr, BLOCK, 0).ok()?;
+    let mut assets = assets.clone();
+    crate::warp::render_missing(&project, &mut assets, project.sample_rate);
+    let built = engine_graph::build(&project, &assets, sr, BLOCK, 0).ok()?;
     let params = built.info.params(&project, None);
     let automation = built.info.automation(&project, &[]);
     let (mut h, mut e) = create(sr, BLOCK);

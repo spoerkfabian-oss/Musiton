@@ -30,6 +30,7 @@ directories = "6"
 rfd = "0.17"
 rtrb = "0.4"
 musiton-devices.workspace = true
+musiton-dsp.workspace = true
 
 [lints]
 workspace = true

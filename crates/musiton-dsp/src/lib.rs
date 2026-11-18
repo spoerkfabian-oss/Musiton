@@ -8,6 +8,7 @@ pub mod filter;
 pub mod osc;
 pub mod resample;
 pub mod smooth;
+pub mod stretch;
 
 #[cfg(test)]
 pub(crate) mod testutil {

@@ -2296,6 +2296,7 @@ dependencies = [
  "hound",
  "musiton-core",
  "musiton-devices",
+ "musiton-dsp",
  "musiton-engine",
  "musiton-io",
  "musiton-project",

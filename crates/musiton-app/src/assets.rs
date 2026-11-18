@@ -21,6 +21,8 @@ pub struct AssetStore {
     /// Copies converted to the audio device's rate (when it differs from the project's).
     playback: HashMap<AssetId, Arc<AudioData>>,
     peaks: HashMap<AssetId, Arc<Peaks>>,
+    /// Time-stretched renderings of warped clips, by [`crate::warp::key`].
+    warped: HashMap<u64, Arc<AudioData>>,
     /// Bumped whenever the set of loaded files changes (triggers a graph rebuild).
     pub generation: u64,
 }
@@ -86,6 +88,22 @@ impl AssetStore {
             self.playback.insert(id, Arc::new(audio));
             self.generation += 1;
         }
+    }
+
+    /// The rendering of a warped clip, if it is ready.
+    pub fn warped(&self, key: u64) -> Option<&Arc<AudioData>> {
+        self.warped.get(&key)
+    }
+
+    /// Stores the rendering of a warped clip (triggers a graph rebuild).
+    pub fn insert_warped(&mut self, key: u64, audio: AudioData) {
+        self.warped.insert(key, Arc::new(audio));
+        self.generation += 1;
+    }
+
+    /// Drops renderings that are no longer in `keys`.
+    pub fn keep_warped(&mut self, keys: &std::collections::HashSet<u64>) {
+        self.warped.retain(|k, _| keys.contains(k));
     }
 
     /// Waveform peaks of all loaded assets.

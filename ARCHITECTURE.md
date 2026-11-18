@@ -22,7 +22,7 @@ musiton/
 │  ├─ musiton-core/         # time (ticks, samples, TempoMap, TimeSig), ID newtypes, units (dB, pan law),
 │  │                        # AudioData/Peaks, ParamInfo. No dependency on other Musiton crates.
 │  ├─ musiton-dsp/          # pure DSP: oscillators (PolyBLEP, noise), SVF + biquad filters, ADSR,
-│  │                        # delay line, smoothing, FFT, mipmap resampling. No threads, no I/O.
+│  │                        # delay line, smoothing, FFT, mipmap resampling, WSOLA time-stretch. No threads, no I/O.
 │  ├─ musiton-engine/       # real-time engine: AudioNode trait, compiled graph, transport, command ring,
 │  │                        # GC thread, automation, nodes (clip player, MIDI track, strip, FX slot, …)
 │  ├─ musiton-devices/      # built-in instruments (polysynth, sampler) and effects; implement AudioNode
@@ -80,7 +80,7 @@ app → core, engine, io, project, ui, devices
 | Audio input (cpal callback) | copies input frames into a ring read by the output callback | ring |
 | Disk (recording) | writes recorded chunks into WAV takes | ring from the audio thread, channel to the UI |
 | GC | drops objects the audio thread retired (old graphs, tempo maps, node data) | ring from the audio thread |
-| Workers (short-lived) | import + decode, rate conversion to the device rate, export | `std::sync::mpsc` channels |
+| Workers (short-lived) | import + decode, rate conversion to the device rate, time-stretching warped clips, export | `std::sync::mpsc` channels |
 | MIDI input (midir callback) | pushes raw MIDI bytes | ring to the audio thread |
 | Scanner (subprocess) | **(planned)** probes VST3 plugins | JSON on stdout / cache file |
 

@@ -1276,6 +1276,44 @@ impl Arrange {
                         }
                     }
                 });
+                let mut warped = a.warp.is_some();
+                let mut bpm = a
+                    .warp
+                    .map_or_else(|| input.project.tempo.bpm_at(a.start.0 as f64), |w| w.bpm);
+                ui.horizontal(|ui| {
+                    let toggled = ui
+                        .checkbox(&mut warped, "Warp to tempo")
+                        .on_hover_text(
+                            "Stretch the audio to follow the song tempo (pitch stays). \
+                             Set the file's own tempo next to it.",
+                        )
+                        .changed();
+                    let r = ui.add_enabled(
+                        warped,
+                        egui::DragValue::new(&mut bpm)
+                            .range(20.0..=999.0)
+                            .speed(0.1)
+                            .max_decimals(2)
+                            .suffix(" BPM"),
+                    );
+                    if toggled || r.changed() {
+                        if let Some(t) = track_id {
+                            let c = clip_edit::with_warp(
+                                a,
+                                warped.then_some(bpm),
+                                &input.project.tempo,
+                                f64::from(input.project.sample_rate),
+                            );
+                            self.pending.push(UiAction::Edit {
+                                edit: Edit::ReplaceClip {
+                                    track: t,
+                                    clip: Clip::Audio(c),
+                                },
+                                merge: r.changed() && !r.drag_started(),
+                            });
+                        }
+                    }
+                });
                 let label = if a.muted { "Unmute clip" } else { "Mute clip" };
                 if ui.button(label).clicked() {
                     if let Some(t) = track_id {

@@ -424,15 +424,25 @@ pub fn build(
                     .clips
                     .iter()
                     .filter_map(|c| match c {
-                        Clip::Audio(a) if !a.muted => Some(PlayerClip {
-                            start: a.start,
-                            end: Tick(a.start.0 + a.length.0),
-                            source_offset: a.source_offset.0,
-                            gain: db_to_gain(a.gain_db),
-                            fade_in: a.fade_in,
-                            fade_out: a.fade_out,
-                            audio: assets.audio_at(a.asset, sample_rate as u32)?.clone(),
-                        }),
+                        Clip::Audio(a) if !a.muted => {
+                            let rate = sample_rate as u32;
+                            // A warped clip plays its time-stretched rendering 1:1 from its
+                            // start; it is silent until that rendering is ready.
+                            let (audio, source_offset) = if a.warp.is_some() {
+                                (assets.warped(crate::warp::key(a, &project.tempo, rate))?, 0)
+                            } else {
+                                (assets.audio_at(a.asset, rate)?, a.source_offset.0)
+                            };
+                            Some(PlayerClip {
+                                start: a.start,
+                                end: Tick(a.start.0 + a.length.0),
+                                source_offset,
+                                gain: db_to_gain(a.gain_db),
+                                fade_in: a.fade_in,
+                                fade_out: a.fade_out,
+                                audio: audio.clone(),
+                            })
+                        }
                         _ => None,
                     })
                     .collect();
@@ -654,6 +664,7 @@ mod tests {
             fade_in: Tick(0),
             fade_out: Tick(0),
             muted: false,
+            warp: None,
         })
     }
 

@@ -1,7 +1,7 @@
 //! Pure clip transformations used by the timeline (move, trim, fades, split).
 
 use musiton_core::{SamplePos, TempoMap, Tick, TimeSig};
-use musiton_project::Clip;
+use musiton_project::{AudioClip, Clip, Warp};
 
 use crate::snap::Snap;
 
@@ -18,6 +18,25 @@ pub fn frames_between(tempo: &TempoMap, a: Tick, b: Tick, sample_rate: f64) -> i
 pub fn tick_after_frames(tempo: &TempoMap, from: Tick, frames: f64, sample_rate: f64) -> Tick {
     let secs = tempo.tick_to_seconds(from.0 as f64) + frames / sample_rate.max(1.0);
     Tick(tempo.seconds_to_tick(secs).round() as i64)
+}
+
+/// File frames that clip `a` plays between timeline positions `from` and `to` (follows
+/// the file's tempo for warped clips).
+pub fn clip_frames(a: &AudioClip, tempo: &TempoMap, from: Tick, to: Tick, sample_rate: f64) -> i64 {
+    ((a.source_secs(tempo, to.0 as f64) - a.source_secs(tempo, from.0 as f64)) * sample_rate)
+        .round() as i64
+}
+
+/// Timeline position at which clip `a` has played `frames` more file frames than at `from`.
+pub fn clip_tick_after(
+    a: &AudioClip,
+    tempo: &TempoMap,
+    from: Tick,
+    frames: f64,
+    sample_rate: f64,
+) -> Tick {
+    let secs = a.source_secs(tempo, from.0 as f64) + frames / sample_rate.max(1.0);
+    Tick(a.tick_at_source_secs(tempo, secs).round() as i64)
 }
 
 /// Clip moved by `delta` ticks with its start snapped to the grid (never before 0).
@@ -46,9 +65,9 @@ pub fn trimmed_start(
         Clip::Audio(a) => {
             // Can't start before the beginning of the file.
             let earliest =
-                tick_after_frames(tempo, a.start, -(a.source_offset.0 as f64), sample_rate);
+                clip_tick_after(a, tempo, a.start, -(a.source_offset.0 as f64), sample_rate);
             start = start.max(earliest.0);
-            let shift = frames_between(tempo, a.start, Tick(start), sample_rate);
+            let shift = clip_frames(a, tempo, a.start, Tick(start), sample_rate);
             a.source_offset = SamplePos((a.source_offset.0 as i64 + shift).max(0) as u64);
             a.start = Tick(start);
             a.length = Tick(end - start);
@@ -87,7 +106,7 @@ pub fn trimmed_end(
         Clip::Audio(a) => {
             if let Some(frames) = file_frames {
                 let left = frames as f64 - a.source_offset.0 as f64;
-                end = end.min(tick_after_frames(tempo, a.start, left, sample_rate).0);
+                end = end.min(clip_tick_after(a, tempo, a.start, left, sample_rate).0);
             }
             a.length = Tick((end - start).max(1));
             a.fade_out = Tick(a.fade_out.0.min(a.length.0));
@@ -143,7 +162,7 @@ pub fn split(
             r.start = at;
             r.length = Tick(end - at.0);
             r.source_offset = SamplePos(
-                (l.source_offset.0 as i64 + frames_between(tempo, Tick(start), at, sample_rate))
+                (l.source_offset.0 as i64 + clip_frames(l, tempo, Tick(start), at, sample_rate))
                     .max(0) as u64,
             );
             r.fade_in = Tick(0);
@@ -166,6 +185,23 @@ pub fn split(
         _ => return None,
     }
     Some((left, right))
+}
+
+/// `a` with warp switched on at file tempo `bpm` (or off with `None`), keeping the audio
+/// it covers: switching on starts at the song tempo at the clip (no audible change), and
+/// a new file tempo scales the clip's length so it still ends at the same audio.
+pub fn with_warp(a: &AudioClip, bpm: Option<f64>, tempo: &TempoMap, sample_rate: f64) -> AudioClip {
+    let mut c = a.clone();
+    let end = Tick(a.start.0 + a.length.0);
+    let frames = clip_frames(a, tempo, a.start, end, sample_rate) as f64;
+    c.warp = bpm.map(|bpm| Warp {
+        bpm: bpm.clamp(20.0, 999.0),
+    });
+    let new_end = clip_tick_after(&c, tempo, a.start, frames, sample_rate);
+    c.length = Tick((new_end.0 - a.start.0).max(1));
+    c.fade_in = c.fade_in.min(c.length);
+    c.fade_out = c.fade_out.min(Tick(c.length.0 - c.fade_in.0));
+    c
 }
 
 #[cfg(test)]
@@ -266,5 +302,18 @@ mod tests {
         assert_eq!(a(&r).source_offset, SamplePos(1000 + 24_000));
         assert_eq!(r.id(), ClipId(2));
         assert!(split(&c, Tick(5 * PPQ), ClipId(3), &tempo, SR).is_none());
+    }
+
+    #[test]
+    fn warping_keeps_the_audio_and_a_file_tempo_sets_the_length() {
+        // 8 beats of a 100 BPM file last 4.8 s: 9.6 beats of a 120 BPM song.
+        let tempo = TempoMap::constant(120.0);
+        let c = a(&audio(0, 96 * PPQ / 10, 0)).clone();
+        let on = with_warp(&c, Some(120.0), &tempo, SR);
+        assert_eq!(on.length, c.length);
+        let at_100 = with_warp(&on, Some(100.0), &tempo, SR);
+        assert_eq!(at_100.length, Tick(8 * PPQ));
+        let off = with_warp(&at_100, None, &tempo, SR);
+        assert_eq!((off.warp, off.length), (None, c.length));
     }
 }

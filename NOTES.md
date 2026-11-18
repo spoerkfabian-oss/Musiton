@@ -304,7 +304,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Tick ↔ seconds conversion uses the exact integral of the ramp (`60/(PPQ·k)·ln(…)`) and its inverse, so it stays RT-safe (no allocation) and exactly invertible.
 - File format: `ramp` is omitted when false, so files without ramps are unchanged.
 - The lane shows 60…180 BPM, or wider when the song's tempos need it. The range is frozen while a point is dragged.
-- Audio clips keep their length in seconds (no time-stretch yet): their start follows the tempo map, their content does not.
+- Audio clips keep their length in seconds unless warped (see "Later list — time-stretch / warp"): their start follows the tempo map, their content does not.
 
 **Tests:** core — `ramp_glides_linearly_between_points`, `editing_the_tempo_at_a_position_changes_only_that_section`, and the tick↔sample round-trip proptest now includes random ramps. Engine — `metronome_follows_a_tempo_ramp` (clicks land within 1.5 samples of the analytic positions). UI — `tempo_lane_adds_points_and_toggles_ramps`. Step-only maps render bit-identically to before (all golden tests unchanged).
 
@@ -386,3 +386,18 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Imported files that happen to overlap on a track also appear as takes.
 - The cut fades dip the level slightly around each cut (no overlapping crossfade).
 
+## Later list — time-stretch / warp
+**Built**
+- Right-click an audio clip → "Warp to tempo": the clip's audio follows the song tempo (also tempo changes and ramps) without changing pitch. The BPM field next to it is the file's own tempo; it starts at the song tempo at the clip, so switching warp on changes nothing until the BPM is set. Changing it rescales the clip so it still ends at the same audio. Warped clips show "warp <BPM>" in their title.
+- Trim, split, comping and the waveform view use the warp-aware mapping (`AudioClip::source_secs` / `tick_at_source_secs`).
+- `musiton-dsp::stretch::wsola`: WSOLA with 2048-frame grains, 4× overlap and a ±384-frame normalized cross-correlation search.
+
+**Decisions**
+- Offline rendering instead of a real-time stretcher: each warped clip is rendered on a worker thread into a buffer at the device rate that plays 1:1 from the clip start (`musiton-app/src/warp.rs`). The cache key covers the clip, the tempo map and the rate, so any change re-renders; until the new buffer is ready the clip is silent. Export renders missing buffers synchronously. This keeps the audio thread untouched (no new node, no RT risk).
+- File format: `warp` on an audio clip is omitted when off, so older projects are unchanged.
+
+**Tests:** dsp — `stretching_keeps_the_pitch_and_changes_the_length`, `identity_map_reproduces_the_input`, `empty_input_gives_silence`; app — `a_warped_loop_lands_on_the_song_beats` (100 BPM clicks in a 120 BPM song land within 600 samples of each beat), `export_renders_warped_clips_in_time`; ui — `warping_keeps_the_audio_and_a_file_tempo_sets_the_length`.
+
+**Known issues**
+- Changing the tempo re-renders every warped clip; long clips fall silent for a moment after each change (render time not yet measured on the test machine).
+- No warp markers: one tempo per file. Transients can smear slightly at strong stretch factors (WSOLA, no transient detection).

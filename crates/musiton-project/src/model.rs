@@ -1,7 +1,7 @@
 //! Serializable project data. Every field has a default so newer fields load from older files.
 
 use musiton_core::ids::{AssetId, ClipId, DeviceId, MarkerId, TrackId};
-use musiton_core::{SamplePos, TempoMap, Tick, TimeSig};
+use musiton_core::{SamplePos, TempoMap, Tick, TimeSig, PPQ};
 use serde::{Deserialize, Serialize};
 
 use crate::file::CURRENT_VERSION;
@@ -632,6 +632,38 @@ pub struct AudioClip {
     pub fade_out: Tick,
     /// Muted clips are shown but not played (older recording takes).
     pub muted: bool,
+    /// Follow the song tempo (time-stretched, pitch kept). `None` plays the file as is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warp: Option<Warp>,
+}
+
+/// How a warped clip maps its audio to the song: the file's own tempo.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Warp {
+    /// Tempo of the audio in the file (BPM): one beat of the file lasts `60 / bpm` s.
+    pub bpm: f64,
+}
+
+impl AudioClip {
+    /// Seconds of the file that play between the clip start and timeline `tick`: real
+    /// time on the tempo map, or beats at the file's own tempo for a warped clip.
+    pub fn source_secs(&self, tempo: &TempoMap, tick: f64) -> f64 {
+        let start = self.start.0 as f64;
+        match self.warp {
+            Some(w) => (tick - start) / PPQ as f64 * 60.0 / w.bpm.max(1.0),
+            None => tempo.tick_to_seconds(tick) - tempo.tick_to_seconds(start),
+        }
+    }
+
+    /// Timeline tick at which `secs` seconds of the file (after the clip start) play;
+    /// the inverse of [`AudioClip::source_secs`].
+    pub fn tick_at_source_secs(&self, tempo: &TempoMap, secs: f64) -> f64 {
+        let start = self.start.0 as f64;
+        match self.warp {
+            Some(w) => start + secs * w.bpm.max(1.0) / 60.0 * PPQ as f64,
+            None => tempo.seconds_to_tick(tempo.tick_to_seconds(start) + secs),
+        }
+    }
 }
 
 impl Default for AudioClip {
@@ -646,6 +678,7 @@ impl Default for AudioClip {
             fade_in: Tick(0),
             fade_out: Tick(0),
             muted: false,
+            warp: None,
         }
     }
 }
