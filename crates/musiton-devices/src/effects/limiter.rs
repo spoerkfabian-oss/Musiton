@@ -123,7 +123,9 @@ impl AudioNode for Limiter {
         self.gain = 1.0;
     }
     fn latency(&self) -> u32 {
-        self.look as u32
+        // Each sample is written before the delayed one is read, so the delay is one
+        // sample shorter than the look-ahead window.
+        self.look.saturating_sub(1) as u32
     }
     fn params(&self) -> &[ParamInfo] {
         &PARAMS

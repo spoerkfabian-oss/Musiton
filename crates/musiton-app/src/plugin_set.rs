@@ -77,6 +77,8 @@ pub struct PluginSet {
     state_dir: Option<PathBuf>,
     rate: f64,
     block: usize,
+    /// Latency of each instance when the graph was last built (for delay compensation).
+    latencies: HashMap<DeviceId, u32>,
 }
 
 impl Default for PluginSet {
@@ -88,6 +90,7 @@ impl Default for PluginSet {
             state_dir: None,
             rate: 48_000.0,
             block: 1024,
+            latencies: HashMap::new(),
         }
     }
 }
@@ -157,6 +160,19 @@ impl PluginSet {
             }
         }
         added
+    }
+
+    /// Whether a plugin's latency changed since the last call (the graph's delay
+    /// compensation then has to be rebuilt).
+    pub fn latency_changed(&mut self) -> bool {
+        let now: HashMap<DeviceId, u32> = self
+            .instances
+            .iter()
+            .map(|(id, p)| (*id, p.latency()))
+            .collect();
+        let changed = now != self.latencies;
+        self.latencies = now;
+        changed
     }
 
     /// Node makers and parameter lists for building a graph.

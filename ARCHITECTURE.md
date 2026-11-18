@@ -185,7 +185,7 @@ pub enum EngineCommand { Play, Stop, Locate(SamplePos), SetLoop(..), SetTempoMap
    5. **Output:** to its bus or to master.
 4. Buses run in dependency order, then the master strip. The metronome is added after the master fader.
 5. Meters are written to atomics, and recorded input goes to the disk ring.
-6. **(planned)** Plugin delay compensation: shorter paths are delayed to match the longest-latency path.
+6. Delay compensation: each track's instrument and effect latencies are summed; where tracks meet (a bus input or the master input), the earlier ones pass through a `LatencyDelay` so all arrive together. The metronome is delayed by the master's latency. A plugin that changes its latency triggers a graph rebuild.
 
 ## 7. Project file format and data folders
 

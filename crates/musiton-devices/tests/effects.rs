@@ -190,7 +190,16 @@ fn limiter_never_exceeds_the_ceiling_and_reports_latency() {
     let out = run(l.as_mut(), &input, 256, &[], &mut |_, _| {});
     let ceil = 10f32.powf(-3.0 / 20.0);
     assert!(peak(&out[0]) <= ceil + 1e-6 && peak(&out[1]) <= ceil + 1e-6);
-    assert_eq!(l.latency(), 72);
+    // The reported latency is the real delay (delay compensation relies on it): an
+    // impulse comes out exactly `latency` samples later.
+    let mut impulse = [vec![0.0; 1024], vec![0.0; 1024]];
+    impulse[0][10] = 0.1;
+    impulse[1][10] = 0.1;
+    let mut l = fx("limiter", &[]);
+    let out = run(l.as_mut(), &impulse, 256, &[], &mut |_, _| {});
+    let at = out[0].iter().position(|s| s.abs() > 1e-6).unwrap();
+    assert_eq!(at, 10 + l.latency() as usize);
+    assert!(l.latency() > 60);
 }
 
 #[test]

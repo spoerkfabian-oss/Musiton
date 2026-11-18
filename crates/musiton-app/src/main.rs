@@ -1794,7 +1794,8 @@ impl App {
             f64::from(engine.sample_rate()),
             engine.max_block(),
         );
-        if reloaded | self.plugin_set.sync(&self.doc.project) {
+        let added = self.plugin_set.sync(&self.doc.project);
+        if reloaded | added | self.plugin_set.latency_changed() {
             self.graph.structure = None;
             self.graph.revision = None;
         }

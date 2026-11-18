@@ -11,8 +11,8 @@ use musiton_core::units::db_to_gain;
 use musiton_core::Tick;
 use musiton_engine::graph::{CompiledGraph, GraphBuilder, GraphError, NodeIdx};
 use musiton_engine::nodes::{
-    Analyzer, AudioInput, ClipPlayer, FxSlot, Meter, Metronome, MidiCc, MidiNote, MidiNotes,
-    MidiTrack, Mix, PlayerClip, RecChunk, RecMidi, Recorder, SendGain, Strip, FX_BYPASS,
+    Analyzer, AudioInput, ClipPlayer, FxSlot, LatencyDelay, Meter, Metronome, MidiCc, MidiNote,
+    MidiNotes, MidiTrack, Mix, PlayerClip, RecChunk, RecMidi, Recorder, SendGain, Strip, FX_BYPASS,
     MIDI_TRACK_LIVE, STRIP_AUDIBLE, STRIP_GAIN, STRIP_PAN,
 };
 use musiton_project::{Clip, InputRoute, OutputRoute, Project, RecordSetup, SampleZone, TrackKind};
@@ -430,9 +430,8 @@ pub fn build(
     let mut meters = HashMap::new();
 
     let out = b.add(Box::new(Mix::new(2)));
+    // The metronome is connected at the end, delayed like the music (see below).
     let metro = b.add(Box::new(Metronome::new()));
-    b.connect(metro, 0, out, 0)?;
-    b.connect(metro, 0, out, 1)?;
 
     let master_in = b.add(Box::new(Mix::new(2)));
     let master_meter = Arc::new(Meter::default());
@@ -453,11 +452,14 @@ pub fn build(
     // Effects listening to another track: (effect node, its track, source track).
     let mut sidechains = Vec::new();
     let mut track_strips = HashMap::new();
+    // Processing latency of each track's instrument and effects, in frames.
+    let mut chain_latency: HashMap<TrackId, u32> = HashMap::new();
     for t in project
         .tracks
         .iter()
         .filter(|t| t.kind != TrackKind::Folder)
     {
+        let mut chain = 0u32;
         let input = match t.kind {
             TrackKind::Audio => {
                 let clips: Vec<PlayerClip> = t
@@ -511,6 +513,9 @@ pub fn build(
                         &samples,
                     ),
                 };
+                let mut instrument = instrument;
+                instrument.prepare(sample_rate, max_block);
+                chain += instrument.latency();
                 let node = b.add(Box::new(
                     MidiTrack::new(notes, instrument, rec).with_ccs(ccs),
                 ));
@@ -547,6 +552,10 @@ pub fn build(
                 musiton_devices::create_effect(d.type_id(), &effect_params(d))
             };
             let takes_sidechain = effect.num_inputs() >= 4;
+            // Latency can depend on the rate (look-ahead): ask after preparing.
+            let mut effect = effect;
+            effect.prepare(sample_rate, max_block);
+            chain += effect.latency();
             let node = b.add(Box::new(FxSlot::new(effect, d.bypass)));
             stereo(&mut b, last, 0, node)?;
             if let (Some(src), true) = (d.sidechain, takes_sidechain) {
@@ -559,6 +568,7 @@ pub fn build(
             last = node;
         }
         stereo(&mut b, last, 0, strip)?;
+        chain_latency.insert(t.id, chain);
         if t.kind == TrackKind::Audio && input_channels > 0 {
             let rec = t.record;
             let (left, right, channels) = match rec.input {
@@ -596,28 +606,109 @@ pub fn build(
             .then(|| inputs.get(&id).copied())
             .flatten()
     };
-    for t in project
+    let tracks: Vec<&musiton_project::Track> = project
         .tracks
         .iter()
-        .filter(|t| t.kind != TrackKind::Folder)
-    {
+        .filter(|t| t.kind != TrackKind::Folder && track_strips.contains_key(&t.id))
+        .collect();
+    // Where each track's signal goes: its output, then its sends (`None` = master).
+    let dests = |t: &musiton_project::Track| -> Vec<Option<TrackId>> {
+        let out = match t.output {
+            OutputRoute::Bus(id) => bus_input(id, t.id).map(|_| id),
+            OutputRoute::Master => None,
+        };
+        std::iter::once(out)
+            .chain(
+                t.strip
+                    .sends
+                    .iter()
+                    .filter_map(|s| bus_input(s.target, t.id).map(|_| Some(s.target))),
+            )
+            .collect()
+    };
+    // Delay compensation: how late each track's signal leaves its strip. A bus is as
+    // late as its latest source plus its own chain. Routing has no loops, so as many
+    // passes as there are tracks settle every value.
+    let mut arrive: HashMap<TrackId, u32> = tracks
+        .iter()
+        .map(|t| (t.id, chain_latency.get(&t.id).copied().unwrap_or(0)))
+        .collect();
+    for _ in 0..tracks.len() {
+        let mut changed = false;
+        for bus in tracks.iter().filter(|t| t.kind == TrackKind::Bus) {
+            let input = tracks
+                .iter()
+                .filter(|src| dests(src).contains(&Some(bus.id)))
+                .filter_map(|src| arrive.get(&src.id).copied())
+                .max()
+                .unwrap_or(0);
+            let total = input + chain_latency.get(&bus.id).copied().unwrap_or(0);
+            if arrive.insert(bus.id, total) != Some(total) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // How late signals arrive at each destination: the latest of its sources.
+    let mut dest_latency: HashMap<Option<TrackId>, u32> = HashMap::new();
+    for t in &tracks {
+        let late = arrive.get(&t.id).copied().unwrap_or(0);
+        for d in dests(t) {
+            let e = dest_latency.entry(d).or_insert(0);
+            *e = (*e).max(late);
+        }
+    }
+    // Connects a stereo pair, through a compensation delay of `delay` frames if needed.
+    let link = |b: &mut GraphBuilder, from: NodeIdx, port: usize, to: NodeIdx, delay: u32| {
+        if delay == 0 {
+            return stereo(b, from, port, to);
+        }
+        let d = b.add(Box::new(LatencyDelay::new(delay)));
+        stereo(b, from, port, d)?;
+        stereo(b, d, 0, to)
+    };
+    for t in &tracks {
         let Some(&strip) = track_strips.get(&t.id) else {
             continue;
         };
-        let dest = match t.output {
-            OutputRoute::Bus(id) => bus_input(id, t.id).unwrap_or(master_in),
-            OutputRoute::Master => master_in,
+        let late = arrive.get(&t.id).copied().unwrap_or(0);
+        let wait = |d: Option<TrackId>| {
+            dest_latency
+                .get(&d)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(late)
         };
-        stereo(&mut b, strip, 0, dest)?;
+        let (dest, key) = match t.output {
+            OutputRoute::Bus(id) => match bus_input(id, t.id) {
+                Some(node) => (node, Some(id)),
+                None => (master_in, None),
+            },
+            OutputRoute::Master => (master_in, None),
+        };
+        link(&mut b, strip, 0, dest, wait(key))?;
         for (i, s) in t.strip.sends.iter().enumerate() {
             let Some(dest) = bus_input(s.target, t.id) else {
                 continue;
             };
             let send = b.add(Box::new(SendGain::new(db_to_gain(s.level_db))));
             stereo(&mut b, strip, if s.pre_fader { 2 } else { 0 }, send)?;
-            stereo(&mut b, send, 0, dest)?;
+            link(&mut b, send, 0, dest, wait(Some(s.target)))?;
             sends.insert((t.id, i), send);
         }
+    }
+    // The click is delayed like everything that reaches the master.
+    let total_latency = dest_latency.get(&None).copied().unwrap_or(0);
+    if total_latency == 0 {
+        b.connect(metro, 0, out, 0)?;
+        b.connect(metro, 0, out, 1)?;
+    } else {
+        let d = b.add(Box::new(LatencyDelay::new(total_latency)));
+        b.connect(metro, 0, d, 0)?;
+        b.connect(metro, 0, d, 1)?;
+        stereo(&mut b, d, 0, out)?;
     }
 
     // Sidechains: the source track's signal before its fader (strip outputs 2, 3) into
@@ -841,6 +932,69 @@ mod tests {
             out.iter().all(|&s| (s - 0.5).abs() < 1e-6),
             "{:?}",
             &out[..4]
+        );
+    }
+
+    /// Two tracks play the same click; one has a limiter (look-ahead latency). With delay
+    /// compensation both clicks reach the output at the same moment, and so does the
+    /// metronome.
+    #[test]
+    fn latency_is_compensated_across_tracks() {
+        let mut assets = AssetStore::default();
+        let mut click = vec![0.0; 4800];
+        click[0] = 0.1;
+        assets.insert(
+            AssetId(1),
+            AudioData {
+                sample_rate: 48_000,
+                channels: vec![click],
+            },
+        );
+        let mut project = Project {
+            metronome: false,
+            ..Project::default()
+        };
+        for id in [1, 2] {
+            let mut t = Track {
+                id: TrackId(id),
+                clips: vec![clip(id, 1, 0, PPQ)],
+                ..Track::default()
+            };
+            if id == 2 {
+                t.devices.push(musiton_project::DeviceSlot::builtin(
+                    musiton_core::ids::DeviceId(10),
+                    "limiter",
+                ));
+            }
+            project.tracks.push(t);
+        }
+        let mut limiter = musiton_devices::create_effect("limiter", &[]).0;
+        limiter.prepare(48_000.0, 256);
+        let latency = limiter.latency();
+        assert!(latency > 0);
+        let (mut h, mut e) = create(48_000.0, 256);
+        h.send(EngineCommand::SwapGraph(Box::new(
+            build(&project, &assets, &PluginNodes::default(), 48_000.0, 256, 0)
+                .unwrap()
+                .graph,
+        )))
+        .ok();
+        render_offline(&mut e, 1024, 2, 256);
+        h.send(EngineCommand::Play).ok();
+        let out = render_offline(&mut e, 4096, 2, 256);
+        let left: Vec<f32> = out.chunks_exact(2).map(|f| f[0]).collect();
+        let hits: Vec<usize> = left
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.abs() > 1e-4)
+            .map(|(i, _)| i)
+            .collect();
+        // One moment, both tracks summed, `latency` frames after the start.
+        assert_eq!(
+            hits,
+            vec![latency as usize],
+            "{:?}",
+            &hits[..hits.len().min(8)]
         );
     }
 

@@ -2,6 +2,7 @@
 
 mod clip_player;
 mod fx_slot;
+mod latency;
 mod metronome;
 mod midi_track;
 mod mix;
@@ -10,6 +11,7 @@ mod strip;
 
 pub use clip_player::{ClipPlayer, PlayerClip};
 pub use fx_slot::{Analyzer, FxSlot, ANALYZER_SIZE, FX_BYPASS};
+pub use latency::LatencyDelay;
 pub use metronome::Metronome;
 pub use midi_track::{MidiCc, MidiNote, MidiNotes, MidiTrack, RecMidi, MIDI_TRACK_LIVE};
 pub use mix::Mix;
