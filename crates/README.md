@@ -11,7 +11,7 @@ The Cargo workspace crates. Each one is a Rust library except `musiton-app`, whi
 | `musiton-io` | Audio and MIDI devices, reading/converting audio files, the recording disk thread, WAV/FLAC export. |
 | `musiton-project` | The project model saved to `.musiton` files, loading/saving with migrations, and undo/redo (`Edit`). |
 | `musiton-ui` | The editing views drawn with egui: arrangement, piano roll, mixer, device panel, shortcut list. |
-| `musiton-plugin-host` | Placeholder for VST3 hosting (phase 12). The only crate that will be allowed to use `unsafe`. |
+| `musiton-plugin-host` | VST3 and CLAP hosting (phase 12, in progress: scanning works). The only crate allowed to use `unsafe`. |
 | `musiton-app` | The program: menus and dialogs, settings, autosave and crash recovery, export, demo song, installer configuration. |
 
 Tests live in each crate's `tests/` folder (integration and golden-audio tests) and in `#[cfg(test)]` modules next to the code. Benchmarks are in `musiton-devices/benches/`.

@@ -106,7 +106,6 @@ cargo test --workspace
 | Path | What it is |
 |---|---|
 | `crates/` | The Cargo workspace crates (see [crates/README.md](crates/README.md)). |
-| `tools/` | Helper programs that ship with Musiton (see [tools/README.md](tools/README.md)). |
 | `.github/workflows/` | CI and the installer build (see [.github/workflows/README.md](.github/workflows/README.md)). |
 | `.cargo/` | Workspace-wide Cargo settings (see [.cargo/README.md](.cargo/README.md)). |
 | `rust-toolchain.toml` | Pinned Rust version. |

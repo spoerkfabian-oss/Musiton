@@ -9,14 +9,15 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 
 ## Owner decisions
 - Licence: MIT OR Apache-2.0.
-- Name: **Musiton**. Crates are named `musiton-*` (instead of `daw-*`). The scanner binary is `musiton-scan`, and project files end in `.musiton` (instead of `.dawproj`).
+- Name: **Musiton**. Crates are named `musiton-*` (instead of `daw-*`). The plugin scanner is the app itself in scanner mode (`musiton --scan <file>`; planned as `musiton-scan`, see phase 12), and project files end in `.musiton` (instead of `.dawproj`).
 - Commits go straight to `main`.
 - Project layout: the song folder holds the song file plus `audio/`, `peaks/`, `plugins/` and `autosave/` (see phase 3).
 - Phase 12 (VST3) is done **last**: after phases 13 and 14 and after the "Later" list ("Zuerst alles andere").
 - Later list:
   - ASIO is **not** built (proprietary SDK).
   - The video track **is** built, with FFmpeg (an LGPL `ffmpeg.exe` shipped with the installer and run as a separate program; owner decision, replaces the earlier DLL plan).
-  - CLAP/LV2 hosting and the plugin sandbox come together with VST3.
+  - CLAP hosting and the plugin sandbox come together with VST3. LV2 is **not** built (owner decision: almost only on Linux).
+- Plugins (owner decision, phase 12): they run inside Musiton by default; a per-plugin "Run in sandbox" switch runs one in a separate process (crash-safe, costs some CPU and one block of latency). Plugins that failed before go into the sandbox automatically.
   - The order is in [ROADMAP.md](ROADMAP.md).
 - Documentation is in English. Every non-code folder has a short README.
 
@@ -46,7 +47,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 **Decisions**
 - Library versions at start: egui/eframe 0.37 (wgpu backend), others see `Cargo.toml`. egui 0.37 changed `App::update(ctx)` to `App::ui(ui)`.
 - `assert_no_alloc`: the app installs `AllocDisabler` as global allocator in **debug builds only**; audio-thread code is wrapped in `musiton_engine::rt::no_alloc(...)` (no-op in release).
-- Workspace lints: `unsafe_code = "forbid"` (the plugin-host crate will opt out in phase 12), `missing_docs = "warn"` (→ error in CI via `-D warnings`).
+- Workspace lints: `unsafe_code = "forbid"` (the plugin-host crate opts out with its own lint table), `missing_docs = "warn"` (→ error in CI via `-D warnings`).
 - Dependencies of external crates are built with `opt-level = 2` in dev builds so debug audio code stays fast enough.
 - No top-level `tests/` folder: integration and golden tests live in each crate's own `tests/` folder (engine, devices, app).
 
@@ -422,3 +423,17 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - No relink dialog for a moved video; remove and import it again.
 - No video export (audio export only).
 - `ffmpeg.exe` makes the downloads bigger: the installer is about 49 MB and the zipped portable download about 65 MB (first build with FFmpeg, run #24).
+
+## Phase 12 — plugins (in progress)
+**Built so far**
+- `musiton-plugin-host`: finds plugin files in the standard folders (Windows: `Common Files\VST3`, `Common Files\CLAP`, and the per-user `Programs\Common` ones; Linux: `~/.vst3`, `~/.clap`, `/usr/lib/vst3`, `/usr/lib/clap`, `/usr/local/…`) and lists the plugins of a file: VST3 by loading the module and reading its class factory, CLAP through `clack-host`.
+- Scanner: Musiton starts itself as `musiton --scan <file>` for each new or changed plugin file. The child prints JSON; a crash, an error or more than 20 s puts the file on the failed list, which is skipped until "Rescan all". Results are cached in `plugins.json` in the data folder; the scan runs in the background at every start.
+- Options → Plugins… lists everything found, grouped by maker, with format, instrument/effect and category, plus the failed files and why.
+
+**Decisions**
+- Own host layer on the raw `vst3` bindings (MIT/Apache, generated from Steinberg's SDK headers, which are MIT-licensed since SDK 3.8), not `vst3-host`: Musiton needs real-time-safe processing inside its own engine node, its own parameter/automation path and its own state handling, which a ready-made host would hide. CLAP uses `clack-host`.
+- The scanner is the app executable in a special mode instead of a separate `musiton-scan.exe`: one file less to ship and keep in step, and tests can run it via `CARGO_BIN_EXE_musiton`. `tools/scanner` was removed.
+- `musiton-plugin-host` has its own lint table (the workspace one minus `unsafe_code = "forbid"`); every `unsafe` block carries a `// SAFETY:` comment.
+- Linux CI installs `dpf-plugins-vst3`/`dpf-plugins-clap` (Kars synth, MVerb, …) as test plugins; tests that need them skip when they are missing.
+
+**Tests:** `vst3_and_clap_plugins_are_scanned`, `plugin_files_are_found_by_extension`, `class_ids_are_written_as_hex`, `cache_skips_scanned_and_failed_files_and_survives_a_round_trip`, `hanging_and_crashing_scanners_are_reported`, `scanner_mode_prints_the_plugins_of_a_file`.

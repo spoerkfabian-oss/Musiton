@@ -9,8 +9,19 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+clack-host = "0.2"
+libloading = "0.9.1"
 musiton-core.workspace = true
 musiton-engine.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tracing.workspace = true
+vst3 = "0.3"
 
-[lints]
-workspace = true
+# The only crate allowed to use `unsafe` (plugin FFI): the workspace lints minus the ban.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

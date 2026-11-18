@@ -30,10 +30,10 @@ musiton/
 │  │                        # recording disk thread, WAV/FLAC export, video via an ffmpeg child process
 │  ├─ musiton-project/      # project model (source of truth), RON save/load + migrations, Edit/undo
 │  ├─ musiton-ui/           # egui views: arrangement, piano roll, mixer, device panel, shortcuts
-│  ├─ musiton-plugin-host/  # (planned) VST3 hosting; the only crate allowed to use `unsafe`
+│  ├─ musiton-plugin-host/  # VST3 + CLAP hosting (scanning so far); the only crate allowed to use `unsafe`
 │  └─ musiton-app/          # the `musiton` binary: wires everything; settings, autosave, crash recovery,
-│                           # project → engine graph translation, export, demo song, installer config
-└─ tools/scanner/           # (planned) musiton-scan: out-of-process VST3 scanner
+│                           # project → engine graph translation, export, demo song, installer config;
+│                           # `musiton --scan <file>` is the out-of-process plugin scanner
 ```
 
 Dependency direction (arrows point to dependencies):
@@ -68,7 +68,8 @@ app → core, engine, io, project, ui, devices
 | Errors/logs | `thiserror` (libraries), `anyhow` (app), `tracing` | |
 | Tests | `proptest`, `criterion`, `approx` | UI tests drive `egui::Context::run_ui` directly |
 | Packaging | `cargo-packager` (NSIS), `winresource` (exe icon) | |
-| VST3 | **(planned)** `vst3` bindings or `vst3-host` | decided in phase 12, behind our own trait |
+| VST3 | `vst3` (raw bindings generated from the MIT-licensed SDK headers) with our own host layer | phase 12 |
+| CLAP | `clack-host` | phase 12 |
 | Video | FFmpeg (LGPL build of `ffmpeg.exe`, shipped next to `Musiton.exe`, run as a child process) | video track: preview frames as raw RGBA over a pipe, sound extracted to WAV |
 
 ## 4. Threads
@@ -83,7 +84,7 @@ app → core, engine, io, project, ui, devices
 | Workers (short-lived) | import + decode, rate conversion to the device rate, time-stretching warped clips, extracting a video's sound, export | `std::sync::mpsc` channels |
 | MIDI input (midir callback) | pushes raw MIDI bytes | ring to the audio thread |
 | Video | follows the playhead: keeps one `ffmpeg` process streaming frames while playing, decodes single frames while stopped | `mpsc` channels to/from the UI; pipe from `ffmpeg` |
-| Scanner (subprocess) | **(planned)** probes VST3 plugins | JSON on stdout / cache file |
+| Scanner (subprocess) | `musiton --scan <file>` loads one plugin file and prints its plugins; killed after 20 s | JSON on stdout → `plugins.json` cache in the data folder |
 
 There is no `EngineEvent` ring. The UI needs only the latest playhead, CPU load, dropout count, meters and recording status, so these are atomics in `EngineShared` and in the meters.
 

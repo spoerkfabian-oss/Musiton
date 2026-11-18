@@ -7,7 +7,7 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 | Phase | State |
 |---|---|
 | 0–11 | done |
-| 12 — VST3 hosting | open. It is done last, by owner decision, together with CLAP, LV2 and the plugin sandbox. |
+| 12 — VST3 hosting | open. It is done last, by owner decision, together with CLAP and the plugin sandbox (LV2 dropped by owner decision). |
 | 13 — Export | done |
 | 14 — Polish & release | done. Still needs the owner's test on a fresh Windows PC with the installer. |
 | Later list | done except the plugin items, which come with phase 12. |
@@ -85,8 +85,8 @@ Work order from here: phase 12 together with the plugin-related "Later" items.
 **Done when:** a filter sweep drawn as automation renders identically every time.
 
 ## Phase 12 — VST3 hosting
-- [ ] Decide: own host layer on `vst3` bindings vs `vst3-host` crate (spike + write decision to NOTES.md)
-- [ ] Out-of-process scanner `musiton-scan.exe` with timeout + blacklist; plugin cache JSON; browser lists plugins by vendor/category
+- [x] Decide: own host layer on `vst3` bindings vs `vst3-host` crate (spike + write decision to NOTES.md)
+- [x] Out-of-process scanner (`musiton --scan`) with timeout + blacklist; plugin cache JSON; plugin list by vendor/category (Options → Plugins…)
 - [ ] Load instrument + effect plugins, audio + MIDI events, parameters (incl. automation), state save/restore in project
 - [ ] Plugin editor in its own native window (HWND), resizable if supported
 - [ ] Plugin delay compensation (PDC)
@@ -115,6 +115,6 @@ Order decided by the owner. Tick when done.
 - [x] Comping (choose the best parts of several takes)
 - [x] Time-stretch / warp for audio clips
 - [x] Video track (FFmpeg, shipped as an LGPL `ffmpeg.exe`)
-- [ ] With phase 12: CLAP hosting (`clack-host`), LV2 on Linux, out-of-process plugin sandbox
+- [ ] With phase 12: CLAP hosting (`clack-host`), out-of-process plugin sandbox (per plugin, optional)
 
-Dropped by owner decision: ASIO (proprietary SDK). WASAPI stays the Windows backend.
+Dropped by owner decision: ASIO (proprietary SDK), LV2 (almost only on Linux). WASAPI stays the Windows backend.

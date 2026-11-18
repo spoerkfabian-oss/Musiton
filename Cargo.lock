@@ -779,6 +779,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "clack-common"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ca905d78f46117492bce49e64a765f8b3f5c71794486a1369242721860e2640"
+dependencies = [
+ "bitflags 2.13.2",
+ "clap-sys",
+]
+
+[[package]]
+name = "clack-host"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "103a00f784a6477d82dc4580ea125e875074729c2703ccb29e5e9fb40bea5308"
+dependencies = [
+ "clack-common",
+ "clap-sys",
+ "libloading 0.8.9",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -786,6 +808,12 @@ checksum = "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946"
 dependencies = [
  "clap_builder",
 ]
+
+[[package]]
+name = "clap-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76abbdb2907f6fd97fb6bc0b7be96b77d328f2dd9669d1075cc03369ed22154"
 
 [[package]]
 name = "clap_builder"
@@ -831,6 +859,12 @@ checksum = "2ec7c5eb7a16992b1904d76c517d170ab353b0e0b3d5a0c81a8a0cd1037893cf"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "com-scrape-types"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
 name = "combine"
@@ -2121,6 +2155,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1832accd5a4ca2795ace4d05d15c4039be15b62d3b950eff99746a990e3cc10"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2299,6 +2343,7 @@ dependencies = [
  "musiton-dsp",
  "musiton-engine",
  "musiton-io",
+ "musiton-plugin-host",
  "musiton-project",
  "musiton-ui",
  "rfd",
@@ -2376,8 +2421,14 @@ dependencies = [
 name = "musiton-plugin-host"
 version = "0.1.0"
 dependencies = [
+ "clack-host",
+ "libloading 0.9.1",
  "musiton-core",
  "musiton-engine",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+ "vst3",
 ]
 
 [[package]]
@@ -2390,10 +2441,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
 ]
-
-[[package]]
-name = "musiton-scan"
-version = "0.1.0"
 
 [[package]]
 name = "musiton-ui"
@@ -4463,6 +4510,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "vst3"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31e3fe7a6f028ded8c5a9984cf283319e6dc63572c9b71da1d4ee9d71d3b6bf"
+dependencies = [
+ "com-scrape-types",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ mod engine_graph;
 mod export;
 mod export_dialog;
 mod midi_record;
+mod plugins;
 mod presets;
 mod relink;
 mod session;
@@ -53,6 +54,13 @@ const STATUS_TIME: Duration = Duration::from_secs(5);
 const RENDERER_ENV: &str = "MUSITON_RENDERER";
 
 fn main() -> anyhow::Result<()> {
+    // Scanner mode (started by Musiton itself to load plugins safely in another process).
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|a| a == plugins::SCAN_ARG) {
+        if let Some(file) = args.next() {
+            plugins::scan_mode(Path::new(&file));
+        }
+    }
     let log_path = init_logging();
     // Panics also go into the log file (release builds have no console).
     let default_hook = std::panic::take_hook();
@@ -184,6 +192,8 @@ struct App {
     conversion_failed: std::collections::HashSet<(musiton_core::ids::AssetId, u32)>,
     /// The video window.
     video: video_view::VideoView,
+    /// Installed plugins and their scanner.
+    plugins: plugins::Plugins,
     /// Background time-stretching of warped clips.
     warping: Option<std::sync::mpsc::Receiver<Vec<(u64, musiton_core::audio::AudioData)>>>,
     graph: GraphState,
@@ -301,6 +311,7 @@ impl App {
             conversion_failed: std::collections::HashSet::new(),
             warping: None,
             video: video_view::VideoView::default(),
+            plugins: plugins::Plugins::new(Settings::data_dir().map(|d| d.join("plugins.json"))),
             graph: GraphState::default(),
             browser: Browser::default(),
             input: None,
@@ -332,6 +343,8 @@ impl App {
             app.session = session::SessionLock::acquire(&dir);
         }
         app.restart_audio();
+        // New or updated plugins are found in the background at every start.
+        app.plugins.scan(false);
         if let Some(path) = open {
             app.open_path(&path);
         }
@@ -1240,6 +1253,10 @@ impl App {
             ui.menu_button("Options", |ui| {
                 if ui.button("Settings…").clicked() {
                     self.settings_dialog.open = true;
+                    ui.close();
+                }
+                if ui.button("Plugins…").clicked() {
+                    self.plugins.open = true;
                     ui.close();
                 }
                 if ui.button("Audio settings…").clicked() {
@@ -2236,6 +2253,10 @@ impl App {
         self.update_conversion();
         self.update_warps();
         self.update_video(&ctx);
+        if self.plugins.update() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        self.plugins.window(&ctx);
         self.finish_recordings();
         self.finish_midi_recordings();
         self.update_automation_recording(&ctx);
