@@ -589,3 +589,39 @@ fn folder_mute_and_solo_apply_to_the_tracks_inside() {
     p.track_mut(TrackId(1)).unwrap().parent = Some(TrackId(3));
     assert!(p.depth(TrackId(3)) <= p.tracks.len());
 }
+
+#[test]
+fn video_is_saved_and_undoable() {
+    let mut p = Project::default();
+    let mut undo = UndoStack::new();
+    let video = musiton_project::Video {
+        file: "C:\\Films\\cut.mp4".into(),
+        offset_secs: 1.5,
+        duration_secs: 62.5,
+    };
+    undo.perform(&mut p, Edit::SetVideo(Some(video.clone())), false)
+        .unwrap();
+    // Dragging the start is one undo step.
+    for offset in [2.0, 2.5] {
+        let moved = musiton_project::Video {
+            offset_secs: offset,
+            ..video.clone()
+        };
+        undo.perform(&mut p, Edit::SetVideo(Some(moved)), true)
+            .unwrap();
+    }
+    assert_eq!(p.video.as_ref().map(|v| v.offset_secs), Some(2.5));
+
+    let dir = temp_dir("video");
+    let path = dir.join("song.musiton");
+    save(&p, &path).unwrap();
+    assert_eq!(load(&path).unwrap(), p);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    undo.undo(&mut p).unwrap();
+    assert_eq!(p.video, None);
+    // Projects without a video do not mention it in the file.
+    save(&p, &path).unwrap();
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("video"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

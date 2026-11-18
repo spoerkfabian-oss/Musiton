@@ -5,3 +5,4 @@ pub mod export;
 pub mod file;
 pub mod midi;
 pub mod recording;
+pub mod video;

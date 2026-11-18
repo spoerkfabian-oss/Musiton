@@ -38,6 +38,20 @@ pub struct Project {
     pub punch_enabled: bool,
     /// Next free id (shared by all id types).
     pub next_id: u64,
+    /// Video shown in sync with the song.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<Video>,
+}
+
+/// A video played in sync with the song (one per project).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Video {
+    /// Absolute path of the video file (videos are not copied into the project folder).
+    pub file: String,
+    /// Song time (seconds) at which the video's first frame shows.
+    pub offset_secs: f64,
+    /// Length of the video in seconds.
+    pub duration_secs: f64,
 }
 
 impl Default for Project {
@@ -57,6 +71,7 @@ impl Default for Project {
             punch_range: None,
             punch_enabled: false,
             next_id: 1,
+            video: None,
         }
     }
 }

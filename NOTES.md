@@ -15,7 +15,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Phase 12 (VST3) is done **last**: after phases 13 and 14 and after the "Later" list ("Zuerst alles andere").
 - Later list:
   - ASIO is **not** built (proprietary SDK).
-  - The video track **is** built, with FFmpeg (LGPL DLLs shipped with the installer).
+  - The video track **is** built, with FFmpeg (an LGPL `ffmpeg.exe` shipped with the installer and run as a separate program; owner decision, replaces the earlier DLL plan).
   - CLAP/LV2 hosting and the plugin sandbox come together with VST3.
   - The order is in [ROADMAP.md](ROADMAP.md).
 - Documentation is in English. Every non-code folder has a short README.
@@ -401,3 +401,24 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 **Known issues**
 - Changing the tempo re-renders every warped clip; long clips fall silent for a moment after each change (render time not yet measured on the test machine).
 - No warp markers: one tempo per file. Transients can smear slightly at strong stretch factors (WSOLA, no transient detection).
+
+## Later list — video track
+**Built**
+- File → Import video…: the video becomes the project's video (one per project) and its sound, if any, is extracted and imported onto a new audio track at the song start. File → Show video window opens the picture.
+- The video window shows the frame at the playhead: streamed at 25 fps while playing, single frames while stopped or scrubbing; black before and after the video. "Starts at" shifts the video against the song (one undo step per drag); "Remove video" takes it out.
+- `musiton-io::video`: finds `ffmpeg` (`MUSITON_FFMPEG`, next to the executable, `PATH`), probes length/size/sound, decodes scaled-down RGBA frames (at most 640 px wide) over a pipe, extracts the sound as 32-bit float WAV. No console windows on Windows.
+- Installer and portable download ship the newest stable LGPL `ffmpeg.exe` from BtbN/FFmpeg-Builds with its licence.
+
+**Decisions**
+- Owner decision: run a shipped `ffmpeg.exe` instead of linking FFmpeg DLLs. No build-time FFmpeg, no `unsafe`, and a crash inside FFmpeg cannot take Musiton down. LGPL is met by shipping the unmodified program with its licence.
+- The video is referenced by absolute path and not copied into the project folder (videos are large). A missing file shows a message in the video window; nothing else breaks.
+- Song time → video time uses the tempo map's seconds, so the picture stays in sync through tempo changes.
+- File format: `video` is omitted when there is none.
+
+**Tests:** io — `ffmpeg_info_is_parsed`, `frames_follow_the_requested_time` (generates a red→blue test video, checks still frames, streamed playback order and colours, and sound extraction; skipped when no `ffmpeg` is installed); project — `video_is_saved_and_undoable`.
+
+**Known issues**
+- No video lane with thumbnails in the arrangement yet; the start is set numerically in the video window.
+- No relink dialog for a moved video; remove and import it again.
+- No video export (audio export only).
+- The installer is about 80–100 MB larger because of `ffmpeg.exe`.

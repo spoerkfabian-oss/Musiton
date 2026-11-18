@@ -2,7 +2,7 @@
 
 A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also builds and runs on Linux.
 
-**Status:** phases 0–11, 13 and 14 of the [roadmap](ROADMAP.md) are done. Phase 12 (VST3 plugin hosting) and the "Later" list are still open. Decisions and known issues are in [NOTES.md](NOTES.md).
+**Status:** phases 0–11, 13 and 14 of the [roadmap](ROADMAP.md) are done. The "Later" list is done except its plugin items. Phase 12 (VST3, CLAP and LV2 plugin hosting) is still open. Decisions and known issues are in [NOTES.md](NOTES.md).
 
 ## What it can do
 
@@ -17,6 +17,7 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
   - Presets for all of them.
 - **Mixer:** faders, pan, mute, solo and solo-safe; sends and buses; meters in the mixer and in the track headers. Sidechain: a compressor can listen to another track (e.g. duck the bass with the kick).
 - **Automation:** lanes for volume, pan and every device parameter, with curves; read, write, touch and latch modes.
+- **Video:** File → Import video… shows the video in a window in sync with the song, and puts its sound on a new audio track. The video's start can be shifted.
 - **Export:** WAV 16/24/32f and FLAC 16/24, with normalize, dither and stems; faster than real time.
 - **Safety:** autosave, crash recovery, a dialog for relinking missing audio files, and error dialogs instead of crashes.
 - **Demo song:** Help → Open demo song.
@@ -29,7 +30,7 @@ Every push to `main` builds Windows downloads.
 2. Open the latest green run.
 3. Download one of its two artifacts:
    - **Musiton-setup**: an installer. It adds a Start-menu entry and lets double-clicking a `.musiton` project open Musiton.
-   - **Musiton-portable**: just `Musiton.exe`. Unzip it anywhere and double-click it; nothing is installed.
+   - **Musiton-portable**: `Musiton.exe` with `ffmpeg.exe` (for video). Unzip it anywhere, keep both files together and double-click `Musiton.exe`; nothing is installed.
 
 If Musiton does not start, look at `%APPDATA%\Musiton\data\musiton.log`. If the graphics driver cannot run the default renderer, Musiton restarts itself with OpenGL. If that also fails, it shows a message instead of closing silently.
 
@@ -63,6 +64,7 @@ The result needs only DLLs that every Windows has. The official downloads are bu
    ```bash
    cargo run --release
    ```
+   Video needs an `ffmpeg` program on the `PATH` (or next to the executable, or named by the `MUSITON_FFMPEG` environment variable). Everything else works without it.
    A debug build (`cargo run`) is optimized enough to play in real time. It also aborts on any memory allocation on the audio thread, which is meant for development.
 
 ### Checks before every commit

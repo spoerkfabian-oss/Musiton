@@ -18,6 +18,7 @@ mod session;
 mod settings;
 mod settings_dialog;
 mod transport;
+mod video_view;
 mod warp;
 
 use std::path::{Path, PathBuf};
@@ -181,6 +182,8 @@ struct App {
     converting: Option<std::sync::mpsc::Receiver<assets::Converted>>,
     /// Assets whose conversion failed (not retried; they play interpolated).
     conversion_failed: std::collections::HashSet<(musiton_core::ids::AssetId, u32)>,
+    /// The video window.
+    video: video_view::VideoView,
     /// Background time-stretching of warped clips.
     warping: Option<std::sync::mpsc::Receiver<Vec<(u64, musiton_core::audio::AudioData)>>>,
     graph: GraphState,
@@ -297,6 +300,7 @@ impl App {
             converting: None,
             conversion_failed: std::collections::HashSet::new(),
             warping: None,
+            video: video_view::VideoView::default(),
             graph: GraphState::default(),
             browser: Browser::default(),
             input: None,
@@ -1188,6 +1192,14 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
+                if ui.button("Import video…").clicked() {
+                    self.import_video();
+                    ui.close();
+                }
+                if ui.button("Show video window").clicked() {
+                    self.video.open = true;
+                    ui.close();
+                }
                 if ui.button("Import MIDI file…").clicked() {
                     self.import_midi();
                     ui.close();
@@ -1465,6 +1477,48 @@ impl App {
         }
     }
 
+    /// Lets the user pick a video, sets it as the project's video and imports its sound.
+    fn import_video(&mut self) {
+        let Some(file) = rfd::FileDialog::new()
+            .add_filter("Video", video_view::EXTENSIONS)
+            .pick_file()
+        else {
+            return;
+        };
+        match self.video.load(&file, self.doc.project.sample_rate) {
+            Ok(v) => match self
+                .doc
+                .perform(musiton_project::Edit::SetVideo(Some(v)), false)
+            {
+                Ok(()) => {
+                    self.video.open = true;
+                    self.set_status("Video imported");
+                }
+                Err(e) => self.set_status(format!("Importing the video failed: {e}")),
+            },
+            Err(e) => self.set_status(format!("Cannot import {}: {e}", file.display())),
+        }
+    }
+
+    /// Keeps the video window in step with the playhead and applies what it asks for.
+    fn update_video(&mut self, ctx: &egui::Context) {
+        let (tick, playing) = self.playhead();
+        let secs = tick.map(|t| self.doc.project.tempo.tick_to_seconds(t));
+        for event in self.video.update(ctx, &self.doc.project, secs, playing) {
+            match event {
+                video_view::VideoEvent::Edit { edit, merge } => {
+                    if let Err(e) = self.doc.perform(edit, merge) {
+                        self.set_status(format!("Video change failed: {e}"));
+                    }
+                }
+                video_view::VideoEvent::ImportAudio(path) => {
+                    self.import(vec![path], None, musiton_core::Tick(0));
+                }
+                video_view::VideoEvent::Status(msg) => self.set_status(msg),
+            }
+        }
+    }
+
     /// Collects finished warp renderings and starts rendering the missing ones (one batch
     /// at a time, so dragging the tempo does not pile up work).
     fn update_warps(&mut self) {
@@ -1544,6 +1598,9 @@ impl App {
             result,
         } in self.importer.finished()
         {
+            if video_view::is_extracted(&source) {
+                let _ = std::fs::remove_file(&source);
+            }
             let imported = match result {
                 Ok(i) => i,
                 Err(e) => {
@@ -2178,6 +2235,7 @@ impl App {
         self.finish_imports();
         self.update_conversion();
         self.update_warps();
+        self.update_video(&ctx);
         self.finish_recordings();
         self.finish_midi_recordings();
         self.update_automation_recording(&ctx);

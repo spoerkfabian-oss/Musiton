@@ -27,7 +27,7 @@ musiton/
 │  │                        # GC thread, automation, nodes (clip player, MIDI track, strip, FX slot, …)
 │  ├─ musiton-devices/      # built-in instruments (polysynth, sampler) and effects; implement AudioNode
 │  ├─ musiton-io/           # cpal audio in/out, midir MIDI, file decode (symphonia), resample (rubato),
-│  │                        # recording disk thread, WAV/FLAC export
+│  │                        # recording disk thread, WAV/FLAC export, video via an ffmpeg child process
 │  ├─ musiton-project/      # project model (source of truth), RON save/load + migrations, Edit/undo
 │  ├─ musiton-ui/           # egui views: arrangement, piano roll, mixer, device panel, shortcuts
 │  ├─ musiton-plugin-host/  # (planned) VST3 hosting; the only crate allowed to use `unsafe`
@@ -69,7 +69,7 @@ app → core, engine, io, project, ui, devices
 | Tests | `proptest`, `criterion`, `approx` | UI tests drive `egui::Context::run_ui` directly |
 | Packaging | `cargo-packager` (NSIS), `winresource` (exe icon) | |
 | VST3 | **(planned)** `vst3` bindings or `vst3-host` | decided in phase 12, behind our own trait |
-| Video | **(planned)** FFmpeg (LGPL, shipped as DLLs) | owner decision for the video track |
+| Video | FFmpeg (LGPL build of `ffmpeg.exe`, shipped next to `Musiton.exe`, run as a child process) | video track: preview frames as raw RGBA over a pipe, sound extracted to WAV |
 
 ## 4. Threads
 
@@ -80,8 +80,9 @@ app → core, engine, io, project, ui, devices
 | Audio input (cpal callback) | copies input frames into a ring read by the output callback | ring |
 | Disk (recording) | writes recorded chunks into WAV takes | ring from the audio thread, channel to the UI |
 | GC | drops objects the audio thread retired (old graphs, tempo maps, node data) | ring from the audio thread |
-| Workers (short-lived) | import + decode, rate conversion to the device rate, time-stretching warped clips, export | `std::sync::mpsc` channels |
+| Workers (short-lived) | import + decode, rate conversion to the device rate, time-stretching warped clips, extracting a video's sound, export | `std::sync::mpsc` channels |
 | MIDI input (midir callback) | pushes raw MIDI bytes | ring to the audio thread |
+| Video | follows the playhead: keeps one `ffmpeg` process streaming frames while playing, decodes single frames while stopped | `mpsc` channels to/from the UI; pipe from `ffmpeg` |
 | Scanner (subprocess) | **(planned)** probes VST3 plugins | JSON on stdout / cache file |
 
 There is no `EngineEvent` ring. The UI needs only the latest playhead, CPU load, dropout count, meters and recording status, so these are atomics in `EngineShared` and in the meters.
@@ -192,6 +193,7 @@ A song is a folder:
 ```
 MySong/
 ├─ MySong.musiton     # RON text with a `version` field; migrate() per version; double-click opens it
+│                     # (a video is referenced by absolute path, not copied in)
 ├─ audio/             # imported (converted to the project rate, 32-bit float WAV) and recorded files
 ├─ autosave/          # MySong.musiton autosave copy
 ├─ peaks/             # reserved for a waveform cache (peaks are computed in memory today)

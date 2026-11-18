@@ -5,7 +5,7 @@ use musiton_core::{TempoMap, Tick, TimeSig};
 
 use crate::{
     Asset, AutomationLane, ChannelStrip, Clip, DeviceSlot, Marker, OutputRoute, Project,
-    RecordSetup, Track,
+    RecordSetup, Track, Video,
 };
 
 /// Most undo steps kept.
@@ -198,6 +198,8 @@ pub enum Edit {
         /// Its new path.
         file: String,
     },
+    /// Set, move or remove the video.
+    SetVideo(Option<Video>),
     /// Several edits as one undo step (applied in order, reverted in reverse order).
     Batch(Vec<Edit>),
 }
@@ -225,6 +227,7 @@ impl Edit {
             Edit::AddAsset(_) => "Import audio",
             Edit::RelinkAsset { .. } => "Relink audio file",
             Edit::SetParent { .. } => "Move into folder",
+            Edit::SetVideo(_) => "Video",
             Edit::SetOutput { .. } => "Output routing",
             Edit::SetRecord { .. } => "Record setup",
             Edit::SetDevices { .. } => "Devices",
@@ -266,7 +269,8 @@ impl Edit {
             (Edit::SetTempo(_), Edit::SetTempo(_))
             | (Edit::SetTimeSig(_), Edit::SetTimeSig(_))
             | (Edit::SetLoop(_), Edit::SetLoop(_))
-            | (Edit::SetPunch(_), Edit::SetPunch(_)) => true,
+            | (Edit::SetPunch(_), Edit::SetPunch(_))
+            | (Edit::SetVideo(_), Edit::SetVideo(_)) => true,
             _ => false,
         }
     }
@@ -457,6 +461,7 @@ impl Edit {
                 std::mem::swap(&mut t.record, record);
             }
             Edit::SetPunch(range) => std::mem::swap(&mut p.punch_range, range),
+            Edit::SetVideo(video) => std::mem::swap(&mut p.video, video),
             Edit::SetParent { id, parent } => {
                 let t = p.track_mut(*id).ok_or(EditError::NoTrack)?;
                 std::mem::swap(&mut t.parent, parent);

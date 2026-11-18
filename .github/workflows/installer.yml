@@ -20,6 +20,24 @@ jobs:
           key: installer
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
+      - name: Fetch FFmpeg (LGPL build, for the video track)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = Invoke-RestMethod https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $asset = $rel.assets |
+            Where-Object { $_.name -match '^ffmpeg-n([\d.]+)-latest-win64-lgpl-[\d.]+\.zip$' } |
+            Sort-Object { [version]($_.name -replace '^ffmpeg-n([\d.]+)-.*$', '$1') } -Descending |
+            Select-Object -First 1
+          if (-not $asset) { $asset = $rel.assets | Where-Object name -eq 'ffmpeg-master-latest-win64-lgpl.zip' }
+          Write-Host "Using $($asset.name)"
+          Invoke-WebRequest $asset.browser_download_url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
+          $dir = Get-ChildItem ffmpeg-dl -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force target/release | Out-Null
+          Copy-Item "$($dir.FullName)/bin/ffmpeg.exe" target/release/ffmpeg.exe
+          Copy-Item "$($dir.FullName)/LICENSE.txt" target/release/FFMPEG-LICENSE.txt
       - name: Build installer
         working-directory: crates/musiton-app
         run: cargo packager --release
@@ -33,8 +51,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force target/portable | Out-Null
           Copy-Item target/release/musiton.exe target/portable/Musiton.exe
+          Copy-Item target/release/ffmpeg.exe target/portable/ffmpeg.exe
+          Copy-Item target/release/FFMPEG-LICENSE.txt target/portable/FFMPEG-LICENSE.txt
       - uses: actions/upload-artifact@v4
         with:
           name: Musiton-portable
-          path: target/portable/Musiton.exe
+          path: target/portable/
           if-no-files-found: error
