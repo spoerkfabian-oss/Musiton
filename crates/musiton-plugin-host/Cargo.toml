@@ -12,10 +12,12 @@ publish = false
 clack-extensions = { version = "0.2", features = ["clack-host", "params", "state", "audio-ports", "latency", "note-ports", "gui", "log", "timer", "thread-check"] }
 clack-host = "0.2"
 libloading = "0.9.1"
+memmap2 = "0.9"
 musiton-core.workspace = true
 musiton-engine.workspace = true
 rtrb = "0.4"
 serde = { workspace = true, features = ["derive"] }
+serde_json = "1"
 thiserror.workspace = true
 tracing.workspace = true
 vst3 = "0.3"

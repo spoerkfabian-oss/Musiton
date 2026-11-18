@@ -24,6 +24,21 @@ mod imp {
         WS_SYSMENU, WS_THICKFRAME,
     };
 
+    /// Handles waiting window messages of this thread (the sandbox has no other loop).
+    pub(crate) fn pump_messages() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+        };
+        // SAFETY: standard message loop calls with a valid MSG buffer.
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
     /// What the window procedure reports back to the owner.
     struct State {
         closed: Cell<bool>,
@@ -199,6 +214,9 @@ mod imp {
 mod imp {
     use std::ffi::c_void;
 
+    /// Nothing to do without native editor windows.
+    pub(crate) fn pump_messages() {}
+
     /// Editor windows are not supported on this system.
     pub(crate) struct Window;
 
@@ -225,7 +243,7 @@ mod imp {
     }
 }
 
-pub(crate) use imp::Window;
+pub(crate) use imp::{pump_messages, Window};
 
 /// A raw window handle (for the plugin APIs).
 pub(crate) type Handle = *mut c_void;

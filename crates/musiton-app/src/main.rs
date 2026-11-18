@@ -55,6 +55,14 @@ const STATUS_TIME: Duration = Duration::from_secs(5);
 const RENDERER_ENV: &str = "MUSITON_RENDERER";
 
 fn main() -> anyhow::Result<()> {
+    // Sandbox host mode (started by Musiton to run one plugin in its own process).
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    if all
+        .first()
+        .is_some_and(|a| a == musiton_plugin_host::HOST_ARG)
+    {
+        std::process::exit(musiton_plugin_host::run_host(&all[1..]));
+    }
     // Scanner mode (started by Musiton itself to load plugins safely in another process).
     let mut args = std::env::args_os().skip(1);
     if args.next().is_some_and(|a| a == plugins::SCAN_ARG) {
@@ -246,6 +254,7 @@ fn plugin_choices(
                 plugin_id: p.id.clone(),
                 name: p.name.clone(),
                 instrument: p.instrument,
+                sandbox: false,
             },
         })
         .collect()
@@ -1760,6 +1769,35 @@ impl App {
         }
     }
 
+    /// Switches the sandbox of a plugin device (one undo step; the plugin reloads with
+    /// its current settings).
+    fn set_plugin_sandbox(&mut self, device: musiton_core::ids::DeviceId, on: bool) {
+        let Some(track) = self
+            .doc
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.devices.iter().any(|d| d.id == device))
+        else {
+            return;
+        };
+        let mut devices = track.devices.clone();
+        for d in &mut devices {
+            if let musiton_project::DeviceKind::Plugin { sandbox, .. } = &mut d.kind {
+                if d.id == device {
+                    *sandbox = on;
+                }
+            }
+        }
+        let edit = musiton_project::Edit::SetDevices {
+            track: track.id,
+            devices,
+        };
+        if let Err(e) = self.doc.perform(edit, false) {
+            self.set_status(format!("Could not change the sandbox: {e}"));
+        }
+    }
+
     /// Opens the editor window of a plugin device.
     fn open_plugin_editor(&mut self, device: musiton_core::ids::DeviceId) {
         let p = &self.doc.project;
@@ -2087,6 +2125,8 @@ impl App {
                     value,
                 } => self.set_plugin_param(device, param, value),
                 UiAction::OpenPluginEditor(device) => self.open_plugin_editor(device),
+                UiAction::RestartPlugin(device) => self.plugin_set.restart(device),
+                UiAction::SetPluginSandbox { device, on } => self.set_plugin_sandbox(device, on),
                 UiAction::PreviewNote { on, key } => {
                     if let Some((_, e)) = &mut self.output {
                         e.send_or_log(musiton_engine::EngineCommand::PreviewNote {

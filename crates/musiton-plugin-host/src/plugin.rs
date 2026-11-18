@@ -79,6 +79,14 @@ pub(crate) trait Controller {
     fn editor_size_request(&self) -> Option<(i32, i32)>;
     /// The user resized the editor's window to this inner size.
     fn editor_resized(&self, width: i32, height: i32);
+    /// For plugins whose editor lives elsewhere (the sandbox): opens it there.
+    fn external_editor(&self, _title: &str) -> Option<Result<(), PluginError>> {
+        None
+    }
+    /// Why the plugin stopped working, if it did (e.g. its sandbox process ended).
+    fn failure_text(&self) -> Option<String> {
+        None
+    }
 }
 
 /// What the plugin's nodes share.
@@ -243,6 +251,9 @@ impl Plugin {
     /// Opens the plugin's own editor in a window titled `title` (or brings it to the
     /// front). UI thread only.
     pub fn open_editor(&mut self, title: &str) -> Result<(), PluginError> {
+        if let Some(result) = self.controller.external_editor(title) {
+            return result;
+        }
         if let Some(w) = &self.editor {
             w.show();
             return Ok(());
@@ -297,6 +308,30 @@ impl Plugin {
         } else if let Some((width, height)) = w.take_resized() {
             self.controller.editor_resized(width, height);
         }
+    }
+
+    /// Loads plugin `id` like [`Plugin::load`], but in a separate process started from
+    /// the executable `exe` (which must handle [`crate::HOST_ARG`]).
+    pub fn load_sandboxed(
+        exe: &std::path::Path,
+        format: PluginFormat,
+        path: &std::path::Path,
+        id: &str,
+        sample_rate: f64,
+        max_block: usize,
+    ) -> Result<Self, PluginError> {
+        crate::sandbox::load(exe, format, path, id, sample_rate, max_block)
+    }
+
+    /// Why the plugin stopped working, if it did (a sandboxed plugin that crashed).
+    pub fn failure(&self) -> Option<String> {
+        self.controller.failure_text()
+    }
+
+    /// Hands a parameter value to the processing directly (like an edit in the
+    /// plugin's own editor).
+    pub fn queue_param(&mut self, id: u32, value: f64) {
+        let _ = self.edits_tx.push((id, value));
     }
 
     /// Processing delay in frames.

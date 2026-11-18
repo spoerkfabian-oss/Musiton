@@ -84,6 +84,7 @@ app → core, engine, io, project, ui, devices
 | Workers (short-lived) | import + decode, rate conversion to the device rate, time-stretching warped clips, extracting a video's sound, export | `std::sync::mpsc` channels |
 | MIDI input (midir callback) | pushes raw MIDI bytes | ring to the audio thread |
 | Video | follows the playhead: keeps one `ffmpeg` process streaming frames while playing, decodes single frames while stopped | `mpsc` channels to/from the UI; pipe from `ffmpeg` |
+| Plugin sandbox (subprocess, optional per plugin) | `musiton --plugin-host …` runs one plugin; its audio thread serves blocks from shared memory, its main thread handles control messages and the editor | shared memory file (audio, events; one block pipelined) + length-prefixed JSON on stdin/stdout |
 | Scanner (subprocess) | `musiton --scan <file>` loads one plugin file and prints its plugins; killed after 20 s | JSON on stdout → `plugins.json` cache in the data folder |
 
 There is no `EngineEvent` ring. The UI needs only the latest playhead, CPU load, dropout count, meters and recording status, so these are atomics in `EngineShared` and in the meters.

@@ -46,6 +46,7 @@ fn instantiate(
         format,
         path,
         plugin_id,
+        sandbox,
         ..
     } = kind
     else {
@@ -56,8 +57,26 @@ fn instantiate(
         "CLAP" => PluginFormat::Clap,
         other => return Err(format!("unknown plugin format {other}")),
     };
-    let plugin =
-        Plugin::load(format, Path::new(path), plugin_id, rate, block).map_err(|e| e.to_string())?;
+    let file = Path::new(path);
+    let sandboxed = |why: Option<String>| {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        Plugin::load_sandboxed(&exe, format, file, plugin_id, rate, block).map_err(|e| match &why {
+            Some(first) => format!("{first}; in the sandbox: {e}"),
+            None => e.to_string(),
+        })
+    };
+    let plugin = if *sandbox {
+        sandboxed(None)?
+    } else {
+        match Plugin::load(format, file, plugin_id, rate, block) {
+            Ok(p) => p,
+            // A plugin that fails inside Musiton gets a second chance in the sandbox.
+            Err(e) => {
+                tracing::warn!("{path} failed to load ({e}); trying the sandbox");
+                sandboxed(Some(e.to_string()))?
+            }
+        }
+    };
     if let Some(state) = state {
         if let Err(e) = plugin.set_state(state) {
             tracing::warn!("restoring the state of {path} failed: {e}");
@@ -79,6 +98,8 @@ pub struct PluginSet {
     block: usize,
     /// Latency of each instance when the graph was last built (for delay compensation).
     latencies: HashMap<DeviceId, u32>,
+    /// The device settings each instance was made for (a change reloads it).
+    kinds: HashMap<DeviceId, DeviceKind>,
 }
 
 impl Default for PluginSet {
@@ -91,6 +112,7 @@ impl Default for PluginSet {
             rate: 48_000.0,
             block: 1024,
             latencies: HashMap::new(),
+            kinds: HashMap::new(),
         }
     }
 }
@@ -103,6 +125,7 @@ impl PluginSet {
         }
         self.retired.extend(self.instances.drain().map(|(_, p)| p));
         self.failed.clear();
+        self.kinds.clear();
         self.state_dir = state_dir;
     }
 
@@ -139,15 +162,31 @@ impl PluginSet {
     /// instance was added.
     pub fn sync(&mut self, project: &Project) -> bool {
         let mut added = false;
+        // Devices whose settings changed (e.g. the sandbox switch) are reloaded with their
+        // current state.
+        let mut carried: HashMap<DeviceId, Vec<u8>> = HashMap::new();
+        for (id, kind) in plugin_devices(project) {
+            if self.kinds.get(&id).is_some_and(|k| k != kind) {
+                self.failed.remove(&id);
+                if let Some(old) = self.instances.remove(&id) {
+                    if let Ok(state) = old.state() {
+                        carried.insert(id, state);
+                    }
+                    self.retired.push(old);
+                }
+            }
+        }
         let todo: Vec<(DeviceId, DeviceKind)> = plugin_devices(project)
             .filter(|(id, _)| !self.instances.contains_key(id) && !self.failed.contains_key(id))
             .map(|(id, k)| (id, k.clone()))
             .collect();
         for (id, kind) in todo {
-            let state = self
-                .state_dir
-                .as_deref()
-                .and_then(|d| std::fs::read(state_file(d, id)).ok());
+            self.kinds.insert(id, kind.clone());
+            let state = carried.remove(&id).or_else(|| {
+                self.state_dir
+                    .as_deref()
+                    .and_then(|d| std::fs::read(state_file(d, id)).ok())
+            });
             match instantiate(&kind, state.as_deref(), self.rate, self.block) {
                 Ok(p) => {
                     self.instances.insert(id, p);
@@ -213,6 +252,12 @@ impl PluginSet {
             });
         }
         let p = self.instances.get(&id)?;
+        if let Some(e) = p.failure() {
+            return Some(PluginView {
+                error: Some(e),
+                ..PluginView::default()
+            });
+        }
         Some(PluginView {
             params: p
                 .params()
@@ -232,6 +277,16 @@ impl PluginSet {
         if let Some(p) = self.instances.get(&id) {
             p.set_param(param, value);
         }
+    }
+
+    /// Loads device `id`'s plugin again (after it failed or its sandbox ended); it starts
+    /// from its last saved state.
+    pub fn restart(&mut self, id: DeviceId) {
+        self.failed.remove(&id);
+        if let Some(old) = self.instances.remove(&id) {
+            self.retired.push(old);
+        }
+        self.kinds.remove(&id);
     }
 
     /// Opens the editor window of device `id` titled `title`.
@@ -331,6 +386,7 @@ mod tests {
                     plugin_id: info.id,
                     name: info.name,
                     instrument: true,
+                    sandbox: false,
                 },
             }],
             ..Track::default()

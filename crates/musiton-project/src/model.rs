@@ -442,6 +442,9 @@ pub enum DeviceKind {
         /// Whether it is an instrument.
         #[serde(default)]
         instrument: bool,
+        /// Run it in a separate process (crash-safe, one block more latency).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sandbox: bool,
     },
 }
 

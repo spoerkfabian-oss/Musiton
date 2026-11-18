@@ -119,13 +119,32 @@ fn plugin_body(ui: &mut Ui, d: &DeviceSlot, input: &PanelInput, actions: &mut Ve
         ui.weak("Loading…");
         return;
     };
+    let DeviceKind::Plugin { sandbox, .. } = &d.kind else {
+        return;
+    };
     if let Some(e) = &view.error {
-        ui.colored_label(ui.visuals().warn_fg_color, format!("Not loaded: {e}"));
+        ui.colored_label(ui.visuals().warn_fg_color, format!("Not working: {e}"));
+        if ui.button("Restart plugin").clicked() {
+            actions.push(UiAction::RestartPlugin(d.id));
+        }
         return;
     }
-    if view.has_editor && ui.button("Open editor").clicked() {
-        actions.push(UiAction::OpenPluginEditor(d.id));
-    }
+    ui.horizontal(|ui| {
+        if view.has_editor && ui.button("Open editor").clicked() {
+            actions.push(UiAction::OpenPluginEditor(d.id));
+        }
+        let mut on = *sandbox;
+        if ui
+            .checkbox(&mut on, "Run in sandbox")
+            .on_hover_text(
+                "Runs the plugin in its own process: if it crashes, Musiton keeps running. \
+                 Costs a little CPU and one block of latency (compensated).",
+            )
+            .changed()
+        {
+            actions.push(UiAction::SetPluginSandbox { device: d.id, on });
+        }
+    });
     egui::CollapsingHeader::new(format!("Parameters ({})", view.params.len()))
         .id_salt(("plugin-params", d.id))
         .show(ui, |ui| {

@@ -13,12 +13,14 @@ use serde::{Deserialize, Serialize};
 
 mod clap;
 mod plugin;
+mod sandbox;
 mod vst3_host;
 mod vst3_module;
 mod vst3_plugin;
 mod window;
 
 pub use plugin::{Edit, NodeSource, Plugin, PluginNode, PluginParam};
+pub use sandbox::{run_host, HOST_ARG};
 
 /// Plugin formats Musiton hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

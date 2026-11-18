@@ -71,6 +71,15 @@ pub enum UiAction {
     },
     /// Open the plugin's own editor window.
     OpenPluginEditor(musiton_core::ids::DeviceId),
+    /// Load a plugin device again after it failed.
+    RestartPlugin(musiton_core::ids::DeviceId),
+    /// Switch running a plugin device in its own process on or off.
+    SetPluginSandbox {
+        /// The device.
+        device: musiton_core::ids::DeviceId,
+        /// Whether to use the sandbox.
+        on: bool,
+    },
     /// Save the current settings as a user preset.
     SavePreset {
         /// Device type.
