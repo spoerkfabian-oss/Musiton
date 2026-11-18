@@ -1745,6 +1745,7 @@ impl App {
     fn set_plugin_param(&mut self, device: musiton_core::ids::DeviceId, param: u32, value: f64) {
         self.plugin_set.set_param(device, param, value);
         self.doc.settings_changed();
+        self.record_plugin_move(device, param, value);
         let project = &self.doc.project;
         let Some(track) = project
             .tracks
@@ -1767,6 +1768,42 @@ impl App {
                 val: value as f32,
             });
         }
+    }
+
+    /// While playing, a plugin parameter move goes into its automation lane if that lane
+    /// records (Write, Touch or Latch).
+    fn record_plugin_move(&mut self, device: musiton_core::ids::DeviceId, param: u32, value: f64) {
+        let Some((_, engine)) = &self.output else {
+            return;
+        };
+        if !engine.shared().playing() {
+            return;
+        }
+        let p = &self.doc.project;
+        let Some(track) = p
+            .tracks
+            .iter()
+            .find(|t| t.devices.iter().any(|d| d.id == device))
+            .map(|t| t.id)
+        else {
+            return;
+        };
+        let target = musiton_project::ParamTarget::Device {
+            device,
+            param: u64::from(param),
+        };
+        if auto_record::AutoRecorder::recording_mode(p, track, target).is_none() {
+            return;
+        }
+        let sr = f64::from(engine.sample_rate());
+        let tick = musiton_core::Tick(
+            p.tempo
+                .sample_to_tick(engine.shared().playhead() as f64, sr)
+                .round() as i64,
+        );
+        self.auto_rec
+            .touch(&self.doc.project, track, target, value as f32, tick);
+        self.sync_automation();
     }
 
     /// Switches the sandbox of a plugin device (one undo step; the plugin reloads with
@@ -2419,8 +2456,12 @@ impl App {
         self.update_conversion();
         self.update_warps();
         self.update_video(&ctx);
-        if self.plugin_set.poll() {
+        let moves = self.plugin_set.poll();
+        if !moves.is_empty() {
             self.doc.settings_changed();
+        }
+        for (device, param, value) in moves {
+            self.record_plugin_move(device, param, value);
         }
         if self.plugins.update() {
             ctx.request_repaint_after(Duration::from_millis(100));

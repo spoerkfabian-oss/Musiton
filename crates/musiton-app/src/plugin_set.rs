@@ -299,18 +299,20 @@ impl PluginSet {
     }
 
     /// Passes edits from the plugins' own editors on and frees retired instances.
-    /// Returns whether a plugin changed a parameter (the song then has unsaved changes).
-    pub fn poll(&mut self) -> bool {
-        let mut changed = false;
-        for p in self.instances.values_mut() {
+    /// Returns the parameter moves made in the plugins' editors: (device, parameter,
+    /// value 0..1).
+    pub fn poll(&mut self) -> Vec<(DeviceId, u32, f64)> {
+        let mut moves = Vec::new();
+        for (id, p) in &mut self.instances {
             p.poll_editor();
-            changed |= p
-                .take_edits()
-                .iter()
-                .any(|e| matches!(e, musiton_plugin_host::Edit::Perform(..)));
+            for e in p.take_edits() {
+                if let musiton_plugin_host::Edit::Perform(param, value) = e {
+                    moves.push((*id, param, value));
+                }
+            }
         }
         self.retired.retain(Plugin::in_use);
-        changed
+        moves
     }
 
     /// Writes the state of every plugin device of `project` into `dir`.

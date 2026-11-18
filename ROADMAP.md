@@ -7,12 +7,12 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 | Phase | State |
 |---|---|
 | 0–11 | done |
-| 12 — VST3 hosting | open. It is done last, by owner decision, together with CLAP and the plugin sandbox (LV2 dropped by owner decision). |
+| 12 — VST3 hosting | built (VST3, CLAP, sandbox, PDC). Its acceptance test needs the owner's Windows PC (Vital, Surge XT, Dexed, Valhalla Supermassive). |
 | 13 — Export | done |
 | 14 — Polish & release | done. Still needs the owner's test on a fresh Windows PC with the installer. |
 | Later list | done except the plugin items, which come with phase 12. |
 
-Work order from here: phase 12 together with the plugin-related "Later" items.
+Work order from here: the owner's test of phase 12 (and of phase 14's fresh-install check) on Windows; then fixes from those tests.
 
 ## Phase 0 — Foundation
 - [x] Cargo workspace with all crates from ARCHITECTURE.md (empty stubs), `rust-toolchain.toml`, `.gitignore`, README; licence: ask owner (suggest MIT OR Apache-2.0)

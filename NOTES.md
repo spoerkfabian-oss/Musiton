@@ -424,7 +424,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - No video export (audio export only).
 - `ffmpeg.exe` makes the downloads bigger: the installer is about 49 MB and the zipped portable download about 65 MB (first build with FFmpeg, run #24).
 
-## Phase 12 — plugins (in progress)
+## Phase 12 — plugins
 **Built so far**
 - `musiton-plugin-host`: finds plugin files in the standard folders (Windows: `Common Files\VST3`, `Common Files\CLAP`, and the per-user `Programs\Common` ones; Linux: `~/.vst3`, `~/.clap`, `/usr/lib/vst3`, `/usr/lib/clap`, `/usr/local/…`) and lists the plugins of a file: VST3 by loading the module and reading its class factory, CLAP through `clack-host`.
 - Scanner: Musiton starts itself as `musiton --scan <file>` for each new or changed plugin file. The child prints JSON; a crash, an error or more than 20 s puts the file on the failed list, which is skipped until "Rescan all". Results are cached in `plugins.json` in the data folder; the scan runs in the background at every start.
@@ -452,8 +452,9 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 
 **Tests:** `vst3_and_clap_plugins_are_scanned`, `plugin_files_are_found_by_extension`, `class_ids_are_written_as_hex`, `cache_skips_scanned_and_failed_files_and_survives_a_round_trip`, `hanging_and_crashing_scanners_are_reported`, `scanner_mode_prints_the_plugins_of_a_file`, `a_vst3_synth_plays_notes_and_keeps_its_state`, `a_vst3_effect_processes_its_input_and_newest_node_wins`, `a_clap_synth_plays_and_keeps_its_state`, `a_clap_effect_processes_its_input`, `plugin_states_are_saved_and_reloaded`, `a_plugin_synth_track_renders_its_notes`, `delays_by_exactly_the_given_frames_across_blocks`, `latency_is_compensated_across_tracks`, `a_sandboxed_synth_plays_and_keeps_its_state`, `messages_and_bytes_survive_the_pipe`.
 
-**Known issues (so far)**
-- Moving a control in a plugin's own editor marks the song as changed, but is not recorded as automation yet.
+**Known issues**
+- The acceptance test (Vital, Surge XT, Dexed and Valhalla Supermassive load, play, automate, save and reload) needs the owner's Windows PC; the cloud only has Linux test plugins (DPF).
+- Plugin parameter moves (panel sliders and the plugin's own editor) are recorded into automation lanes in Write/Touch/Latch mode. Touch mode cannot see whether a control in the plugin's own window is still held, so it behaves like a short touch per move.
 - The editor windows could not be tried in the cloud (no Windows plugins there); they are compile-checked for Windows only. First real test: on the owner's PC.
 - Plugin settings changes are not part of undo (the plugin keeps its own state).
 - Autosave writes plugin states only when the song itself changed since the last autosave.
