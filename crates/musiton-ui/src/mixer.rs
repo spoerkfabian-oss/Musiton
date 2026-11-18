@@ -97,6 +97,16 @@ impl Mixer {
                 .find(|l| l.target == target && l.mode != AutoMode::Off)
                 .and_then(|l| l.value_at(tick))
         };
+        // A lane in Read mode owns the control: moving it would be undone at once.
+        let read_only = |target: ParamTarget| {
+            track.is_some_and(|t| {
+                t.automation
+                    .iter()
+                    .any(|l| l.target == target && l.mode == AutoMode::Read && !l.points.is_empty())
+            })
+        };
+        let gain_locked = read_only(ParamTarget::Volume);
+        let pan_locked = read_only(ParamTarget::Pan);
         let auto_gain = lane_value(ParamTarget::Volume).map(|x| VOLUME_PARAM.from_normalized(x));
         let auto_pan = lane_value(ParamTarget::Pan).map(|x| PAN_PARAM.from_normalized(x));
         if let Some(g) = auto_gain {
@@ -142,9 +152,16 @@ impl Mixer {
             }
 
             // Pan.
-            let r = ui.add(egui::Slider::new(&mut edited.pan, -1.0..=1.0).show_value(false));
-            let r = if auto_pan.is_some() {
-                r.on_hover_text("Automated – pan follows the automation lane")
+            let r = ui.add_enabled(
+                !pan_locked,
+                egui::Slider::new(&mut edited.pan, -1.0..=1.0).show_value(false),
+            );
+            let r = if pan_locked {
+                r.on_disabled_hover_text(
+                    "Pan follows its automation lane (Read). Click \"Auto\" below to switch it off.",
+                )
+            } else if auto_pan.is_some() {
+                r.on_hover_text("Automated – moving it records into the lane")
             } else {
                 r
             };
@@ -161,13 +178,19 @@ impl Mixer {
             // Fader + meter.
             ui.horizontal(|ui| {
                 ui.spacing_mut().slider_width = FADER_HEIGHT;
-                let r = ui.add(
+                let r = ui.add_enabled(
+                    !gain_locked,
                     egui::Slider::new(&mut edited.gain_db, FADER_MIN_DB..=FADER_MAX_DB)
                         .vertical()
                         .show_value(false),
                 );
-                let r = if auto_gain.is_some() {
-                    r.on_hover_text("Automated – volume follows the automation lane")
+                let r = if gain_locked {
+                    r.on_disabled_hover_text(
+                        "Volume follows its automation lane (Read). Click \"Auto\" below to \
+                         switch it off.",
+                    )
+                } else if auto_gain.is_some() {
+                    r.on_hover_text("Automated – moving it records into the lane")
                 } else {
                     r
                 };
@@ -190,6 +213,33 @@ impl Mixer {
                 format!("{:+.1} dB", edited.gain_db)
             };
             ui.monospace(db);
+            if let Some(t) = track.filter(|_| gain_locked || pan_locked) {
+                let auto = egui::RichText::new("Auto").color(Color32::from_rgb(90, 200, 120));
+                if ui
+                    .small_button(auto)
+                    .on_hover_text(
+                        "Volume/pan are controlled by automation (Read). Click to switch \
+                         those lanes off and use the controls again (the points stay).",
+                    )
+                    .clicked()
+                {
+                    let mut lanes = t.automation.clone();
+                    for l in &mut lanes {
+                        if matches!(l.target, ParamTarget::Volume | ParamTarget::Pan)
+                            && l.mode == AutoMode::Read
+                        {
+                            l.mode = AutoMode::Off;
+                        }
+                    }
+                    actions.push(UiAction::Edit {
+                        edit: musiton_project::Edit::SetAutomation {
+                            track: t.id,
+                            lanes,
+                        },
+                        merge: false,
+                    });
+                }
+            }
 
             ui.horizontal(|ui| {
                 if ui

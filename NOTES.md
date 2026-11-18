@@ -437,6 +437,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Instances follow the audio device's rate and block size (they are reloaded with their state when these change). An export gets its own instances at the song's rate, created from the current states, so it never touches the live ones.
 - Plugin editors (Windows): "Open editor" in the plugin's panel opens its own editor in a native window titled "<plugin> – <track>". VST3 through `IPlugView` with our `IPlugFrame` (size wishes are applied on the next frame), CLAP through the `gui` extension (embedded, `win32`). Resizable editors get a sizing border; user resizes go to the plugin, the plugin's own size changes resize the window. Closing the window detaches the editor. On Linux no editor windows are offered (generic sliders only).
 - Delay compensation (PDC): per track, the latency of its instrument and effects (asked after `prepare`, as it can depend on the rate); buses add their own chain to their latest source; every connection into a bus or the master that arrives early goes through a `LatencyDelay`. The click is delayed by the master's latency. The playhead is not shifted: what you hear is late by the total latency (a few ms for typical plugins).
+- A bypassed effect still delays by its latency (`FxSlot` keeps a delayed copy of its input), so bypassing does not shift the track against the others. Sidechain sources are delayed to meet the effect's main input when that comes later.
 - Found by the PDC test: the built-in limiter reported its look-ahead as latency, but delays one sample less (it writes before it reads). It now reports the real delay; its sound is unchanged.
 - Sandbox: "Run in sandbox" in a plugin's panel runs it in its own process (`musiton --plugin-host`). Audio and events go through a shared memory file (`memmap2`); parameters, state and the editor through the child's stdin/stdout as length-prefixed JSON. The audio thread never waits: each block it hands over the input and plays the previous block's result from a FIFO, so the sandbox adds exactly `max_block` frames of latency, which delay compensation evens out. A late or crashed child gives silence; the panel then shows why and offers "Restart plugin". The child's own audio thread spins briefly, then yields, then sleeps 1 ms when idle.
 - A plugin that fails to load inside Musiton is tried in the sandbox automatically (owner decision: plugins that failed go into the sandbox).
@@ -458,7 +459,13 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - The editor windows could not be tried in the cloud (no Windows plugins there); they are compile-checked for Windows only. First real test: on the owner's PC.
 - Plugin settings changes are not part of undo (the plugin keeps its own state).
 - Autosave writes plugin states only when the song itself changed since the last autosave.
-- Bypassing an effect with latency removes its delay from that track (the bypass passes the signal through directly) until the next graph rebuild.
-- Sidechain inputs are not delay-compensated.
 - Sandboxed plugins: a crash is not reproduced in the tests (only a plugin that fails to load); each sandboxed plugin keeps one CPU core partly busy while playing; editors of sandboxed plugins open in the child process (Windows), not tested in the cloud.
 - Stems of an export are rendered one after another with the same export instances, so a long reverb tail of one stem can reach the start of the next.
+
+## Owner test (first round, November 2026)
+**Reported:** "Instrument 2 behaves oddly"; "instruments only change their sound after switching instruments"; "on Instrument 1 the mixer volume fader cannot be moved, it always jumps to max".
+
+**Findings and fixes**
+- Instrument knobs were applied only when the engine graph was rebuilt: the parameter values sent to the engine covered effects and the mixer, but not the instrument. Fixed; test `instrument_knobs_are_sent_without_a_rebuild`.
+- Instrument 1 had a volume automation lane in Read mode with one point at maximum (probably a click into the automation lane). A Read lane owns the fader, so every move was undone at once. Now a fader or pan control owned by a Read lane is shown locked with an explanation, and an "Auto" switch under the fader turns those lanes off (the points stay). Test `read_automation_locks_the_fader_and_auto_switches_it_off`.
+- Instrument 2 renders cleanly (no invalid values, peak 0.25). Its sound pulses about 1.6 times per second because oscillator 2 is one semitone lower and 20 cents detuned against oscillator 1 on a very low note (C#0): a beating, not a bug.

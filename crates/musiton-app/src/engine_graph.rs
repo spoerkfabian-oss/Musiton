@@ -241,6 +241,13 @@ fn params(
             (*node, MIDI_TRACK_LIVE),
             if live == Some(*track) { 1.0 } else { 0.0 },
         );
+        // The instrument's knobs, so changes are heard right away (not only after the
+        // graph is rebuilt).
+        if let Some(t) = project.track(*track) {
+            for (id, v) in instrument_params(t) {
+                out.insert((*node, ParamId(id)), v);
+            }
+        }
     }
     let mut strip = |node: NodeIdx, s: &musiton_project::ChannelStrip, audible: bool| {
         out.insert((node, STRIP_GAIN), db_to_gain(s.gain_db));
@@ -555,11 +562,13 @@ pub fn build(
             // Latency can depend on the rate (look-ahead): ask after preparing.
             let mut effect = effect;
             effect.prepare(sample_rate, max_block);
+            // How late the effect's main input is (for lining up its sidechain).
+            let before = chain;
             chain += effect.latency();
             let node = b.add(Box::new(FxSlot::new(effect, d.bypass)));
             stereo(&mut b, last, 0, node)?;
             if let (Some(src), true) = (d.sidechain, takes_sidechain) {
-                sidechains.push((node, t.id, src));
+                sidechains.push((node, t.id, src, before));
             }
             fx.insert(d.id, node);
             if let Some(a) = analyzer {
@@ -713,13 +722,24 @@ pub fn build(
 
     // Sidechains: the source track's signal before its fader (strip outputs 2, 3) into
     // the effect's inputs 2, 3. Sources that would close a loop are left out.
-    for (node, target, src) in sidechains {
+    // The source is delayed to meet the effect's main input when that is later.
+    for (node, target, src, before) in sidechains {
         let Some(&strip) = track_strips.get(&src) else {
             continue;
         };
-        if project.sidechain_ok(target, src) {
+        if !project.sidechain_ok(target, src) {
+            continue;
+        }
+        let wait = before.saturating_sub(arrive.get(&src).copied().unwrap_or(0));
+        if wait == 0 {
             b.connect(strip, 2, node, 2)?;
             b.connect(strip, 3, node, 3)?;
+        } else {
+            let d = b.add(Box::new(LatencyDelay::new(wait)));
+            b.connect(strip, 2, d, 0)?;
+            b.connect(strip, 3, d, 1)?;
+            b.connect(d, 0, node, 2)?;
+            b.connect(d, 1, node, 3)?;
         }
     }
 
@@ -1369,6 +1389,44 @@ mod tests {
 
     /// Phase 11 acceptance: a filter sweep drawn as automation renders identically every
     /// time — with different callback sizes, and against the stored golden render.
+    /// Regression (owner's test): turning an instrument knob must reach the running
+    /// instrument, not only take effect after the graph is rebuilt.
+    #[test]
+    fn instrument_knobs_are_sent_without_a_rebuild() {
+        use musiton_core::ids::DeviceId;
+        use musiton_devices::polysynth::id;
+        use musiton_project::{DeviceSlot, TrackKind};
+        let mut project = Project::default();
+        let mut synth = DeviceSlot::builtin(DeviceId(7), musiton_devices::POLYSYNTH);
+        synth.set_param(id::CUTOFF, Some(500.0));
+        project.tracks.push(Track {
+            id: TrackId(1),
+            kind: TrackKind::Instrument,
+            devices: vec![synth],
+            ..Track::default()
+        });
+        let built = build(
+            &project,
+            &AssetStore::default(),
+            &PluginNodes::default(),
+            48_000.0,
+            256,
+            0,
+        )
+        .unwrap();
+        let value = |p: &Project| {
+            built
+                .info
+                .params(p, None)
+                .into_iter()
+                .find(|((_, pid), _)| *pid == ParamId(id::CUTOFF))
+                .map(|(_, v)| v)
+        };
+        assert_eq!(value(&project), Some(500.0));
+        project.tracks[0].devices[0].set_param(id::CUTOFF, Some(2_000.0));
+        assert_eq!(value(&project), Some(2_000.0));
+    }
+
     #[test]
     fn automated_filter_sweep_renders_identically() {
         use musiton_core::ids::DeviceId;
