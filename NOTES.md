@@ -469,3 +469,6 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Instrument knobs were applied only when the engine graph was rebuilt: the parameter values sent to the engine covered effects and the mixer, but not the instrument. Fixed; test `instrument_knobs_are_sent_without_a_rebuild`.
 - Instrument 1 had a volume automation lane in Read mode with one point at maximum (probably a click into the automation lane). A Read lane owns the fader, so every move was undone at once. Now a fader or pan control owned by a Read lane is shown locked with an explanation, and an "Auto" switch under the fader turns those lanes off (the points stay). Test `read_automation_locks_the_fader_and_auto_switches_it_off`.
 - Instrument 2 renders cleanly (no invalid values, peak 0.25). Its sound pulses about 1.6 times per second because oscillator 2 is one semitone lower and 20 cents detuned against oscillator 1 on a very low note (C#0): a beating, not a bug.
+
+## Open: CI maintenance
+- GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.
