@@ -207,6 +207,10 @@ struct App {
     plugin_set: plugin_set::PluginSet,
     /// Plugin instances used by a running export.
     export_plugins: Vec<musiton_plugin_host::Plugin>,
+    /// A plugin's settings changed since the last autosave (they are not in the song).
+    plugins_dirty: bool,
+    /// When plugin settings were last autosaved on their own.
+    plugins_autosaved: Instant,
     /// Background time-stretching of warped clips.
     warping: Option<std::sync::mpsc::Receiver<Vec<(u64, musiton_core::audio::AudioData)>>>,
     graph: GraphState,
@@ -349,6 +353,8 @@ impl App {
             plugins: plugins::Plugins::new(Settings::data_dir().map(|d| d.join("plugins.json"))),
             plugin_set: plugin_set::PluginSet::default(),
             export_plugins: Vec::new(),
+            plugins_dirty: false,
+            plugins_autosaved: Instant::now(),
             graph: GraphState::default(),
             browser: Browser::default(),
             input: None,
@@ -1745,6 +1751,7 @@ impl App {
     fn set_plugin_param(&mut self, device: musiton_core::ids::DeviceId, param: u32, value: f64) {
         self.plugin_set.set_param(device, param, value);
         self.doc.settings_changed();
+        self.plugins_dirty = true;
         self.record_plugin_move(device, param, value);
         let project = &self.doc.project;
         let Some(track) = project
@@ -2459,6 +2466,7 @@ impl App {
         let moves = self.plugin_set.poll();
         if !moves.is_empty() {
             self.doc.settings_changed();
+            self.plugins_dirty = true;
         }
         for (device, param, value) in moves {
             self.record_plugin_move(device, param, value);
@@ -2524,16 +2532,33 @@ impl App {
         {
             Some(Ok(path)) => {
                 tracing::info!("autosaved to {}", path.display());
-                if let Some(dir) = plugin_set::states_dir(&path) {
-                    if let Err(e) = self.plugin_set.save_states(&self.doc.project, &dir) {
-                        tracing::warn!("autosaving plugin states failed: {e}");
+                self.autosave_plugin_states(&path);
+            }
+            Some(Err(e)) => self.set_status(format!("Autosave failed: {e}")),
+            // The song is unchanged, but a plugin's settings may have changed.
+            None => {
+                let due = !interval.is_zero() && self.plugins_autosaved.elapsed() >= interval;
+                if self.plugins_dirty && due {
+                    if let Some(path) = self.doc.autosave_path(Settings::data_dir().as_deref()) {
+                        if path.is_file() {
+                            self.autosave_plugin_states(&path);
+                        }
                     }
                 }
             }
-            Some(Err(e)) => self.set_status(format!("Autosave failed: {e}")),
-            None => {}
         }
         self.update_title(&ctx);
+    }
+
+    /// Writes the plugin states next to the autosave copy `song`.
+    fn autosave_plugin_states(&mut self, song: &Path) {
+        if let Some(dir) = plugin_set::states_dir(song) {
+            match self.plugin_set.save_states(&self.doc.project, &dir) {
+                Ok(()) => self.plugins_dirty = false,
+                Err(e) => tracing::warn!("autosaving plugin states failed: {e}"),
+            }
+        }
+        self.plugins_autosaved = Instant::now();
     }
 
     /// Keeps the crash-detection lock file pointing at the open project.

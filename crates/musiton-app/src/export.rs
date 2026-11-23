@@ -17,6 +17,9 @@ use crate::engine_graph;
 pub const BLOCK: usize = 512;
 /// Frames rendered (stopped) before playback starts, so the graph has faded in.
 const PRE_ROLL: usize = 1024;
+/// With plugins, a longer silent run first lets their tails (reverbs, delays) from an
+/// earlier render (e.g. the previous stem) die away: 10 s at 48 kHz.
+const PLUGIN_FLUSH: usize = 480_000;
 /// Frames rendered per progress update.
 const CHUNK: usize = 8192;
 
@@ -91,7 +94,12 @@ pub fn render_project(
         .ok()?;
     h.send(EngineCommand::SetTimeSig(project.time_sig)).ok()?;
     h.send(EngineCommand::Locate(SamplePos(start))).ok()?;
-    render_offline(&mut e, PRE_ROLL, 2, BLOCK);
+    let pre_roll = if plugins.sources.is_empty() {
+        PRE_ROLL
+    } else {
+        PLUGIN_FLUSH
+    };
+    render_offline(&mut e, pre_roll, 2, BLOCK);
     h.send(EngineCommand::Play).ok()?;
     let mut left = Vec::with_capacity(frames);
     let mut right = Vec::with_capacity(frames);

@@ -87,6 +87,8 @@ pub(crate) trait Controller {
     fn failure_text(&self) -> Option<String> {
         None
     }
+    /// Ends the plugin's own process abruptly, as a crash would (sandbox only; tests).
+    fn kill_process(&self) {}
 }
 
 /// What the plugin's nodes share.
@@ -326,6 +328,12 @@ impl Plugin {
     /// Why the plugin stopped working, if it did (a sandboxed plugin that crashed).
     pub fn failure(&self) -> Option<String> {
         self.controller.failure_text()
+    }
+
+    /// Kills a sandboxed plugin's process the way a crash would. For tests.
+    #[doc(hidden)]
+    pub fn simulate_crash(&self) {
+        self.controller.kill_process();
     }
 
     /// Hands a parameter value to the processing directly (like an edit in the

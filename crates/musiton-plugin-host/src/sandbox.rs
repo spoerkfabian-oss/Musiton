@@ -703,8 +703,16 @@ impl Controller for SandboxController {
 
     fn editor_resized(&self, _width: i32, _height: i32) {}
 
+    fn kill_process(&self) {
+        let mut child = self.child.borrow_mut();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
     fn failure_text(&self) -> Option<String> {
-        matches!(self.child.borrow_mut().try_wait(), Ok(Some(_))).then(|| self.failure())
+        // Check first; the borrow must end before `failure` borrows again.
+        let ended = matches!(self.child.borrow_mut().try_wait(), Ok(Some(_)));
+        ended.then(|| self.failure())
     }
 }
 

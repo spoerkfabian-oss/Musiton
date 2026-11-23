@@ -451,16 +451,16 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - `musiton-plugin-host` has its own lint table (the workspace one minus `unsafe_code = "forbid"`); every `unsafe` block carries a `// SAFETY:` comment.
 - Linux CI installs `dpf-plugins-vst3`/`dpf-plugins-clap` (Kars synth, MVerb, …) as test plugins; tests that need them skip when they are missing.
 
-**Tests:** `vst3_and_clap_plugins_are_scanned`, `plugin_files_are_found_by_extension`, `class_ids_are_written_as_hex`, `cache_skips_scanned_and_failed_files_and_survives_a_round_trip`, `hanging_and_crashing_scanners_are_reported`, `scanner_mode_prints_the_plugins_of_a_file`, `a_vst3_synth_plays_notes_and_keeps_its_state`, `a_vst3_effect_processes_its_input_and_newest_node_wins`, `a_clap_synth_plays_and_keeps_its_state`, `a_clap_effect_processes_its_input`, `plugin_states_are_saved_and_reloaded`, `a_plugin_synth_track_renders_its_notes`, `delays_by_exactly_the_given_frames_across_blocks`, `latency_is_compensated_across_tracks`, `a_sandboxed_synth_plays_and_keeps_its_state`, `messages_and_bytes_survive_the_pipe`.
+**Tests:** `vst3_and_clap_plugins_are_scanned`, `plugin_files_are_found_by_extension`, `class_ids_are_written_as_hex`, `cache_skips_scanned_and_failed_files_and_survives_a_round_trip`, `hanging_and_crashing_scanners_are_reported`, `scanner_mode_prints_the_plugins_of_a_file`, `a_vst3_synth_plays_notes_and_keeps_its_state`, `a_vst3_effect_processes_its_input_and_newest_node_wins`, `a_clap_synth_plays_and_keeps_its_state`, `a_clap_effect_processes_its_input`, `plugin_states_are_saved_and_reloaded`, `a_plugin_synth_track_renders_its_notes`, `delays_by_exactly_the_given_frames_across_blocks`, `latency_is_compensated_across_tracks`, `a_sandboxed_synth_plays_keeps_its_state_and_survives_a_crash` (kills the plugin process: audio goes on silently without waiting, the panel reports it; this test found a double `RefCell` borrow that would have panicked the UI after a sandbox crash), `messages_and_bytes_survive_the_pipe`.
 
 **Known issues**
 - The acceptance test (Vital, Surge XT, Dexed and Valhalla Supermassive load, play, automate, save and reload) needs the owner's Windows PC; the cloud only has Linux test plugins (DPF).
+- Autosave also writes plugin states when only a plugin's settings changed (the song's autosave copy must already exist).
 - Plugin parameter moves (panel sliders and the plugin's own editor) are recorded into automation lanes in Write/Touch/Latch mode. Touch mode cannot see whether a control in the plugin's own window is still held, so it behaves like a short touch per move.
 - The editor windows could not be tried in the cloud (no Windows plugins there); they are compile-checked for Windows only. First real test: on the owner's PC.
 - Plugin settings changes are not part of undo (the plugin keeps its own state).
-- Autosave writes plugin states only when the song itself changed since the last autosave.
-- Sandboxed plugins: a crash is not reproduced in the tests (only a plugin that fails to load); each sandboxed plugin keeps one CPU core partly busy while playing; editors of sandboxed plugins open in the child process (Windows), not tested in the cloud.
-- Stems of an export are rendered one after another with the same export instances, so a long reverb tail of one stem can reach the start of the next.
+- Sandboxed plugins: each sandboxed plugin keeps one CPU core partly busy while playing; editors of sandboxed plugins open in the child process (Windows), not tested in the cloud.
+- Stems of an export share one set of export instances; before each render, 10 s of silence run through them (offline, transport stopped) so tails of the previous stem die away. Tails longer than that would still reach the next stem.
 
 ## Owner test (first round, November 2026)
 **Reported:** "Instrument 2 behaves oddly"; "instruments only change their sound after switching instruments"; "on Instrument 1 the mixer volume fader cannot be moved, it always jumps to max".

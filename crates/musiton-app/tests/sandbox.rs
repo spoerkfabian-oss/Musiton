@@ -23,7 +23,7 @@ fn ctx(tempo: &TempoMap, pos: u64) -> ProcessContext<'_> {
 }
 
 #[test]
-fn a_sandboxed_synth_plays_and_keeps_its_state() {
+fn a_sandboxed_synth_plays_keeps_its_state_and_survives_a_crash() {
     let path = Path::new("/usr/lib/clap/Kars.clap");
     let Some(info) = musiton_plugin_host::scan_file(path)
         .ok()
@@ -79,6 +79,23 @@ fn a_sandboxed_synth_plays_and_keeps_its_state() {
     let p = &plugin.params()[0];
     assert!(!plugin.param_text(p.id, plugin.param_value(p.id)).is_empty());
     assert!(plugin.failure().is_none());
+
+    // A crash of the plugin process: the audio side keeps running (silent, no waiting)
+    // and the plugin says what happened.
+    plugin.simulate_crash();
+    let started = std::time::Instant::now();
+    let mut last_peak = 1.0_f32;
+    for b in 0..20u64 {
+        node.process(
+            &ctx(&tempo, (200 + b) * 256),
+            &mut AudioIo::new(&ins, &mut outs, 256),
+            &[],
+        );
+        last_peak = outs[0].iter().fold(0.0, |m, s| m.max(s.abs()));
+    }
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    assert_eq!(last_peak, 0.0);
+    assert!(plugin.failure().is_some());
     drop(node);
 
     // A plugin that cannot load reports why instead of hanging.
