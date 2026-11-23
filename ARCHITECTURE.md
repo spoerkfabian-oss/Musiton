@@ -86,6 +86,7 @@ app → core, engine, io, project, ui, devices
 | Video | follows the playhead: keeps one `ffmpeg` process streaming frames while playing, decodes single frames while stopped | `mpsc` channels to/from the UI; pipe from `ffmpeg` |
 | Plugin sandbox (subprocess, optional per plugin) | `musiton --plugin-host …` runs one plugin; its audio thread serves blocks from shared memory, its main thread handles control messages and the editor | shared memory file (audio, events; one block pipelined) + length-prefixed JSON on stdin/stdout |
 | Scanner (subprocess) | `musiton --scan <file>` loads one plugin file and prints its plugins; killed after 20 s | JSON on stdout → `plugins.json` cache in the data folder |
+| Plugin self-test | `musiton --check-plugins <report.txt>` checks every installed plugin, each in its own `musiton --check-plugin …` process (load, sound, settings round trip, editor, sandbox); for remote checks where nobody can listen | plain-text report file |
 
 There is no `EngineEvent` ring. The UI needs only the latest playhead, CPU load, dropout count, meters and recording status, so these are atomics in `EngineShared` and in the meters.
 

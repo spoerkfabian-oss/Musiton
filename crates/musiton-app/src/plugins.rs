@@ -33,8 +33,12 @@ pub fn scan_mode(file: &Path) -> ! {
     }
 }
 
-/// Runs `cmd` (a scanner process) and parses its output; kills it after `timeout`.
-pub fn run_scanner(mut cmd: Command, timeout: Duration) -> Result<Vec<PluginInfo>, String> {
+/// Runs `cmd` (a scanner or checker process) and parses its JSON output; kills it after
+/// `timeout`.
+pub fn run_scanner<T: serde::de::DeserializeOwned>(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<T, String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -76,10 +80,7 @@ pub fn run_scanner(mut cmd: Command, timeout: Duration) -> Result<Vec<PluginInfo
             Ok(None) if started.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "did not finish loading within {} s",
-                    timeout.as_secs()
-                ));
+                return Err(format!("did not finish within {} s", timeout.as_secs()));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => return Err(e.to_string()),
@@ -88,11 +89,11 @@ pub fn run_scanner(mut cmd: Command, timeout: Duration) -> Result<Vec<PluginInfo
     let out = out.join().unwrap_or_default();
     let err = err.join().unwrap_or_default();
     if status.success() {
-        serde_json::from_str(out.trim()).map_err(|e| format!("unreadable scan result: {e}"))
+        serde_json::from_str(out.trim()).map_err(|e| format!("unreadable result: {e}"))
     } else if status.code() == Some(2) {
         Err(err.trim().to_owned())
     } else {
-        Err(format!("crashed while loading ({status})"))
+        Err(format!("crashed ({status})"))
     }
 }
 
@@ -415,14 +416,17 @@ mod tests {
     fn hanging_and_crashing_scanners_are_reported() {
         let mut hang = Command::new("sleep");
         hang.arg("5");
-        let err = run_scanner(hang, Duration::from_millis(200)).unwrap_err();
+        let err = run_scanner::<Vec<PluginInfo>>(hang, Duration::from_millis(200)).unwrap_err();
         assert!(err.contains("did not finish"), "{err}");
         let mut crash = Command::new("sh");
         crash.args(["-c", "kill -SEGV $$"]);
-        let err = run_scanner(crash, Duration::from_secs(5)).unwrap_err();
+        let err = run_scanner::<Vec<PluginInfo>>(crash, Duration::from_secs(5)).unwrap_err();
         assert!(err.contains("crashed"), "{err}");
         let mut ok = Command::new("sh");
         ok.args(["-c", "echo '[]'"]);
-        assert_eq!(run_scanner(ok, Duration::from_secs(5)).unwrap(), vec![]);
+        assert_eq!(
+            run_scanner::<Vec<PluginInfo>>(ok, Duration::from_secs(5)).unwrap(),
+            vec![]
+        );
     }
 }

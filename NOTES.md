@@ -470,5 +470,10 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Instrument 1 had a volume automation lane in Read mode with one point at maximum (probably a click into the automation lane). A Read lane owns the fader, so every move was undone at once. Now a fader or pan control owned by a Read lane is shown locked with an explanation, and an "Auto" switch under the fader turns those lanes off (the points stay). Test `read_automation_locks_the_fader_and_auto_switches_it_off`.
 - Instrument 2 renders cleanly (no invalid values, peak 0.25). Its sound pulses about 1.6 times per second because oscillator 2 is one semitone lower and 20 cents detuned against oscillator 1 on a very low note (C#0): a beating, not a bug.
 
+## Plugin self-test (owner test round 2)
+- The owner's Windows PC scans all 8 installed plugins (Dexed, Surge XT, Surge XT Effects, ValhallaVintageVerb, Vital) and Surge XT's editor opens.
+- `musiton --check-plugins <report.txt>` checks every installed plugin without anyone listening: load, a note (instrument) or a tone (effect) must give sound, settings are saved and restored, the editor opens and closes, the sandbox plays. Each plugin runs in its own process with a 120 s limit. Meant to be run on the owner's PC through Remote Control.
+- Known false alarm: effects that only act on a sidechain signal (e.g. DPF's Amplitude Imposer as VST3) report "no sound".
+
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

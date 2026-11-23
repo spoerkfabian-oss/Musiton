@@ -12,6 +12,7 @@ mod engine_graph;
 mod export;
 mod export_dialog;
 mod midi_record;
+mod plugin_check;
 mod plugin_set;
 mod plugins;
 mod presets;
@@ -62,6 +63,14 @@ fn main() -> anyhow::Result<()> {
         .is_some_and(|a| a == musiton_plugin_host::HOST_ARG)
     {
         std::process::exit(musiton_plugin_host::run_host(&all[1..]));
+    }
+    // Plugin self-test modes (see `plugin_check`).
+    match (all.first().map(String::as_str), all.get(1)) {
+        (Some(plugin_check::CHECK_ONE_ARG), _) => plugin_check::check_one(&all[1..]),
+        (Some(plugin_check::CHECK_ALL_ARG), Some(report)) => {
+            return plugin_check::check_all(Path::new(report));
+        }
+        _ => {}
     }
     // Scanner mode (started by Musiton itself to load plugins safely in another process).
     let mut args = std::env::args_os().skip(1);
