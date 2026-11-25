@@ -2681,6 +2681,9 @@ impl App {
         if self.plugins.update() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+        if self.plugins.take_changed() {
+            self.plugin_set.set_installed(&self.plugins.cache.plugins);
+        }
         self.plugins.window(&ctx);
         self.finish_recordings();
         self.finish_midi_recordings();

@@ -202,6 +202,8 @@ pub struct Plugins {
     /// Whether the plugin window is shown.
     pub open: bool,
     filter: String,
+    /// The list changed (loaded or scanned) since [`Plugins::take_changed`] last ran.
+    changed: bool,
 }
 
 impl Plugins {
@@ -217,6 +219,7 @@ impl Plugins {
             scanning: None,
             open: false,
             filter: String::new(),
+            changed: true,
         }
     }
 
@@ -284,10 +287,16 @@ impl Plugins {
         }
         if finished || *done >= *total {
             self.scanning = None;
+            self.changed = true;
             self.save();
             return false;
         }
         true
+    }
+
+    /// Whether the list was loaded or a scan finished since the last call.
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
     }
 
     fn save(&self) {

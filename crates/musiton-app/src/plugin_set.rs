@@ -4,12 +4,16 @@
 //! song is opened, so undoing and redoing the removal of a plugin keeps its settings.
 //! A plugin's settings are its own state, saved as `plugins/<device id>.state` next to the
 //! song file (and next to the autosave copy).
+//!
+//! A device whose plugin is not installed (or does not load) stays in the song as a
+//! placeholder: its saved state is kept in memory and written again on every save, and
+//! after the next plugin scan it is loaded again, also from a new install location.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use musiton_core::ids::DeviceId;
-use musiton_plugin_host::{Plugin, PluginFormat};
+use musiton_plugin_host::{Plugin, PluginFormat, PluginInfo};
 use musiton_project::{DeviceKind, Project};
 use musiton_ui::device_panel::PluginView;
 
@@ -35,18 +39,21 @@ fn plugin_devices(project: &Project) -> impl Iterator<Item = (DeviceId, &DeviceK
         .map(|d| (d.id, &d.kind))
 }
 
-/// Loads the plugin of `kind` and gives it the saved state from `state`, if any.
+/// Loads the plugin of `kind` and gives it the saved state from `state`, if any. When
+/// the plugin file is gone, an installed plugin with the same id from `installed` is used.
 fn instantiate(
     kind: &DeviceKind,
     state: Option<&[u8]>,
     rate: f64,
     block: usize,
+    installed: &[PluginInfo],
 ) -> Result<Plugin, String> {
     let DeviceKind::Plugin {
         format,
         path,
         plugin_id,
         sandbox,
+        name,
         ..
     } = kind
     else {
@@ -57,7 +64,20 @@ fn instantiate(
         "CLAP" => PluginFormat::Clap,
         other => return Err(format!("unknown plugin format {other}")),
     };
-    let file = Path::new(path);
+    let moved = installed
+        .iter()
+        .find(|p| p.format == format && p.id == *plugin_id)
+        .map(|p| p.path.as_path());
+    let file = match Path::new(path) {
+        f if f.exists() => f,
+        f => moved.filter(|m| m.exists()).ok_or_else(|| {
+            format!(
+                "{name} is not installed on this computer (looked for {}). Its settings \
+                 are kept; it plays again once it is installed and found by a plugin scan.",
+                f.display()
+            )
+        })?,
+    };
     let sandboxed = |why: Option<String>| {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         Plugin::load_sandboxed(&exe, format, file, plugin_id, rate, block).map_err(|e| match &why {
@@ -100,6 +120,10 @@ pub struct PluginSet {
     latencies: HashMap<DeviceId, u32>,
     /// The device settings each instance was made for (a change reloads it).
     kinds: HashMap<DeviceId, DeviceKind>,
+    /// Saved states of devices whose plugin did not load, kept so saving does not lose them.
+    placeholders: HashMap<DeviceId, Vec<u8>>,
+    /// The installed plugins from the last scan (to find plugins that moved).
+    installed: Vec<PluginInfo>,
 }
 
 impl Default for PluginSet {
@@ -113,6 +137,8 @@ impl Default for PluginSet {
             block: 1024,
             latencies: HashMap::new(),
             kinds: HashMap::new(),
+            placeholders: HashMap::new(),
+            installed: Vec::new(),
         }
     }
 }
@@ -126,7 +152,15 @@ impl PluginSet {
         self.retired.extend(self.instances.drain().map(|(_, p)| p));
         self.failed.clear();
         self.kinds.clear();
+        self.placeholders.clear();
         self.state_dir = state_dir;
+    }
+
+    /// Takes the plugin list of a finished scan and tries every device that did not load
+    /// again (a plugin may have been installed since).
+    pub fn set_installed(&mut self, installed: &[PluginInfo]) {
+        self.installed = installed.to_vec();
+        self.failed.clear();
     }
 
     /// Sets the engine's sample rate and block size; reloads every instance (keeping its
@@ -144,11 +178,14 @@ impl PluginSet {
         for (id, plugin) in old {
             let state = plugin.state().ok();
             if let Some(kind) = kinds.get(&id) {
-                match instantiate(kind, state.as_deref(), rate, block) {
+                match instantiate(kind, state.as_deref(), rate, block, &self.installed) {
                     Ok(p) => {
                         self.instances.insert(id, p);
                     }
                     Err(e) => {
+                        if let Some(state) = state {
+                            self.placeholders.insert(id, state);
+                        }
                         self.failed.insert(id, e);
                     }
                 }
@@ -182,18 +219,31 @@ impl PluginSet {
             .collect();
         for (id, kind) in todo {
             self.kinds.insert(id, kind.clone());
-            let state = carried.remove(&id).or_else(|| {
-                self.state_dir
-                    .as_deref()
-                    .and_then(|d| std::fs::read(state_file(d, id)).ok())
-            });
-            match instantiate(&kind, state.as_deref(), self.rate, self.block) {
+            let state = carried
+                .remove(&id)
+                .or_else(|| self.placeholders.remove(&id))
+                .or_else(|| {
+                    self.state_dir
+                        .as_deref()
+                        .and_then(|d| std::fs::read(state_file(d, id)).ok())
+                });
+            let loaded = instantiate(
+                &kind,
+                state.as_deref(),
+                self.rate,
+                self.block,
+                &self.installed,
+            );
+            match loaded {
                 Ok(p) => {
                     self.instances.insert(id, p);
                     added = true;
                 }
                 Err(e) => {
                     tracing::warn!("loading plugin device {} failed: {e}", id.0);
+                    if let Some(state) = state {
+                        self.placeholders.insert(id, state);
+                    }
                     self.failed.insert(id, e);
                 }
             }
@@ -326,6 +376,8 @@ impl PluginSet {
             if let Some(p) = self.instances.get(&id) {
                 let state = p.state().map_err(|e| e.to_string())?;
                 std::fs::write(state_file(dir, id), state).map_err(|e| e.to_string())?;
+            } else if let Some(state) = self.placeholders.get(&id) {
+                std::fs::write(state_file(dir, id), state).map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -347,7 +399,7 @@ impl PluginSet {
                 continue;
             };
             let state = live.state().ok();
-            match instantiate(kind, state.as_deref(), rate, block) {
+            match instantiate(kind, state.as_deref(), rate, block, &self.installed) {
                 Ok(p) => {
                     nodes.sources.insert(id, p.source());
                     keep.push(p);
@@ -429,6 +481,42 @@ mod tests {
         let mut set = PluginSet::default();
         set.sync(&broken);
         assert!(set.view(DeviceId(5)).is_some_and(|v| v.error.is_some()));
+    }
+
+    #[test]
+    fn a_missing_plugin_keeps_its_settings_and_loads_once_installed() {
+        let Some(project) = kars_project() else {
+            eprintln!("test plugin not installed; skipping");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("musiton-missing-{}", std::process::id()));
+        let saved = dir.join("old");
+        std::fs::create_dir_all(&saved).unwrap();
+        std::fs::write(state_file(&saved, DeviceId(5)), b"saved settings").unwrap();
+        // The song points at a place where the plugin is not installed.
+        let mut moved = project.clone();
+        let DeviceKind::Plugin { path, .. } = &mut moved.tracks[0].devices[0].kind else {
+            unreachable!()
+        };
+        let real = std::mem::replace(path, "/nonexistent/Kars.clap".into());
+        let mut set = PluginSet::default();
+        set.reset(Some(saved));
+        assert!(!set.sync(&moved));
+        let error = set.view(DeviceId(5)).and_then(|v| v.error).unwrap();
+        assert!(error.contains("not installed"), "{error}");
+        // Saving to another folder still writes the settings it had.
+        let new = dir.join("new");
+        set.save_states(&moved, &new).unwrap();
+        assert_eq!(
+            std::fs::read(state_file(&new, DeviceId(5))).unwrap(),
+            b"saved settings"
+        );
+        // A scan finds the plugin somewhere else: it loads from there.
+        let info = musiton_plugin_host::scan_file(Path::new(&real)).unwrap();
+        set.set_installed(&info);
+        assert!(set.sync(&moved));
+        assert!(set.view(DeviceId(5)).is_some_and(|v| v.error.is_none()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
