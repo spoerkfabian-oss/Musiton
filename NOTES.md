@@ -480,6 +480,7 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - `musiton --remote-control` listens on 127.0.0.1 only, on a random port, and is off unless started with that switch. A random token (from the standard library's randomly keyed hasher) is written with the port to `remote.json` in the data folder; requests without it are refused.
 - `musiton --remote '<json>'` is the client (prints one JSON answer; exit code 0 when ok). Positions for clicks are in screenshot pixels. Mouse and key commands answer once their last input step was fed to the window, so a following screenshot shows the result.
 - Tested in the cloud on a virtual X display: state, click "+ Instrument", play/stop, locate, screenshot, log, quit.
+- `windows-test.yml` (owner decision: test in a VM): GitHub's Windows machines run the plugin self-test with Surge XT and Dexed and a remote-control walk through the app after each installer build. Vital (account needed) and Valhalla are not downloaded automatically. No sound card or GPU there.
 - Limits: screenshots show Musiton's main window only, not plugin editor windows; native file dialogs cannot be driven (use `open`/`save` with a path).
 
 ## Open: CI maintenance

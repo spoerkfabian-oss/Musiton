@@ -52,6 +52,8 @@ pub enum Command {
         /// The file.
         path: PathBuf,
     },
+    /// Open the demo song.
+    Demo,
     /// Save the song (to `path`, or to its current file).
     Save {
         /// New file name, if any.
@@ -231,7 +233,8 @@ fn serve(
     Ok(())
 }
 
-/// Client mode: sends `command` (JSON) to the running app and prints the answer.
+/// Client mode: sends `command` (JSON, or `@file` holding the JSON) to the running app and
+/// prints the answer.
 /// Exit code 0 when the answer says ok, 1 otherwise.
 pub fn client(command: &str) -> ! {
     let result = (|| -> anyhow::Result<Value> {
@@ -242,7 +245,11 @@ pub fn client(command: &str) -> ! {
                 file.display()
             )
         })?)?;
-        let mut request: Value = serde_json::from_str(command)?;
+        let text = match command.strip_prefix('@') {
+            Some(file) => std::fs::read_to_string(file)?,
+            None => command.to_owned(),
+        };
+        let mut request: Value = serde_json::from_str(&text)?;
         request
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("the command must be a JSON object"))?

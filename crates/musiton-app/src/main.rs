@@ -2441,6 +2441,14 @@ impl App {
                     None => Some(json!({"ok": true, "song": self.doc.name()})),
                 }
             }
+            C::Demo => {
+                self.error = None;
+                self.open_demo();
+                match &self.error {
+                    Some(e) => fail(e.clone()),
+                    None => Some(json!({"ok": true})),
+                }
+            }
             C::Save { path } => {
                 if path.is_some() {
                     self.doc.path = path;
