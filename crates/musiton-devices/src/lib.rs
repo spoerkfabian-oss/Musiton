@@ -129,7 +129,7 @@ pub struct EffectType {
 }
 
 /// All built-in effects.
-pub const EFFECTS: [EffectType; 7] = [
+pub const EFFECTS: [EffectType; 13] = [
     EffectType {
         type_id: "eq",
         name: "EQ",
@@ -172,6 +172,42 @@ pub const EFFECTS: [EffectType; 7] = [
         params: &effects::utility::PARAMS,
         sidechain_param: None,
     },
+    EffectType {
+        type_id: "chorus",
+        name: "Chorus",
+        params: &effects::modulation::chorus::PARAMS,
+        sidechain_param: None,
+    },
+    EffectType {
+        type_id: "flanger",
+        name: "Flanger",
+        params: &effects::modulation::flanger::PARAMS,
+        sidechain_param: None,
+    },
+    EffectType {
+        type_id: "phaser",
+        name: "Phaser",
+        params: &effects::phaser::PARAMS,
+        sidechain_param: None,
+    },
+    EffectType {
+        type_id: "autofilter",
+        name: "Auto filter / wah",
+        params: &effects::autofilter::PARAMS,
+        sidechain_param: None,
+    },
+    EffectType {
+        type_id: "gate",
+        name: "Gate",
+        params: &effects::gate::PARAMS,
+        sidechain_param: Some(effects::gate::id::SIDECHAIN),
+    },
+    EffectType {
+        type_id: "transient",
+        name: "Transient shaper",
+        params: &effects::transient::PARAMS,
+        sidechain_param: None,
+    },
 ];
 
 /// Looks up an effect type.
@@ -201,6 +237,12 @@ pub fn create_effect(
         "reverb" => Box::<reverb::Reverb>::default(),
         "saturation" => Box::<saturation::Saturation>::default(),
         "limiter" => Box::<limiter::Limiter>::default(),
+        "chorus" => Box::new(modulation::Modulation::chorus()),
+        "flanger" => Box::new(modulation::Modulation::flanger()),
+        "phaser" => Box::<phaser::Phaser>::default(),
+        "autofilter" => Box::<autofilter::AutoFilter>::default(),
+        "gate" => Box::<gate::Gate>::default(),
+        "transient" => Box::<transient::Transient>::default(),
         _ => Box::<utility::Utility>::default(),
     };
     for &(id, value) in params {

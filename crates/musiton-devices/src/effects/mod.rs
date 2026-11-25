@@ -3,12 +3,17 @@
 // Per-channel loops over fixed `[_; 2]` arrays read more clearly with an index.
 #![allow(clippy::needless_range_loop)]
 
+pub mod autofilter;
 pub mod compressor;
 pub mod delay;
 pub mod eq;
+pub mod gate;
 pub mod limiter;
+pub mod modulation;
+pub mod phaser;
 pub mod reverb;
 pub mod saturation;
+pub mod transient;
 pub mod utility;
 
 use musiton_core::params::ParamInfo;

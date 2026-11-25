@@ -509,5 +509,11 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
   - A stream that builds but never asks for audio (device busy, headphones in phone mode) went unnoticed. The output now counts its callbacks; after 3 s without one (or after a driver error) Musiton switches once to the system default output and says so. Input is closed before the output when audio restarts.
 - To confirm on the owner's PC; if it still fails, the log (`%APPDATA%\Musiton\data\musiton.log`) says which step failed.
 
+## Phase 18 — More effects (2026-11-26)
+- Chorus (1–4 voices) and flanger (feedback ±0.95) share one delay-line node (`effects/modulation.rs`); their base delay glides over ~250 ms like tape, since a fast delay change is a pitch jump (click). Phaser: 4–12 first-order all-pass stages, swept ±2 octaves, feedback. Auto filter / wah: SVF (low/high/band-pass) moved by an LFO (sine, triangle, square, random; square and random smoothed over 3 ms) and an envelope follower; cutoff glides in octaves over 30 ms. Gate: peak detector, attack ramp, hold, release, range, optional sidechain (inputs 2/3, like the compressor). Transient shaper: a fast envelope and two followers of it (slow attack → hits, long release → ring-out), up to ±15 dB.
+- They use `voices::Params` for knob smoothing. Golden renders with default settings in `tests/effects_more.rs`; the knob test covers them.
+- Owner feedback the same night: built-in instruments sound alike and not real; unison/detune never sounds great. Decision: both ship sampled instruments and make the synths more alive (phase 18b). Reference audio comes via Google Drive (videos too; the sound is taken out with FFmpeg).
+- Bundled plugins: all six Surge XT/Dexed files pass the Windows plugin check. Odin 2, OB-Xd, Firefly Synth, sfizz, Cardinal, Airwindows and Dragonfly were added to the installer step (shipped only with a free licence per GitHub's data); results of that build still to be checked.
+
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

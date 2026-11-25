@@ -15,7 +15,7 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 - **Instruments and effects:**
   - Instruments: a polysynth (with unison detune and stereo width), a sampler with a drum mode, an FM synth (4 operators, 8 algorithms), a wavetable synth, an acid bass, a drawbar organ with rotary speaker, an electric piano, plucked strings (guitar, harp, pizzicato), a string ensemble and a drum synth (General MIDI drum keys, no samples). Every instrument has factory presets.
   - Shipped plugins: Surge XT, Surge XT Effects and Dexed come with Musiton (in its `plugins` folder, GPL-3.0).
-  - Effects: EQ with spectrum view, compressor, delay, FDN reverb, limiter, saturation and utility.
+  - Effects: EQ with spectrum view, compressor, delay, FDN reverb, limiter, saturation, utility, chorus, flanger, phaser, auto filter / wah, gate (with sidechain) and transient shaper.
   - Presets for all of them.
 - **Mixer:** faders, pan, mute, solo and solo-safe; sends and buses; meters in the mixer and in the track headers. Sidechain: a compressor can listen to another track (e.g. duck the bass with the kick).
 - **Automation:** lanes for volume, pan and every device parameter, with curves; read, write, touch and latch modes. "Capture automation" (Edit menu) turns knob moves made while playing into automation afterwards.

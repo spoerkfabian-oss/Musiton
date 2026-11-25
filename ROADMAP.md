@@ -14,7 +14,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 | 15 — Remote control | done |
 | 16 — Quick wins | done |
 | 17 — More instruments | done (bundled plugins to be confirmed on Windows) |
-| 18–19 | planned (owner decision 2026-11-25). |
+| 18 — More effects | done |
+| 18b — Realistic sound | next |
+| 19 | planned (owner decision 2026-11-25). |
 
 Work order from here: phases 18–19 in order; the owner's test of phase 12 (Vital, Valhalla, real sound) and phase 14's fresh-install check whenever the owner has time, with fixes from those tests first.
 
@@ -153,9 +155,15 @@ Owner decision (2026-11-25): also plucked strings, a string/pad ensemble, an aci
 - [x] Presets for every new instrument (a range of synth sounds)
 
 ## Phase 18 — More built-in effects
-- [ ] Chorus, flanger, phaser
-- [ ] Filter with LFO (auto-filter, wah)
-- [ ] Noise gate and transient shaper
+- [x] Chorus, flanger, phaser
+- [x] Filter with LFO (auto-filter, wah)
+- [x] Noise gate and transient shaper
+
+## Phase 18b — Realistic sound (owner decision 2026-11-26)
+The owner finds the built-in instruments too alike and not real; unison/detune never sounds great. Both ways:
+- [ ] Ship free sampled instruments (real recordings, CC0/CC-BY): grand piano, orchestra (strings, brass, woodwinds), a real drum kit, guitar/bass, played through sfizz or the built-in sampler
+- [ ] Synths sound more alive: analog-style drift per voice and oscillator, random start phases, better unison (uneven spread, per-voice stereo), filter drive/character
+- [ ] Owner sends reference audio (Google Drive, also videos): measure spectrum, envelope, stereo width and detune and match the presets to it
 
 ## Phase 19 — Bigger features
 - [ ] Chord lane under the ruler; the piano roll can follow it
