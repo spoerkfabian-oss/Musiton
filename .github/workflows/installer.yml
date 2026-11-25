@@ -73,6 +73,10 @@ jobs:
             Expand-Archive dl\surge-src.zip -DestinationPath dl\surge-src
             $root = Get-ChildItem dl\surge-src -Directory | Select-Object -First 1
             Copy-Item "$($root.FullName)\resources\data" "$out\SurgeXTData" -Recurse
+            # The installer builder (NSIS) cannot take '$' in file names (e.g. "Ka$$h.fxp").
+            Get-ChildItem "$out\SurgeXTData" -Recurse | Where-Object { $_.Name -match '\$' } |
+              Sort-Object { $_.FullName.Length } -Descending |
+              ForEach-Object { Rename-Item -LiteralPath $_.FullName -NewName ($_.Name -replace '\$', 'S'); Write-Host "renamed $($_.Name)" }
             Copy-Item "$($root.FullName)\LICENSE" "$out\GPL-3.0.txt"
           } else {
             Write-Warning "Surge XT factory data not found; Surge XT starts without its presets"
