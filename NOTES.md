@@ -502,5 +502,12 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - CPU (16 voices, this machine, one core): organ about 10 %, wavetable "Sweep pad" (4× unison) about 10 %, the rest 0.3–5 %.
 - Known: the piano roll does not yet show drum names for the drum synth's keys; the drum synth ignores note-offs (one-shots).
 
+## Owner report: Bluetooth headphones give no sound (2026-11-25)
+- Report: choosing Bluetooth headphones as output gives no sound; going back to the laptop speakers stays silent until Musiton is restarted. Not reproducible in the cloud (no Bluetooth); fixed for the likely causes:
+  - The input is on by default with "System default". With Bluetooth headphones connected, Windows often makes their microphone the default input; opening it switches the headphones into phone mode (hands-free profile) and their stereo output goes silent. Musiton now skips a default input that is a Bluetooth headset microphone (name contains "Hands-Free", or the same model name as the output with "Headset"/"Bluetooth") and says why in the status bar; the audio dialog marks such inputs. Choosing one explicitly still works.
+  - A sample rate saved for the previous device made the new one fail ("unsupported sample rate"). The output now falls back to the device's own rate, and the dialog resets rate and buffer size that the newly chosen device does not offer.
+  - A stream that builds but never asks for audio (device busy, headphones in phone mode) went unnoticed. The output now counts its callbacks; after 3 s without one (or after a driver error) Musiton switches once to the system default output and says so. Input is closed before the output when audio restarts.
+- To confirm on the owner's PC; if it still fails, the log (`%APPDATA%\Musiton\data\musiton.log`) says which step failed.
+
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

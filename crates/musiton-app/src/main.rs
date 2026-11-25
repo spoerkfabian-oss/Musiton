@@ -53,6 +53,8 @@ static ALLOC: musiton_engine::rt::AllocDisabler = musiton_engine::rt::AllocDisab
 const APP_NAME: &str = "Musiton";
 /// How long status messages stay visible.
 const STATUS_TIME: Duration = Duration::from_secs(5);
+/// An output that has not asked for audio this long after starting counts as not playing.
+const AUDIO_START_TIME: Duration = Duration::from_secs(3);
 
 /// Set (to anything) when Musiton restarts itself with the OpenGL renderer.
 const RENDERER_ENV: &str = "MUSITON_RENDERER";
@@ -247,6 +249,10 @@ struct App {
     browser: Browser,
     input: Option<musiton_io::audio::AudioInputStream>,
     input_error: Option<String>,
+    /// When the output was last started (for noticing one that never plays).
+    audio_started: Instant,
+    /// The chosen output failed and the system default is used instead.
+    audio_fallback: bool,
     writers: Vec<musiton_io::recording::DiskWriter>,
     measuring: bool,
     midi: Option<musiton_io::midi::MidiInputStream>,
@@ -396,6 +402,8 @@ impl App {
             browser: Browser::default(),
             input: None,
             input_error: None,
+            audio_started: Instant::now(),
+            audio_fallback: false,
             writers: Vec::new(),
             measuring: false,
             midi: None,
@@ -449,20 +457,42 @@ impl App {
     // ---- audio -------------------------------------------------------------------------
 
     fn restart_audio(&mut self) {
+        self.audio_fallback = false;
+        let device = self.settings.audio.output_device.clone();
+        self.start_audio(device);
+    }
+
+    /// Opens `device` (`None`: the system default) with the saved audio settings.
+    fn start_audio(&mut self, device: Option<String>) {
+        // Close the input first: it may hold the headset that the new output needs.
+        self.input = None;
+        self.input_error = None;
         self.output = None;
+        self.audio_started = Instant::now();
         let a = &self.settings.audio;
         let request = OutputRequest {
-            device_id: a.output_device.clone(),
+            device_id: device,
             sample_rate: a.sample_rate,
             buffer_size: a.buffer_size,
         };
-        self.input = None;
-        self.input_error = None;
         match audio::start_output(&request) {
             Ok((out, mut engine)) => {
                 self.sync.reset();
                 self.graph = GraphState::default();
-                if a.input_enabled {
+                // The default input of a PC with Bluetooth headphones is often their
+                // microphone; opening it puts them into phone mode and silences the music.
+                let hands_free = a.input_enabled
+                    && a.input_device.is_none()
+                    && audio::default_input_name()
+                        .is_some_and(|n| audio::is_hands_free(&n, Some(&out.info().device_name)));
+                if hands_free {
+                    self.input_error = Some(
+                        "not opened: the default input is a Bluetooth headset microphone, \
+                         which would switch the headphones to phone sound. Choose an input in \
+                         Options > Audio settings to record."
+                            .to_owned(),
+                    );
+                } else if a.input_enabled {
                     let rate = out.info().sample_rate;
                     match audio::start_input(a.input_device.as_deref(), rate, a.buffer_size) {
                         Ok((stream, source)) => {
@@ -1101,6 +1131,34 @@ impl App {
                 Ok(()) => self.set_status(format!("Recorded {}", take.file_name)),
                 Err(e) => self.set_status(format!("Adding the recording failed: {e}")),
             }
+        }
+    }
+
+    /// Notices an output that stopped (or never started) playing and switches to the
+    /// system default output once, so there is sound again without a restart.
+    fn check_audio(&mut self) {
+        let Some((out, _)) = &self.output else {
+            return;
+        };
+        let silent = out.callbacks() == 0 && self.audio_started.elapsed() > AUDIO_START_TIME;
+        if !(out.has_failed() || silent) {
+            return;
+        }
+        let name = out.info().device_name.clone();
+        if self.settings.audio.output_device.is_some() && !self.audio_fallback {
+            tracing::warn!("{name} does not play; switching to the system default output");
+            self.audio_fallback = true;
+            self.start_audio(None);
+            self.audio_error = None;
+            self.set_status(format!(
+                "{name} did not play, so Musiton switched to the system default output. \
+                 Check Options > Audio settings."
+            ));
+        } else if silent && self.audio_error.is_none() {
+            self.audio_error = Some(format!(
+                "{name} does not play (in use by another program, or Bluetooth headphones \
+                 in phone mode?)"
+            ));
         }
     }
 
@@ -2771,6 +2829,7 @@ impl App {
             self.plugin_set.set_installed(&self.plugins.cache.plugins);
         }
         self.plugins.window(&ctx);
+        self.check_audio();
         self.finish_recordings();
         self.finish_midi_recordings();
         self.update_automation_recording(&ctx);

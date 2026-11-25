@@ -82,6 +82,8 @@ pub struct AudioOutput {
     _stream: cpal::Stream,
     info: ActiveOutput,
     failed: Arc<AtomicBool>,
+    /// Audio callbacks so far (a device that never asks for audio stays at 0).
+    callbacks: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl AudioOutput {
@@ -94,6 +96,38 @@ impl AudioOutput {
     pub fn has_failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
     }
+
+    /// How many times the device asked for audio so far.
+    pub fn callbacks(&self) -> u64 {
+        self.callbacks.load(Ordering::Relaxed)
+    }
+}
+
+/// Whether an input device is the microphone of a Bluetooth headset (its "hands-free"
+/// side). Opening it switches the headset to phone mode: its normal stereo output goes
+/// silent or sounds like a telephone.
+pub fn is_hands_free(input_name: &str, output_name: Option<&str>) -> bool {
+    let input = input_name.to_lowercase();
+    if input.contains("hands-free") || input.contains("handsfree") || input.contains("freisprech") {
+        return true;
+    }
+    // Same headset on both sides, e.g. "Headset (WH-1000XM4)" and "Kopfhörer (WH-1000XM4
+    // Stereo)": compare the model names in brackets.
+    let model = |name: &str| -> Option<String> {
+        let inner = name.split_once('(')?.1.split(')').next()?.to_lowercase();
+        let first = inner.split_whitespace().next()?.to_owned();
+        (first.len() >= 3).then_some(first)
+    };
+    match (output_name.and_then(model), model(input_name)) {
+        (Some(o), Some(i)) => o == i && (input.contains("headset") || input.contains("bluetooth")),
+        _ => false,
+    }
+}
+
+/// Name of the system's default input device, if there is one.
+pub fn default_input_name() -> Option<String> {
+    let device = cpal::default_host().default_input_device()?;
+    device.description().ok().map(|d| d.name().to_owned())
 }
 
 /// Lists all output devices of the default host.
@@ -302,16 +336,31 @@ pub fn start_output(request: &OutputRequest) -> Result<(AudioOutput, EngineHandl
 
     let default = device.default_output_config()?;
     let channels = default.channels();
-    let sample_rate = request.sample_rate.unwrap_or(default.sample_rate());
-    let format = device
+    let ranges: Vec<_> = device
         .supported_output_configs()?
         .filter(|r| r.channels() == channels)
-        .filter(|r| (r.min_sample_rate()..=r.max_sample_rate()).contains(&sample_rate))
-        .map(|r| r.sample_format())
-        .max_by_key(|f| format_rank(*f))
-        .ok_or(AudioError::UnsupportedSampleRate(sample_rate))?;
+        .collect();
+    let format_for = |rate: u32| {
+        ranges
+            .iter()
+            .filter(|r| (r.min_sample_rate()..=r.max_sample_rate()).contains(&rate))
+            .map(|r| r.sample_format())
+            .max_by_key(|f| format_rank(*f))
+    };
+    let wanted = request.sample_rate.unwrap_or(default.sample_rate());
+    // A rate the device cannot do (e.g. one chosen for another device) falls back to the
+    // device's own rate instead of leaving the user without sound.
+    let (sample_rate, format) = match format_for(wanted) {
+        Some(f) => (wanted, f),
+        None => {
+            let rate = default.sample_rate();
+            tracing::warn!("{device_name} cannot run at {wanted} Hz; using {rate} Hz");
+            (rate, format_for(rate).unwrap_or(default.sample_format()))
+        }
+    };
 
     let failed = Arc::new(AtomicBool::new(false));
+    let callbacks = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut config = StreamConfig {
         channels,
         sample_rate,
@@ -319,16 +368,55 @@ pub fn start_output(request: &OutputRequest) -> Result<(AudioOutput, EngineHandl
             .buffer_size
             .map_or(BufferSize::Default, BufferSize::Fixed),
     };
-    let (stream, handle) = match build_stream(&device, config, format, &failed) {
+    let (stream, handle) = match build_stream(&device, config, format, &failed, &callbacks) {
         Ok(s) => s,
         Err(e) if config.buffer_size != BufferSize::Default => {
             tracing::warn!("fixed buffer size rejected ({e}), using the device default");
             config.buffer_size = BufferSize::Default;
-            build_stream(&device, config, format, &failed)?
+            build_stream(&device, config, format, &failed, &callbacks)?
         }
         Err(e) => return Err(e),
     };
-    stream.play()?;
+    if let Err(e) = stream.play() {
+        tracing::warn!("{device_name} did not start with the fixed buffer ({e}); retrying");
+        drop(stream);
+        drop(handle);
+        config.buffer_size = BufferSize::Default;
+        let (stream, handle) = build_stream(&device, config, format, &failed, &callbacks)?;
+        stream.play()?;
+        return Ok(finish(
+            stream,
+            handle,
+            device_name,
+            config,
+            failed,
+            callbacks,
+            format,
+        ));
+    }
+    Ok(finish(
+        stream,
+        handle,
+        device_name,
+        config,
+        failed,
+        callbacks,
+        format,
+    ))
+}
+
+/// Wraps a started stream.
+fn finish(
+    stream: cpal::Stream,
+    handle: EngineHandle,
+    device_name: String,
+    config: StreamConfig,
+    failed: Arc<AtomicBool>,
+    callbacks: Arc<std::sync::atomic::AtomicU64>,
+    format: SampleFormat,
+) -> (AudioOutput, EngineHandle) {
+    let sample_rate = config.sample_rate;
+    let channels = config.channels;
     let info = ActiveOutput {
         device_name,
         sample_rate,
@@ -336,14 +424,15 @@ pub fn start_output(request: &OutputRequest) -> Result<(AudioOutput, EngineHandl
         channels,
     };
     tracing::info!(?info, ?format, "audio output started");
-    Ok((
+    (
         AudioOutput {
             _stream: stream,
             info,
             failed,
+            callbacks,
         },
         handle,
-    ))
+    )
 }
 
 fn build_input<T>(
@@ -393,12 +482,13 @@ fn build_stream(
     config: StreamConfig,
     format: SampleFormat,
     failed: &Arc<AtomicBool>,
+    callbacks: &Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<(cpal::Stream, EngineHandle), AudioError> {
     match format {
-        SampleFormat::F32 => build_typed::<f32>(device, config, failed),
-        SampleFormat::I32 => build_typed::<i32>(device, config, failed),
-        SampleFormat::I16 => build_typed::<i16>(device, config, failed),
-        SampleFormat::U16 => build_typed::<u16>(device, config, failed),
+        SampleFormat::F32 => build_typed::<f32>(device, config, failed, callbacks),
+        SampleFormat::I32 => build_typed::<i32>(device, config, failed, callbacks),
+        SampleFormat::I16 => build_typed::<i16>(device, config, failed, callbacks),
+        SampleFormat::U16 => build_typed::<u16>(device, config, failed, callbacks),
         other => Err(AudioError::UnsupportedFormat(other.to_string())),
     }
 }
@@ -407,6 +497,7 @@ fn build_typed<T>(
     device: &cpal::Device,
     config: StreamConfig,
     failed: &Arc<AtomicBool>,
+    callbacks: &Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<(cpal::Stream, EngineHandle), AudioError>
 where
     T: SizedSample + FromSample<f32>,
@@ -421,6 +512,7 @@ where
     let err_shared = shared.clone();
     let err_failed = failed.clone();
     let cb_failed = failed.clone();
+    let heartbeat = callbacks.clone();
     // Set once the engine panicked: from then on only silence is output and the device is
     // reported as failed, so the app restarts audio with a fresh engine.
     let mut panicked = false;
@@ -428,6 +520,7 @@ where
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            heartbeat.fetch_add(1, Ordering::Relaxed);
             if panicked {
                 data.fill(T::EQUILIBRIUM);
                 return;
@@ -513,6 +606,26 @@ mod tests {
             vec![128, 256, 512]
         );
         assert_eq!(supported_buffer_sizes(None), STANDARD_BUFFER_SIZES.to_vec());
+    }
+
+    #[test]
+    fn bluetooth_headset_microphones_are_recognized() {
+        assert!(is_hands_free(
+            "Headset (WH-1000XM4 Hands-Free AG Audio)",
+            None
+        ));
+        assert!(is_hands_free(
+            "Headset (WH-1000XM4)",
+            Some("Kopfhörer (WH-1000XM4 Stereo)")
+        ));
+        assert!(!is_hands_free(
+            "Mikrofonarray (Realtek(R) Audio)",
+            Some("Lautsprecher (Realtek(R) Audio)")
+        ));
+        assert!(!is_hands_free(
+            "Microphone (USB Audio)",
+            Some("Kopfhörer (WH-1000XM4)")
+        ));
     }
 
     #[test]

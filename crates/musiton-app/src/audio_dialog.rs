@@ -93,6 +93,7 @@ impl AudioDialog {
                     (Some(_), Some(d)) => d.name.clone(),
                     (Some(id), None) => format!("{id} (not connected)"),
                 };
+                let before = self.draft.output_device.clone();
                 egui::ComboBox::from_id_salt("device")
                     .selected_text(text)
                     .width(320.0)
@@ -106,6 +107,30 @@ impl AudioDialog {
                             );
                         }
                     });
+                if self.draft.output_device != before {
+                    // A rate or buffer size picked for the old device may not exist on the
+                    // new one (Bluetooth headphones often run only at 44.1 or 48 kHz).
+                    let new = match &self.draft.output_device {
+                        Some(id) => self.devices.iter().find(|d| &d.id == id),
+                        None => default_dev,
+                    };
+                    if let Some(d) = new {
+                        if self
+                            .draft
+                            .sample_rate
+                            .is_some_and(|r| !d.sample_rates.contains(&r))
+                        {
+                            self.draft.sample_rate = None;
+                        }
+                        if self
+                            .draft
+                            .buffer_size
+                            .is_some_and(|b| !d.buffer_sizes.contains(&b))
+                        {
+                            self.draft.buffer_size = None;
+                        }
+                    }
+                }
                 ui.end_row();
 
                 ui.label("Sample rate");
@@ -147,7 +172,16 @@ impl AudioDialog {
                         for d in &self.inputs {
                             let sel = self.draft.input_enabled
                                 && self.draft.input_device.as_deref() == Some(d.id.as_str());
-                            let label = format!("{} ({} ch)", d.name, d.channels);
+                            let out_name = caps.map(|c| c.name.as_str());
+                            let label = if audio::is_hands_free(&d.name, out_name) {
+                                format!(
+                                    "{} ({} ch) – Bluetooth headset mic: switches the headphones \
+                                     to phone sound",
+                                    d.name, d.channels
+                                )
+                            } else {
+                                format!("{} ({} ch)", d.name, d.channels)
+                            };
                             if ui.selectable_label(sel, label).clicked() {
                                 self.draft.input_enabled = true;
                                 self.draft.input_device = Some(d.id.clone());
