@@ -30,6 +30,7 @@ pub enum AppCommand {
     ShowVideo,
     Undo,
     Redo,
+    CaptureAutomation,
     Settings,
     AudioSettings,
     Plugins,
@@ -119,6 +120,12 @@ const ENTRIES: &[Entry] = &[
     key("Rename selected track", "name", "F2", Key::F2),
     app("Undo", "", "Ctrl+Z", AppCommand::Undo),
     app("Redo", "", "Ctrl+Y", AppCommand::Redo),
+    app(
+        "Capture automation",
+        "knob fader moves last playback record afterwards",
+        "",
+        AppCommand::CaptureAutomation,
+    ),
     app("New project", "song file", "Ctrl+N", AppCommand::New),
     app(
         "Open project…",

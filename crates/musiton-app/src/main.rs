@@ -256,6 +256,8 @@ struct App {
         std::collections::HashMap<musiton_core::ids::TrackId, Vec<musiton_engine::nodes::RecMidi>>,
     /// Control moves being recorded into automation lanes.
     auto_rec: auto_record::AutoRecorder,
+    /// Control moves made while playing without recording.
+    capture: auto_record::Capture,
     export_dialog: export_dialog::ExportDialog,
     settings_dialog: settings_dialog::SettingsDialog,
     /// Offered after a crash (one at a time).
@@ -400,6 +402,7 @@ impl App {
             midi_error: None,
             midi_rec: std::collections::HashMap::new(),
             auto_rec: auto_record::AutoRecorder::default(),
+            capture: auto_record::Capture::default(),
             export_dialog: export_dialog::ExportDialog::default(),
             settings_dialog: settings_dialog::SettingsDialog::default(),
             recovery: Vec::new(),
@@ -1274,6 +1277,21 @@ impl App {
         }
     }
 
+    /// Writes the control moves of the last playback into automation lanes.
+    fn capture_automation(&mut self) {
+        let Some((edit, count)) = self.capture.take_edit(&self.doc.project) else {
+            self.set_status("Nothing to capture: move a knob or fader while playing first");
+            return;
+        };
+        match self.doc.perform(edit, false) {
+            Ok(()) => {
+                self.sync_automation();
+                self.set_status(format!("Captured automation for {count} control(s)"));
+            }
+            Err(e) => self.set_status(format!("Capturing automation failed: {e}")),
+        }
+    }
+
     /// Runs an entry picked in the command search.
     fn run_command(&mut self, ctx: &egui::Context, action: command_search::Action) {
         use command_search::{Action, AppCommand as C};
@@ -1299,6 +1317,7 @@ impl App {
             C::ImportVideo => self.import_video(),
             C::ShowVideo => self.video.open = true,
             C::Undo => self.undo(),
+            C::CaptureAutomation => self.capture_automation(),
             C::Redo => self.redo(),
             C::Settings => self.settings_dialog.open = true,
             C::AudioSettings => self.audio_dialog.open(&self.settings.audio),
@@ -1388,6 +1407,20 @@ impl App {
                     .clicked()
                 {
                     self.redo();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        !self.capture.is_empty(),
+                        egui::Button::new("Capture automation"),
+                    )
+                    .on_hover_text(
+                        "Turns the knob and fader moves of the last playback into automation",
+                    )
+                    .clicked()
+                {
+                    self.capture_automation();
+                    ui.close();
                 }
             });
             ui.menu_button("Options", |ui| {
@@ -1858,7 +1891,7 @@ impl App {
     }
 
     /// While playing, a plugin parameter move goes into its automation lane if that lane
-    /// records (Write, Touch or Latch).
+    /// records (Write, Touch or Latch); otherwise it is kept for "Capture automation".
     fn record_plugin_move(&mut self, device: musiton_core::ids::DeviceId, param: u32, value: f64) {
         let Some((_, engine)) = &self.output else {
             return;
@@ -1879,15 +1912,16 @@ impl App {
             device,
             param: u64::from(param),
         };
-        if auto_record::AutoRecorder::recording_mode(p, track, target).is_none() {
-            return;
-        }
         let sr = f64::from(engine.sample_rate());
         let tick = musiton_core::Tick(
             p.tempo
                 .sample_to_tick(engine.shared().playhead() as f64, sr)
                 .round() as i64,
         );
+        if auto_record::AutoRecorder::recording_mode(p, track, target).is_none() {
+            self.capture.touch(track, target, value as f32, tick);
+            return;
+        }
         self.auto_rec
             .touch(&self.doc.project, track, target, value as f32, tick);
         self.sync_automation();
@@ -2157,21 +2191,22 @@ impl App {
             }
             _ => {}
         }
-        let moves: Vec<_> = moves
-            .into_iter()
-            .filter(|(t, target, _)| {
-                auto_record::AutoRecorder::recording_mode(p, *t, *target).is_some()
-            })
-            .collect();
-        if moves.is_empty() {
-            return false;
-        }
         let sr = f64::from(engine.sample_rate());
         let tick = musiton_core::Tick(
             p.tempo
                 .sample_to_tick(engine.shared().playhead() as f64, sr)
                 .round() as i64,
         );
+        let (moves, free): (Vec<_>, Vec<_>) = moves.into_iter().partition(|(t, target, _)| {
+            auto_record::AutoRecorder::recording_mode(p, *t, *target).is_some()
+        });
+        // Moves on lanes that do not record are kept for "Capture automation".
+        for (track, target, value) in free {
+            self.capture.touch(track, target, value, tick);
+        }
+        if moves.is_empty() {
+            return false;
+        }
         for (track, target, value) in moves {
             self.auto_rec
                 .touch(&self.doc.project, track, target, value, tick);
@@ -2209,6 +2244,7 @@ impl App {
             None => (false, musiton_core::Tick(0)),
         };
         let edits = if playing && !self.was_playing {
+            self.capture.start_pass();
             let mut rec = std::mem::take(&mut self.auto_rec);
             let current = |t, x| self.target_value(t, x);
             rec.start_write_lanes(&self.doc.project, &current, tick);

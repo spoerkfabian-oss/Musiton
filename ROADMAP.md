@@ -11,9 +11,11 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 | 13 — Export | done |
 | 14 — Polish & release | done. Still needs the owner's test on a fresh Windows PC with the installer. |
 | Later list | done except the plugin items, which come with phase 12. |
-| 15–19 | planned (owner decision 2026-11-25). |
+| 15 — Remote control | done |
+| 16 — Quick wins | done |
+| 17–19 | planned (owner decision 2026-11-25). |
 
-Work order from here: phase 15 (remote control), then the owner's test of phase 12 (and phase 14's fresh-install check) through it; fixes from those tests; then phases 16–19 in order.
+Work order from here: phases 17–19 in order; the owner's test of phase 12 (Vital, Valhalla, real sound) and phase 14's fresh-install check whenever the owner has time, with fixes from those tests first.
 
 ## Phase 0 — Foundation
 - [x] Cargo workspace with all crates from ARCHITECTURE.md (empty stubs), `rust-toolchain.toml`, `.gitignore`, README; licence: ask owner (suggest MIT OR Apache-2.0)
@@ -130,11 +132,11 @@ Owner decision (2026-11-25): first of the new phases, so Claude can test Musiton
 
 ## Phase 16 — Quick wins
 Ideas taken from LYNX SHARE (ideas only, no code: it is AGPL).
-- [ ] Missing plugins keep a placeholder with their saved settings; they sound again once installed
-- [ ] Command search: a shortcut opens a search field for every command and setting
-- [ ] Capture automation: turn the knob moves made while playing (without recording) into automation afterwards
-- [ ] Export MP3 and OGG
-- [ ] Polysynth: unison voices with detune and stereo spread
+- [x] Missing plugins keep a placeholder with their saved settings; they sound again once installed
+- [x] Command search: a shortcut opens a search field for every command and setting
+- [x] Capture automation: turn the knob moves made while playing (without recording) into automation afterwards
+- [x] Export MP3 and OGG
+- [x] Polysynth: unison voices with detune and stereo spread
 
 ## Phase 17 — More built-in instruments
 - [ ] Wavetable synth

@@ -1,4 +1,5 @@
-//! Recording control moves into automation lanes (Write, Touch, Latch).
+//! Recording control moves into automation lanes (Write, Touch, Latch), and capturing
+//! moves made while playing without recording so they can become automation afterwards.
 
 use std::collections::HashMap;
 
@@ -148,6 +149,79 @@ impl AutoRecorder {
     }
 }
 
+/// Control moves made while playing on lanes that do not record. "Capture automation"
+/// turns the moves of the last playback with moves into automation.
+#[derive(Debug, Default)]
+pub struct Capture {
+    moves: HashMap<(TrackId, ParamTarget), Vec<AutoPoint>>,
+    /// Playback started again: the next move replaces the moves kept so far.
+    fresh: bool,
+}
+
+impl Capture {
+    /// Playback started.
+    pub fn start_pass(&mut self) {
+        self.fresh = true;
+    }
+
+    /// Whether there is anything to capture.
+    pub fn is_empty(&self) -> bool {
+        self.moves.is_empty()
+    }
+
+    /// A control of `target` on `track` moved to the normalized `value` at `tick`.
+    pub fn touch(&mut self, track: TrackId, target: ParamTarget, value: f32, tick: Tick) {
+        if std::mem::take(&mut self.fresh) {
+            self.moves.clear();
+        }
+        let points = self.moves.entry((track, target)).or_default();
+        // The loop jumped back: the newer pass wins from here on.
+        if points.last().is_some_and(|p| p.tick > tick) {
+            points.retain(|p| p.tick < tick);
+        }
+        points.push(AutoPoint {
+            tick,
+            value,
+            curve: 0.0,
+        });
+    }
+
+    /// One undo step that writes the captured moves into automation lanes (adding lanes
+    /// where needed), and the number of controls; clears the capture.
+    pub fn take_edit(&mut self, project: &Project) -> Option<(Edit, usize)> {
+        let mut by_track: HashMap<TrackId, Vec<AutomationLane>> = HashMap::new();
+        let mut count = 0;
+        for ((track, target), points) in std::mem::take(&mut self.moves) {
+            let Some(t) = project.track(track) else {
+                continue;
+            };
+            let lanes = by_track
+                .entry(track)
+                .or_insert_with(|| t.automation.clone());
+            let i = match lanes.iter().position(|l| l.target == target) {
+                Some(i) => i,
+                None => {
+                    lanes.push(AutomationLane {
+                        target,
+                        points: Vec::new(),
+                        mode: AutoMode::Read,
+                    });
+                    lanes.len() - 1
+                }
+            };
+            if let Some(lane) = lanes.get_mut(i) {
+                lane.points = merge(lane, &thin(&points), false);
+                count += 1;
+            }
+        }
+        let edits: Vec<Edit> = by_track
+            .into_iter()
+            .map(|(track, lanes)| Edit::SetAutomation { track, lanes })
+            .collect();
+        (!edits.is_empty()).then_some((Edit::Batch(edits), count))
+    }
+}
+
 /// Drops points that lie on the line between their neighbours (within [`THIN`]).
 pub fn thin(points: &[AutoPoint]) -> Vec<AutoPoint> {
     let mut out: Vec<AutoPoint> = Vec::new();
@@ -234,6 +308,36 @@ mod tests {
 
     fn lane(p: &Project) -> &AutomationLane {
         &p.tracks[0].automation[0]
+    }
+
+    #[test]
+    fn captured_moves_become_automation_and_the_newest_loop_pass_wins() {
+        let mut p = project(AutoMode::Read);
+        p.tracks[0].automation.clear();
+        let mut c = Capture::default();
+        c.start_pass();
+        for (k, v) in [(1000, 0.2), (2000, 0.4), (3000, 0.9)] {
+            c.touch(TrackId(1), ParamTarget::Volume, v, Tick(k));
+        }
+        // The loop jumps back to 1500 and the knob is moved again.
+        c.touch(TrackId(1), ParamTarget::Volume, 0.6, Tick(1500));
+        // A new playback without moves keeps the capture.
+        c.start_pass();
+        let (edit, count) = c.take_edit(&p).unwrap();
+        assert_eq!(count, 1);
+        assert!(c.is_empty());
+        UndoStack::new().perform(&mut p, edit, false).unwrap();
+        let l = lane(&p);
+        assert_eq!(l.mode, AutoMode::Read);
+        assert!((l.value_at(1000.0).unwrap() - 0.2).abs() < 1e-6);
+        assert!((l.value_at(1500.0).unwrap() - 0.6).abs() < 1e-6);
+        assert!((l.value_at(5000.0).unwrap() - 0.6).abs() < 1e-6);
+        // Moves in a new playback replace the old ones.
+        c.touch(TrackId(1), ParamTarget::Pan, 0.5, Tick(0));
+        c.start_pass();
+        c.touch(TrackId(1), ParamTarget::Volume, 0.1, Tick(0));
+        let (_, count) = c.take_edit(&p).unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

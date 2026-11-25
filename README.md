@@ -11,15 +11,16 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 - **Audio:** import of WAV, FLAC, MP3, OGG and AIFF; recording with punch-in/out, loop takes and latency compensation. Comping: "Takes" shows every recorded take under its track; drag over a take to use it for that range. Warp: right-click a clip → "Warp to tempo" to make loops follow the song tempo (pitch stays).
 - **MIDI:** keyboard input, recording (replace or overdub), piano roll with velocity and controller lanes (mod wheel, volume, pan, expression, sustain pedal, any CC) and quantize, and .mid import/export including controllers.
 - **Step sequencer:** the "Steps" tab shows the open MIDI clip as a grid (1/8, 1/16 or 1/32 steps); drum-mode samplers get one row per pad; Shift+click accents a step.
-- **Plugins:** VST3 and CLAP instruments and effects (Options → Plugins… lists what was found; plugins are scanned in a separate process, so a crashing plugin cannot take Musiton down). Their settings are saved with the song; delays of plugins are compensated; each plugin can run in its own process ("Run in sandbox"), so a crash inside it cannot take Musiton down. Plugin editors open in their own window (Windows).
+- **Plugins:** VST3 and CLAP instruments and effects (Options → Plugins… lists what was found; plugins are scanned in a separate process, so a crashing plugin cannot take Musiton down). Their settings are saved with the song; delays of plugins are compensated; each plugin can run in its own process ("Run in sandbox"), so a crash inside it cannot take Musiton down. Plugin editors open in their own window (Windows). A song whose plugin is not installed keeps the plugin's settings; it plays again once the plugin is installed and scanned.
 - **Instruments and effects:**
   - Instruments: a polysynth (with unison detune and stereo width) and a sampler with a drum mode.
   - Effects: EQ with spectrum view, compressor, delay, FDN reverb, limiter, saturation and utility.
   - Presets for all of them.
 - **Mixer:** faders, pan, mute, solo and solo-safe; sends and buses; meters in the mixer and in the track headers. Sidechain: a compressor can listen to another track (e.g. duck the bass with the kick).
-- **Automation:** lanes for volume, pan and every device parameter, with curves; read, write, touch and latch modes.
+- **Automation:** lanes for volume, pan and every device parameter, with curves; read, write, touch and latch modes. "Capture automation" (Edit menu) turns knob moves made while playing into automation afterwards.
 - **Video:** File → Import video… shows the video in a window in sync with the song, and puts its sound on a new audio track. The video's start can be shifted.
 - **Export:** WAV 16/24/32f, FLAC 16/24, MP3 (320 kbit/s) and OGG Vorbis (MP3 and OGG use the bundled FFmpeg), with normalize, dither and stems; faster than real time.
+- **Command search:** Ctrl+K finds any command, shortcut or setting by typing a few letters.
 - **Safety:** autosave, crash recovery, a dialog for relinking missing audio files, and error dialogs instead of crashes.
 - **Demo song:** Help → Open demo song.
 
