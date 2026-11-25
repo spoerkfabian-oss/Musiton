@@ -2,6 +2,7 @@
 
 pub mod acid;
 pub mod controllers;
+pub mod drums;
 pub mod effects;
 pub mod epiano;
 pub mod fm;
@@ -40,7 +41,7 @@ pub struct InstrumentType {
 }
 
 /// All built-in instruments.
-pub const INSTRUMENTS: [InstrumentType; 8] = [
+pub const INSTRUMENTS: [InstrumentType; 9] = [
     InstrumentType {
         type_id: POLYSYNTH,
         name: "Polysynth",
@@ -96,6 +97,13 @@ pub const INSTRUMENTS: [InstrumentType; 8] = [
         params: &strings::PARAMS,
         uses_samples: false,
         presets: strings::PRESETS,
+    },
+    InstrumentType {
+        type_id: "drums",
+        name: "Drum synth",
+        params: &drums::PARAMS,
+        uses_samples: false,
+        presets: drums::PRESETS,
     },
 ];
 
@@ -218,6 +226,7 @@ pub fn create_instrument(
         "epiano" => Box::<epiano::EPiano>::default(),
         "pluck" => Box::<pluck::Pluck>::default(),
         "strings" => Box::<strings::Strings>::default(),
+        "drums" => Box::<drums::Drums>::default(),
         _ => Box::new(polysynth::Polysynth::new()),
     };
     for &(id, value) in params {
