@@ -3,7 +3,10 @@
 pub mod acid;
 pub mod controllers;
 pub mod effects;
+pub mod epiano;
 pub mod fm;
+pub mod organ;
+pub mod pluck;
 pub mod polysynth;
 pub mod sampler;
 pub mod voices;
@@ -36,7 +39,7 @@ pub struct InstrumentType {
 }
 
 /// All built-in instruments.
-pub const INSTRUMENTS: [InstrumentType; 4] = [
+pub const INSTRUMENTS: [InstrumentType; 7] = [
     InstrumentType {
         type_id: POLYSYNTH,
         name: "Polysynth",
@@ -64,6 +67,27 @@ pub const INSTRUMENTS: [InstrumentType; 4] = [
         params: &acid::PARAMS,
         uses_samples: false,
         presets: acid::PRESETS,
+    },
+    InstrumentType {
+        type_id: "organ",
+        name: "Organ",
+        params: &organ::PARAMS,
+        uses_samples: false,
+        presets: organ::PRESETS,
+    },
+    InstrumentType {
+        type_id: "epiano",
+        name: "Electric piano",
+        params: &epiano::PARAMS,
+        uses_samples: false,
+        presets: epiano::PRESETS,
+    },
+    InstrumentType {
+        type_id: "pluck",
+        name: "Plucked strings",
+        params: &pluck::PARAMS,
+        uses_samples: false,
+        presets: pluck::PRESETS,
     },
 ];
 
@@ -182,6 +206,9 @@ pub fn create_instrument(
         )),
         "fm" => Box::<fm::Fm>::default(),
         "acid" => Box::<acid::Acid>::default(),
+        "organ" => Box::<organ::Organ>::default(),
+        "epiano" => Box::<epiano::EPiano>::default(),
+        "pluck" => Box::<pluck::Pluck>::default(),
         _ => Box::new(polysynth::Polysynth::new()),
     };
     for &(id, value) in params {
