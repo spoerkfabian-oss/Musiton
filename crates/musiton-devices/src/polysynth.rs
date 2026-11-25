@@ -1,5 +1,6 @@
 //! Polysynth: 2 oscillators + noise → state-variable filter with envelope → amp ADSR,
-//! LFO on pitch and cutoff, glide, 16 voices with voice stealing.
+//! LFO on pitch and cutoff, glide, unison (up to 7 detuned oscillators per voice, spread
+//! across the stereo field), 16 voices with voice stealing.
 
 use musiton_core::ids::ParamId;
 use musiton_core::params::ParamInfo;
@@ -19,6 +20,8 @@ const FILTER_UPDATE: usize = 8;
 const HEADROOM: f32 = 0.25;
 /// Vibrato depth (semitones) at full mod wheel.
 const MOD_WHEEL_VIBRATO: f32 = 0.5;
+/// Most unison oscillators per voice and oscillator.
+pub const MAX_UNISON: usize = 7;
 
 const WAVES: &[&str] = &["Saw", "Square", "Triangle", "Sine"];
 const MODES: &[&str] = &["Low-pass", "High-pass", "Band-pass"];
@@ -51,10 +54,13 @@ pub mod id {
     pub const GLIDE: u64 = 22;
     pub const VOLUME: u64 = 23;
     pub const VELOCITY: u64 = 24;
+    pub const UNISON: u64 = 25;
+    pub const UNISON_DETUNE: u64 = 26;
+    pub const UNISON_SPREAD: u64 = 27;
 }
 
 /// All parameters (index = id).
-pub const PARAMS: [ParamInfo; 25] = [
+pub const PARAMS: [ParamInfo; 28] = [
     ParamInfo::choice(id::OSC1_WAVE, "Osc 1", WAVES, 0),
     ParamInfo::new(id::OSC1_LEVEL, "Osc 1 level", 0.0, 1.0, 0.8),
     ParamInfo::choice(id::OSC2_WAVE, "Osc 2", WAVES, 1),
@@ -98,14 +104,20 @@ pub const PARAMS: [ParamInfo; 25] = [
     ParamInfo::new(id::GLIDE, "Glide", 0.0, 2.0, 0.0).unit("s"),
     ParamInfo::new(id::VOLUME, "Volume", 0.0, 1.0, 0.7),
     ParamInfo::new(id::VELOCITY, "Velocity", 0.0, 1.0, 0.7),
+    ParamInfo::new(id::UNISON, "Unison", 1.0, MAX_UNISON as f32, 1.0).int(),
+    ParamInfo::new(id::UNISON_DETUNE, "Unison detune", 0.0, 100.0, 20.0).unit("ct"),
+    ParamInfo::new(id::UNISON_SPREAD, "Unison width", 0.0, 1.0, 0.5),
 ];
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct Voice {
     key: Option<u8>,
-    osc1: BlepOsc,
-    osc2: BlepOsc,
+    osc1: [BlepOsc; MAX_UNISON],
+    osc2: [BlepOsc; MAX_UNISON],
+    /// Left (or mono) filter.
     filter: Svf,
+    /// Right filter, used while unison is spread across the stereo field.
+    filter_r: Svf,
     amp: Adsr,
     fenv: Adsr,
     pitch: f32,
@@ -114,6 +126,56 @@ struct Voice {
     age: u64,
     /// The key was released while the sustain pedal was down.
     pedal_held: bool,
+}
+
+impl Default for Voice {
+    fn default() -> Self {
+        // Unison oscillators start at spread-out phases so a chord does not start with
+        // every copy in phase (a loud click-like attack). The first one starts at 0.
+        let phases = std::array::from_fn(|i| BlepOsc::with_phase(i as f32 * 0.618_034));
+        Self {
+            key: None,
+            osc1: phases.clone(),
+            osc2: phases,
+            filter: Svf::default(),
+            filter_r: Svf::default(),
+            amp: Adsr::default(),
+            fenv: Adsr::default(),
+            pitch: 0.0,
+            target: 0.0,
+            vel_gain: 0.0,
+            age: 0,
+            pedal_held: false,
+        }
+    }
+}
+
+/// Per-copy pitch offset (semitones) and left/right gains for unison.
+#[derive(Debug, Clone, Copy)]
+struct UnisonCopy {
+    offset: f32,
+    left: f32,
+    right: f32,
+}
+
+/// Pitch offsets and pans of `count` unison copies (`detune` in cents, `width` 0 … 1),
+/// scaled so the level stays about the same whatever the count.
+fn unison_copies(count: usize, detune: f32, width: f32) -> [UnisonCopy; MAX_UNISON] {
+    let count = count.clamp(1, MAX_UNISON);
+    let gain = 1.0 / (count as f32).sqrt();
+    std::array::from_fn(|i| {
+        let pos = if count > 1 {
+            2.0 * i as f32 / (count - 1) as f32 - 1.0
+        } else {
+            0.0
+        };
+        let pan = pos * width;
+        UnisonCopy {
+            offset: pos * detune / 100.0,
+            left: gain * (1.0 - pan.max(0.0)),
+            right: gain * (1.0 + pan.min(0.0)),
+        }
+    })
 }
 
 /// The polysynth node (no inputs, stereo out).
@@ -288,6 +350,9 @@ impl Polysynth {
         // The mod wheel adds up to half a semitone of vibrato.
         let lfo_pitch = self.v(id::LFO_PITCH) + self.controllers.mod_wheel * MOD_WHEEL_VIBRATO;
         let lfo_cut = self.v(id::LFO_CUTOFF) * 4.0;
+        let unison = (self.v(id::UNISON).round() as usize).clamp(1, MAX_UNISON);
+        let copies = unison_copies(unison, self.v(id::UNISON_DETUNE), self.v(id::UNISON_SPREAD));
+        let stereo = unison > 1 && self.v(id::UNISON_SPREAD) > 0.0;
         let glide = self.v(id::GLIDE);
         let glide_coef = if glide > 0.0 {
             (-4.6 / (glide * sr)).exp()
@@ -315,32 +380,59 @@ impl Polysynth {
             let reso = self.resonance.next_value();
             let update = self.counter.is_multiple_of(FILTER_UPDATE as u64);
             self.counter += 1;
-            let mut out = 0.0;
+            let (mut out_l, mut out_r) = (0.0, 0.0);
             for v in &mut self.voices {
                 if !v.amp.is_active() {
                     continue;
                 }
                 v.pitch = v.target + (v.pitch - v.target) * glide_coef;
                 let p = v.pitch + lfo * lfo_pitch;
-                let hz = 440.0 * ((p - 69.0) / 12.0).exp2();
-                let hz2 = 440.0 * ((p + osc2_offset - 69.0) / 12.0).exp2();
-                let mut s = v.osc1.next_sample(w1, hz / sr) * l1;
-                if l2 > 0.0 {
-                    s += v.osc2.next_sample(w2, hz2 / sr) * l2;
+                let (mut sl, mut sr_) = (0.0, 0.0);
+                for ((o1, o2), c) in v
+                    .osc1
+                    .iter_mut()
+                    .zip(v.osc2.iter_mut())
+                    .zip(copies.iter())
+                    .take(unison)
+                {
+                    let hz = 440.0 * ((p + c.offset - 69.0) / 12.0).exp2();
+                    let mut s = o1.next_sample(w1, hz / sr) * l1;
+                    if l2 > 0.0 {
+                        let hz2 = 440.0 * ((p + c.offset + osc2_offset - 69.0) / 12.0).exp2();
+                        s += o2.next_sample(w2, hz2 / sr) * l2;
+                    }
+                    sl += s * c.left;
+                    if stereo {
+                        sr_ += s * c.right;
+                    }
                 }
                 if nl > 0.0 {
-                    s += self.noise.next_sample() * nl;
+                    let n = self.noise.next_sample() * nl;
+                    sl += n;
+                    sr_ += n;
                 }
                 let fe = v.fenv.next_value();
                 if update {
                     let cut = base_cut * (fe * env_amt + lfo * lfo_cut).exp2();
                     v.filter.set(cut, reso, sr);
+                    if stereo {
+                        v.filter_r.set(cut, reso, sr);
+                    }
                 }
                 let a = v.amp.next_value();
-                out += v.filter.process(s, mode) * a * v.vel_gain;
+                let yl = v.filter.process(sl, mode) * a * v.vel_gain;
+                if stereo {
+                    out_l += yl;
+                    out_r += v.filter_r.process(sr_, mode) * a * v.vel_gain;
+                } else {
+                    // Keep the right filter in step so turning the width up mid-note
+                    // does not click.
+                    v.filter_r = v.filter.clone();
+                    out_l += yl;
+                    out_r += yl;
+                }
             }
-            let y = out * vol;
-            for ch in 0..2 {
+            for (ch, y) in [out_l * vol, out_r * vol].into_iter().enumerate() {
                 if let Some(o) = io.output(ch).get_mut(i) {
                     *o = y;
                 }
@@ -452,6 +544,18 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
         ],
     ),
     (
+        "Supersaw",
+        &[
+            (id::UNISON, 7.0),
+            (id::UNISON_DETUNE, 25.0),
+            (id::UNISON_SPREAD, 0.8),
+            (id::CUTOFF, 6_000.0),
+            (id::FILTER_ENV, 0.1),
+            (id::AMP_A, 0.01),
+            (id::AMP_R, 0.6),
+        ],
+    ),
+    (
         "Bass",
         &[
             (id::OSC2_WAVE, 1.0),
@@ -474,6 +578,10 @@ mod tests {
     use musiton_core::{TempoMap, TimeSig};
 
     fn render(s: &mut Polysynth, events: &[Event], frames: usize) -> Vec<f32> {
+        render_stereo(s, events, frames).swap_remove(0)
+    }
+
+    fn render_stereo(s: &mut Polysynth, events: &[Event], frames: usize) -> Vec<Vec<f32>> {
         let tempo = TempoMap::default();
         let mut outs = vec![vec![0.0; frames]; 2];
         let ctx = ProcessContext {
@@ -490,7 +598,7 @@ mod tests {
             live_midi: &[],
         };
         s.process(&ctx, &mut AudioIo::new(&[], &mut outs, frames), events);
-        outs.swap_remove(0)
+        outs
     }
 
     fn synth(settings: &[(u64, f32)]) -> Polysynth {
@@ -646,6 +754,40 @@ mod tests {
             .fold(0.0_f32, |m, w| m.max((w[1] - w[0]).abs()));
         assert!(worst < 0.02, "click of {worst}");
         assert!(out[47_000..].iter().all(|x| x.abs() < 1e-3));
+    }
+
+    #[test]
+    fn unison_detunes_and_spreads_the_copies() {
+        let base = [
+            (id::CUTOFF, 20_000.0),
+            (id::FILTER_ENV, 0.0),
+            (id::AMP_S, 1.0),
+        ];
+        let stereo =
+            |settings: &[(u64, f32)]| render_stereo(&mut synth(settings), &[on(0, 57)], 48_000);
+        // One copy: both sides are the same.
+        let one = stereo(&base);
+        assert_eq!(one[0], one[1]);
+        // Seven copies 50 cents apart and fully spread: the sides differ, the level
+        // stays close to a single copy and energy appears next to the fundamental.
+        let mut wide = base.to_vec();
+        wide.extend([
+            (id::UNISON, 7.0),
+            (id::UNISON_DETUNE, 50.0),
+            (id::UNISON_SPREAD, 1.0),
+        ]);
+        let seven = stereo(&wide);
+        let diff = rms(&seven[0]
+            .iter()
+            .zip(&seven[1])
+            .map(|(l, r)| l - r)
+            .collect::<Vec<_>>());
+        assert!(diff > 0.01, "sides too alike: {diff}");
+        let ratio = rms(&seven[0][4_800..]) / rms(&one[0][4_800..]);
+        assert!((0.5..1.5).contains(&ratio), "level ratio {ratio}");
+        // 220 Hz ± 50 cents ≈ 213.7 … 226.5 Hz.
+        let side = |x: &[f32]| magnitude(&x[4_800..43_200], 213.7);
+        assert!(side(&seven[0]) > side(&one[0]) * 10.0);
     }
 
     #[test]

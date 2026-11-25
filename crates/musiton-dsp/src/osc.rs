@@ -123,6 +123,13 @@ pub struct BlepOsc {
 }
 
 impl BlepOsc {
+    /// Oscillator starting at `phase` (0 … 1).
+    pub fn with_phase(phase: f32) -> Self {
+        Self {
+            phase: phase.rem_euclid(1.0),
+        }
+    }
+
     /// Next sample of `wave` with phase increment `inc` (= Hz / sample rate, < 0.5).
     #[inline]
     pub fn next_sample(&mut self, wave: Wave, inc: f32) -> f32 {
