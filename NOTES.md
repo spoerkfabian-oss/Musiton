@@ -475,5 +475,12 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - `musiton --check-plugins <report.txt>` checks every installed plugin without anyone listening: load, a note (instrument) or a tone (effect) must give sound, settings are saved and restored, the editor opens and closes, the sandbox plays. Each plugin runs in its own process with a 120 s limit. Meant to be run on the owner's PC through Remote Control.
 - Known false alarm: effects that only act on a sidechain signal (e.g. DPF's Amplitude Imposer as VST3) report "no sound".
 
+## Phase 15 — Remote control (2026-11-25)
+- Owner decisions: all LYNX SHARE ideas go into the roadmap (phases 16–19, ideas only: LYNX is AGPL); more built-in instruments (wavetable, FM, drum synth, e-piano/organ) and effects (chorus/flanger/phaser, LFO filter, gate/transient shaper); Polysynth unison detune. Remote control comes first so Claude can test on the owner's PC.
+- `musiton --remote-control` listens on 127.0.0.1 only, on a random port, and is off unless started with that switch. A random token (from the standard library's randomly keyed hasher) is written with the port to `remote.json` in the data folder; requests without it are refused.
+- `musiton --remote '<json>'` is the client (prints one JSON answer; exit code 0 when ok). Positions for clicks are in screenshot pixels. Mouse and key commands answer once their last input step was fed to the window, so a following screenshot shows the result.
+- Tested in the cloud on a virtual X display: state, click "+ Instrument", play/stop, locate, screenshot, log, quit.
+- Limits: screenshots show Musiton's main window only, not plugin editor windows; native file dialogs cannot be driven (use `open`/`save` with a path).
+
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

@@ -2358,6 +2358,7 @@ dependencies = [
  "musiton-plugin-host",
  "musiton-project",
  "musiton-ui",
+ "png",
  "rfd",
  "ron",
  "rtrb",

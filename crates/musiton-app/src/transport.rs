@@ -89,6 +89,8 @@ pub struct Transport {
     test_tone: bool,
     /// MIDI recording adds to existing notes (true) or replaces them (false).
     pub overdub: bool,
+    /// Start or stop playback on the next frame, like the Play button (remote control).
+    pub toggle_play: bool,
 }
 
 impl Transport {
@@ -115,7 +117,7 @@ impl Transport {
         let typing = musiton_ui::text_input_focused(ui.ctx());
         let none = egui::Modifiers::NONE;
         let key = |k| !typing && ui.input_mut(|i| i.consume_key(none, k));
-        let space = key(egui::Key::Space);
+        let space = key(egui::Key::Space) || std::mem::take(&mut self.toggle_play);
         let home = key(egui::Key::Home);
         let rec_key = key(egui::Key::R);
         if key(egui::Key::L) {

@@ -11,8 +11,9 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 | 13 — Export | done |
 | 14 — Polish & release | done. Still needs the owner's test on a fresh Windows PC with the installer. |
 | Later list | done except the plugin items, which come with phase 12. |
+| 15–19 | planned (owner decision 2026-11-25). |
 
-Work order from here: the owner's test of phase 12 (and of phase 14's fresh-install check) on Windows; then fixes from those tests.
+Work order from here: phase 15 (remote control), then the owner's test of phase 12 (and phase 14's fresh-install check) through it; fixes from those tests; then phases 16–19 in order.
 
 ## Phase 0 — Foundation
 - [x] Cargo workspace with all crates from ARCHITECTURE.md (empty stubs), `rust-toolchain.toml`, `.gitignore`, README; licence: ask owner (suggest MIT OR Apache-2.0)
@@ -118,3 +119,38 @@ Order decided by the owner. Tick when done.
 - [x] With phase 12: CLAP hosting (`clack-host`), out-of-process plugin sandbox (per plugin, optional)
 
 Dropped by owner decision: ASIO (proprietary SDK), LV2 (almost only on Linux). WASAPI stays the Windows backend.
+
+## Phase 15 — Remote control (for testing on the owner's PC)
+Owner decision (2026-11-25): first of the new phases, so Claude can test Musiton on the owner's Windows PC.
+- [x] `musiton --remote-control`: local control port (127.0.0.1 only, off by default, token in the data folder)
+- [x] `musiton --remote <command>`: client that sends one command and prints the answer
+- [x] Commands: state (tracks, devices, transport, levels, dropouts, status, plugin failures), open/save/new, play/stop/locate, mouse clicks/drags, keys and text into the window, screenshot of the window, log tail, quit
+- [x] Plugin self-test (`--check-plugins`, built) reachable the same way
+**Done when:** from a shell on the owner's PC Claude can open a song, play it, read the levels, click through the UI and see screenshots.
+
+## Phase 16 — Quick wins
+Ideas taken from LYNX SHARE (ideas only, no code: it is AGPL).
+- [ ] Missing plugins keep a placeholder with their saved settings; they sound again once installed
+- [ ] Command search: a shortcut opens a search field for every command and setting
+- [ ] Capture automation: turn the knob moves made while playing (without recording) into automation afterwards
+- [ ] Export MP3 and OGG
+- [ ] Polysynth: unison voices with detune and stereo spread
+
+## Phase 17 — More built-in instruments
+- [ ] Wavetable synth
+- [ ] FM synth
+- [ ] Drum synth (kick, snare, hi-hat … without samples)
+- [ ] Electric piano / organ
+
+## Phase 18 — More built-in effects
+- [ ] Chorus, flanger, phaser
+- [ ] Filter with LFO (auto-filter, wah)
+- [ ] Noise gate and transient shaper
+
+## Phase 19 — Bigger features
+- [ ] Chord lane under the ruler; the piano roll can follow it
+- [ ] Project versions (named snapshots of a song)
+- [ ] DAWproject (`.dawproject`) import and export
+- [ ] Modulators (LFO, envelope, macro) for any knob, plugins included
+- [ ] MIDI controllers: profiles for common controllers and "Link to controller" on any knob
+- [ ] Ableton Link (tempo sync with other apps)

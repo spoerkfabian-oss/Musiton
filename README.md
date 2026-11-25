@@ -68,6 +68,11 @@ The result needs only DLLs that every Windows has. The official downloads are bu
    Video needs an `ffmpeg` program on the `PATH` (or next to the executable, or named by the `MUSITON_FFMPEG` environment variable). Everything else works without it.
    A debug build (`cargo run`) is optimized enough to play in real time. It also aborts on any memory allocation on the audio thread, which is meant for development.
 
+### Remote control and plugin self-test (for automated tests)
+
+- `musiton --remote-control` starts Musiton with a control port on this computer only (127.0.0.1). `musiton --remote '{"cmd":"state"}'` then sends one command and prints the answer. Commands: `state`, `open`, `save`, `play`, `stop`, `locate`, `click`, `drag`, `hover`, `scroll`, `key`, `text`, `screenshot`, `log`, `quit` (see `crates/musiton-app/src/remote.rs`).
+- `musiton --check-plugins report.txt` checks every installed plugin (loads, makes sound, keeps its settings, editor, sandbox) and writes a report.
+
 ### Checks before every commit
 
 ```bash

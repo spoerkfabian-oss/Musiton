@@ -17,6 +17,7 @@ mod plugin_set;
 mod plugins;
 mod presets;
 mod relink;
+mod remote;
 mod session;
 mod settings;
 mod settings_dialog;
@@ -64,6 +65,10 @@ fn main() -> anyhow::Result<()> {
     {
         std::process::exit(musiton_plugin_host::run_host(&all[1..]));
     }
+    // Remote-control client: sends one command to a running Musiton.
+    if all.first().is_some_and(|a| a == remote::CLIENT_ARG) {
+        remote::client(all.get(1).map_or("{}", String::as_str));
+    }
     // Plugin self-test modes (see `plugin_check`).
     match (all.first().map(String::as_str), all.get(1)) {
         (Some(plugin_check::CHECK_ONE_ARG), _) => plugin_check::check_one(&all[1..]),
@@ -88,7 +93,11 @@ fn main() -> anyhow::Result<()> {
     }));
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting {APP_NAME}");
 
-    let open_arg = std::env::args_os().nth(1).map(PathBuf::from);
+    let remote_on = all.iter().any(|a| a == remote::SERVER_ARG);
+    let open_arg = std::env::args_os()
+        .skip(1)
+        .find(|a| a != remote::SERVER_ARG)
+        .map(PathBuf::from);
     let opengl = std::env::var_os(RENDERER_ENV).is_some_and(|v| v == "opengl");
     let options = eframe::NativeOptions {
         renderer: if opengl {
@@ -108,7 +117,16 @@ fn main() -> anyhow::Result<()> {
     let result = eframe::run_native(
         APP_NAME,
         options,
-        Box::new(|_cc| Ok(Box::new(App::new(open_arg)))),
+        Box::new(move |cc| {
+            let mut app = App::new(open_arg);
+            if remote_on {
+                match remote::Server::start(cc.egui_ctx.clone()) {
+                    Ok(server) => app.remote = Some(server),
+                    Err(e) => tracing::error!("remote control could not start: {e}"),
+                }
+            }
+            Ok(Box::new(app))
+        }),
     );
     let Err(e) = result else {
         return Ok(());
@@ -243,6 +261,10 @@ struct App {
     error: Option<String>,
     /// Set after an internal error: the UI only shows the error dialog.
     broken: bool,
+    /// Control port for automated tests (`--remote-control`).
+    remote: Option<remote::Server>,
+    /// Input from remote commands, fed into the window frame by frame.
+    injector: remote::Injector,
     /// This session's crash-detection lock.
     session: Option<session::SessionLock>,
     export_task: Option<export::ExportTask>,
@@ -379,6 +401,8 @@ impl App {
             recovery: Vec::new(),
             error: None,
             broken: false,
+            remote: None,
+            injector: remote::Injector::default(),
             session: None,
             export_task: None,
             was_playing: false,
@@ -2377,6 +2401,171 @@ impl App {
 
 impl App {
     /// One frame of the normal interface.
+    /// Answers the commands that came in over the control port.
+    fn serve_remote(&mut self, ctx: &egui::Context) {
+        let requests = match &self.remote {
+            Some(server) => server.take(),
+            None => return,
+        };
+        let ppp = ctx.pixels_per_point();
+        for req in requests {
+            if self.injector.queue(&req.command, ppp, &req.reply) {
+                continue;
+            }
+            if let Some(answer) = self.remote_command(ctx, req.command, &req.reply) {
+                let _ = req.reply.send(answer);
+            }
+        }
+        if self.injector.busy() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Carries out one non-input remote command; `None` when the answer comes later.
+    fn remote_command(
+        &mut self,
+        ctx: &egui::Context,
+        command: remote::Command,
+        reply: &std::sync::mpsc::Sender<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        use remote::Command as C;
+        use serde_json::json;
+        let fail = |e: String| Some(json!({"ok": false, "error": e}));
+        match command {
+            C::State => Some(self.remote_state(ctx)),
+            C::Open { path } => {
+                self.error = None;
+                self.open_path(&path);
+                match &self.error {
+                    Some(e) => fail(e.clone()),
+                    None => Some(json!({"ok": true, "song": self.doc.name()})),
+                }
+            }
+            C::Save { path } => {
+                if path.is_some() {
+                    self.doc.path = path;
+                }
+                if self.doc.path.is_none() {
+                    return fail("the song has no file yet: give a path".into());
+                }
+                let saved = self.save();
+                Some(json!({"ok": saved}))
+            }
+            C::Play | C::Stop => {
+                let want = matches!(command, C::Play);
+                if self.playhead().1 != want {
+                    self.transport.toggle_play = true;
+                }
+                Some(json!({"ok": true}))
+            }
+            C::Locate { bar } => {
+                let sig = self.doc.project.time_sig;
+                let per_bar = musiton_core::PPQ * 4 * i64::from(sig.num) / i64::from(sig.den);
+                let tick = ((bar - 1.0).max(0.0) * per_bar as f64).round() as i64;
+                self.apply_actions(vec![UiAction::Locate(musiton_core::Tick(tick))]);
+                Some(json!({"ok": true}))
+            }
+            C::Screenshot { path } => {
+                let reply = reply.clone();
+                ctx.request_screenshot(move |image| {
+                    let answer = match remote::save_png(&image, &path) {
+                        Ok(()) => {
+                            json!({"ok": true, "width": image.size[0], "height": image.size[1]})
+                        }
+                        Err(e) => json!({"ok": false, "error": e.to_string()}),
+                    };
+                    let _ = reply.send(answer);
+                });
+                ctx.request_repaint();
+                None
+            }
+            C::Log { lines } => {
+                Some(json!({"ok": true, "log": remote::log_tail(lines.unwrap_or(50))}))
+            }
+            C::Quit => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                Some(json!({"ok": true}))
+            }
+            // Input commands are handled by the injector.
+            _ => fail("not handled".into()),
+        }
+    }
+
+    /// Everything a remote test wants to know about the app right now.
+    fn remote_state(&self, ctx: &egui::Context) -> serde_json::Value {
+        use serde_json::json;
+        let level = |id: Option<musiton_core::ids::TrackId>| {
+            self.graph.info.meters.get(&id).map(|m| {
+                let [l, r] = m.rms();
+                let db = |v: f32| (20.0 * v.max(1e-6).log10() * 10.0).round() / 10.0;
+                [db(l), db(r)]
+            })
+        };
+        let tracks: Vec<_> = self
+            .doc
+            .project
+            .tracks
+            .iter()
+            .map(|t| {
+                let devices: Vec<_> = t
+                    .devices
+                    .iter()
+                    .map(|d| {
+                        let name = match &d.kind {
+                            musiton_project::DeviceKind::Builtin { type_id, .. } => type_id.clone(),
+                            musiton_project::DeviceKind::Plugin { name, format, .. } => {
+                                format!("{name} ({format})")
+                            }
+                        };
+                        let problem = self.plugin_set.view(d.id).and_then(|v| v.error);
+                        json!({"id": d.id.0, "name": name, "bypass": d.bypass, "problem": problem})
+                    })
+                    .collect();
+                json!({
+                    "id": t.id.0,
+                    "name": t.name,
+                    "kind": format!("{:?}", t.kind),
+                    "clips": t.clips.len(),
+                    "gain_db": t.strip.gain_db,
+                    "mute": t.strip.mute,
+                    "solo": t.strip.solo,
+                    "devices": devices,
+                    "level_db": level(Some(t.id)),
+                })
+            })
+            .collect();
+        let (playhead, playing) = self.playhead();
+        let audio = self.output.as_ref().map(|(_, e)| {
+            let shared = e.shared();
+            json!({
+                "sample_rate": e.sample_rate(),
+                "cpu": (shared.cpu_load() * 100.0).round(),
+                "dropouts": shared.xruns(),
+            })
+        });
+        let screen = ctx.content_rect();
+        let ppp = ctx.pixels_per_point();
+        json!({
+            "ok": true,
+            "song": self.doc.name(),
+            "file": self.doc.path,
+            "unsaved": self.doc.is_dirty(),
+            "playing": playing,
+            "position_beats": playhead.map(|t| t / musiton_core::PPQ as f64),
+            "tempo_bpm": self.doc.project.tempo.bpm_at(0.0),
+            "tracks": tracks,
+            "master_level_db": level(None),
+            "audio": audio,
+            "audio_error": self.audio_error,
+            "status": self.status.as_ref().map(|(s, _)| s.clone()),
+            "error": self.error,
+            "dialog_open": self.pending.is_some(),
+            "window_px": [screen.width() * ppp, screen.height() * ppp],
+            "pixels_per_point": ppp,
+        })
+    }
+
     fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(100));
@@ -2389,6 +2578,7 @@ impl App {
                 self.allow_close = true;
             }
         }
+        self.serve_remote(&ctx);
         if self.pending.is_none() {
             self.shortcuts(&ctx);
         }
@@ -2679,6 +2869,10 @@ impl eframe::App for App {
             }
         }
         self.error_dialog(&ctx);
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.injector.feed(raw_input);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

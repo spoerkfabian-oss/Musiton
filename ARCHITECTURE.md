@@ -87,6 +87,7 @@ app → core, engine, io, project, ui, devices
 | Plugin sandbox (subprocess, optional per plugin) | `musiton --plugin-host …` runs one plugin; its audio thread serves blocks from shared memory, its main thread handles control messages and the editor | shared memory file (audio, events; one block pipelined) + length-prefixed JSON on stdin/stdout |
 | Scanner (subprocess) | `musiton --scan <file>` loads one plugin file and prints its plugins; killed after 20 s | JSON on stdout → `plugins.json` cache in the data folder |
 | Plugin self-test | `musiton --check-plugins <report.txt>` checks every installed plugin, each in its own `musiton --check-plugin …` process (load, sound, settings round trip, editor, sandbox); for remote checks where nobody can listen | plain-text report file |
+| Remote control | `musiton --remote-control` opens a control port on 127.0.0.1 (token in `remote.json` in the data folder); `musiton --remote '<json>'` sends one command (state, open/save, play/stop/locate, click/drag/key/text into the window, screenshot, log, quit). Input is injected through `raw_input_hook`, one step per frame (`remote.rs`) | one JSON line each way |
 
 There is no `EngineEvent` ring. The UI needs only the latest playhead, CPU load, dropout count, meters and recording status, so these are atomics in `EngineShared` and in the meters.
 
