@@ -141,7 +141,8 @@ Ideas taken from LYNX SHARE (ideas only, no code: it is AGPL).
 
 ## Phase 17 — More built-in instruments
 Owner decision (2026-11-25): also plucked strings, a string/pad ensemble, an acid bass synth and more synth sounds; ship Surge XT and Dexed with Musiton.
-- [ ] Ship Surge XT, Surge XT Effects and Dexed (GPL-3.0) in a `plugins/` folder next to Musiton; found without a scan setting
+- [ ] Ship Surge XT, Surge XT Effects and Dexed (GPL-3.0) in a `plugins/` folder next to Musiton; found without a scan setting (installer build being fixed: NSIS rejected a '$' in a Surge preset name)
+- [ ] Also ship (owner decision: "alle"): Odin 2, OB-Xd, Firefly Synth, sfizz, Cardinal, Airwindows Consolidated, Dragonfly Reverb — check each licence and Windows asset in the CI step; a missing one only warns
 - [x] Wavetable synth
 - [x] FM synth
 - [x] Drum synth (kick, snare, hi-hat … without samples)
