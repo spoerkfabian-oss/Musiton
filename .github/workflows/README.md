@@ -12,7 +12,7 @@ A second artifact, **Musiton-portable**, holds `Musiton.exe`, `ffmpeg.exe` and F
 
 Before packaging, `installer.yml` downloads the newest stable LGPL Windows build of FFmpeg from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) into `target/release/` (`ffmpeg.exe`, `FFMPEG-LICENSE.txt`). The installer and the portable folder ship both, unmodified; Musiton runs `ffmpeg.exe` as a separate program for the video track and for MP3/OGG export.
 
-It also downloads the newest Windows releases of Surge XT (plugins-only zip) and Dexed into `target/release/plugins/` (VST3 and CLAP), Surge XT's factory data (`SurgeXTData`, from the source archive of the same release), the GPL-3.0 text and a `README.txt` naming the plugins and their sources. Installer and portable folder ship this `plugins/` folder; Musiton searches it first.
+It also downloads the newest Windows releases of free plugins into `target/release/plugins/` (VST3 and CLAP): Surge XT, Dexed, Odin 2, OB-Xd, Firefly Synth, sfizz, Cardinal, Airwindows Consolidated and Dragonfly Reverb. A plugin is only shipped if GitHub reports a free licence for its repository (GPL, LGPL, MIT, BSD, ISC, Apache); one that cannot be fetched only gives a warning. Licence files go to `plugins/licenses/<name>/`, and `README.txt` lists what was shipped with versions, licences and sources. Surge XT's factory data (`SurgeXTData`) comes from the source archive of the same release. '$' in file names is replaced (NSIS cannot take it). Installer and portable folder ship this `plugins/` folder; Musiton searches it first.
 
 The installer settings (product name, icons, `.musiton` file association) are in `[package.metadata.packager]` of `crates/musiton-app/Cargo.toml`.
 

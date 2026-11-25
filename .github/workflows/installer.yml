@@ -38,60 +38,80 @@ jobs:
           New-Item -ItemType Directory -Force target/release | Out-Null
           Copy-Item "$($dir.FullName)/bin/ffmpeg.exe" target/release/ffmpeg.exe
           Copy-Item "$($dir.FullName)/LICENSE.txt" target/release/FFMPEG-LICENSE.txt
-      - name: Fetch bundled plugins (Surge XT, Dexed; GPL-3.0)
+      - name: Fetch bundled plugins (free and open source)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $out = "target/release/plugins"
-          New-Item -ItemType Directory -Force $out, dl | Out-Null
-          function Get-Zip($repo, $pattern) {
-            $rel = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
-            $asset = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
-            if (-not $asset) { throw "no asset matching $pattern in $repo; assets: $($rel.assets.name -join ', ')" }
-            Write-Host "Using $repo $($rel.tag_name): $($asset.name)"
-            $dir = "dl\$($repo -replace '/','_')"
-            Invoke-WebRequest $asset.browser_download_url -OutFile "$dir.zip"
-            Expand-Archive "$dir.zip" -DestinationPath $dir
-            Get-ChildItem $dir -Recurse -Depth 3 | ForEach-Object { Write-Host "  $($_.FullName.Substring((Resolve-Path $dir).Path.Length))" }
-            # A .vst3 is a folder (bundle) or a file; never look inside a bundle.
-            Get-ChildItem $dir -Recurse -Filter *.vst3 | Where-Object { $_.FullName -notmatch '\.vst3\\.+' } |
-              ForEach-Object { Copy-Item $_.FullName $out -Recurse -Force; Write-Host "VST3: $($_.Name)" }
-            Get-ChildItem $dir -Recurse -Filter *.clap -File |
-              ForEach-Object { Copy-Item $_.FullName $out -Force; Write-Host "CLAP: $($_.Name)" }
-            return $rel.tag_name
+          New-Item -ItemType Directory -Force $out, "$out/licenses", dl | Out-Null
+          # Only plugins under these licences are shipped (checked against GitHub's licence data).
+          $free = 'GPL-3.0', 'GPL-3.0-or-later', 'GPL-2.0', 'GPL-2.0-or-later', 'LGPL-3.0', 'LGPL-2.1', 'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Apache-2.0'
+          $shipped = @()
+          function Get-Plugin($name, $repo, $pattern, $licenceRepo) {
+            if (-not $licenceRepo) { $licenceRepo = $repo }
+            try {
+              $licence = gh api "repos/$licenceRepo" --jq '.license.spdx_id'
+              if ($free -notcontains $licence) { Write-Warning "$name skipped: licence '$licence' is not on the list"; return }
+              $rel = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
+              $asset = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
+              if (-not $asset) { Write-Warning "$name skipped: no asset matching $pattern; assets: $($rel.assets.name -join ', ')"; return }
+              Write-Host "== $name $($rel.tag_name) ($licence): $($asset.name)"
+              $dir = "dl\$($repo -replace '/','_')"
+              Invoke-WebRequest $asset.browser_download_url -OutFile "$dir.zip"
+              Expand-Archive "$dir.zip" -DestinationPath $dir -Force
+              $found = 0
+              # A .vst3 is a folder (bundle) or a file; never look inside a bundle. Skip 32-bit builds.
+              $is32 = { param($f) $f -match '(?i)(\\|_|-)(x86|win32|32[ -]?bit)(\\|_|-|\.)' -and $f -notmatch '(?i)x86[_-]64' }
+              Get-ChildItem $dir -Recurse -Filter *.vst3 | Where-Object { $_.FullName -notmatch '\.vst3\\.+' -and -not (& $is32 $_.FullName) } |
+                ForEach-Object { Copy-Item $_.FullName $out -Recurse -Force; Write-Host "VST3: $($_.Name)"; $found++ }
+              Get-ChildItem $dir -Recurse -Filter *.clap -File | Where-Object { -not (& $is32 $_.FullName) } |
+                ForEach-Object { Copy-Item $_.FullName $out -Force; Write-Host "CLAP: $($_.Name)"; $found++ }
+              if ($found -eq 0) { Write-Warning "${name}: no VST3 or CLAP in $($asset.name)"; return }
+              $lic = "$out\licenses\$name"
+              New-Item -ItemType Directory -Force $lic | Out-Null
+              Get-ChildItem $dir -Recurse -File | Where-Object { $_.Name -match '(?i)^(licen[cs]e|copying|gpl)' } |
+                ForEach-Object { Copy-Item $_.FullName $lic -Force }
+              if (-not (Get-ChildItem $lic)) {
+                gh api "repos/$licenceRepo/license" --jq '.content' | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) } | Set-Content "$lic\LICENSE.txt"
+              }
+              $script:shipped += "$name $($rel.tag_name) - licence $licence - source: https://github.com/$licenceRepo"
+              return $rel.tag_name
+            } catch {
+              Write-Warning "$name skipped: $_"
+            }
           }
-          $surge = Get-Zip 'surge-synthesizer/releases-xt' 'win64.*pluginsonly.*\.zip$'
-          $dexed = Get-Zip 'asb2m10/dexed' '(?i)win.*\.zip$'
+          $surge = Get-Plugin 'Surge XT' 'surge-synthesizer/releases-xt' 'win64.*pluginsonly.*\.zip$' 'surge-synthesizer/surge'
+          Get-Plugin 'Dexed' 'asb2m10/dexed' '(?i)win.*\.zip$' | Out-Null
+          Get-Plugin 'Odin 2' 'TheWaveWarden/odin2' '(?i)win.*\.zip$' | Out-Null
+          Get-Plugin 'OB-Xd' 'reales/OB-Xd' '(?i)win.*\.zip$' | Out-Null
+          Get-Plugin 'Firefly Synth' 'sjoerdvankreel/firefly-synth' '(?i)win.*\.zip$' | Out-Null
+          Get-Plugin 'sfizz' 'sfztools/sfizz' '(?i)win.*\.zip$' | Out-Null
+          Get-Plugin 'Cardinal' 'DISTRHO/Cardinal' '(?i)win.*64.*\.zip$' | Out-Null
+          Get-Plugin 'Airwindows Consolidated' 'baconpaul/airwin2rack' '(?i)win.*\.zip$' | Out-Null
+          Get-Plugin 'Dragonfly Reverb' 'michaelwillis/dragonfly-reverb' '(?i)win.*\.zip$' | Out-Null
+          if (-not $surge) { throw 'Surge XT could not be fetched' }
           # Surge XT's factory patches and wavetables: the plugins-only zip has none, so take
           # them from the source of the same release ("portable" data folder next to the plugin).
-          $src = $null
           foreach ($tag in "release_xt_$surge", $surge) {
-            try { Invoke-WebRequest "https://github.com/surge-synthesizer/surge/archive/refs/tags/$tag.zip" -OutFile dl\surge-src.zip; $src = $tag; break } catch { Write-Host "no source archive for tag $tag" }
+            try {
+              Invoke-WebRequest "https://github.com/surge-synthesizer/surge/archive/refs/tags/$tag.zip" -OutFile dl\surge-src.zip
+              Expand-Archive dl\surge-src.zip -DestinationPath dl\surge-src
+              $root = Get-ChildItem dl\surge-src -Directory | Select-Object -First 1
+              Copy-Item "$($root.FullName)\resources\data" "$out\SurgeXTData" -Recurse
+              break
+            } catch { Write-Host "no source archive for tag $tag" }
           }
-          if ($src) {
-            Expand-Archive dl\surge-src.zip -DestinationPath dl\surge-src
-            $root = Get-ChildItem dl\surge-src -Directory | Select-Object -First 1
-            Copy-Item "$($root.FullName)\resources\data" "$out\SurgeXTData" -Recurse
-            # The installer builder (NSIS) cannot take '$' in file names (e.g. "Ka$$h.fxp").
-            Get-ChildItem "$out\SurgeXTData" -Recurse | Where-Object { $_.Name -match '\$' } |
-              Sort-Object { $_.FullName.Length } -Descending |
-              ForEach-Object { Rename-Item -LiteralPath $_.FullName -NewName ($_.Name -replace '\$', 'S'); Write-Host "renamed $($_.Name)" }
-            Copy-Item "$($root.FullName)\LICENSE" "$out\GPL-3.0.txt"
-          } else {
-            Write-Warning "Surge XT factory data not found; Surge XT starts without its presets"
-            Invoke-WebRequest "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "$out\GPL-3.0.txt"
-          }
-          @"
-          Plugins shipped with Musiton
-          ============================
-          Surge XT and Surge XT Effects $surge - https://surge-synthesizer.github.io
-            Source: https://github.com/surge-synthesizer/surge
-          Dexed $dexed - https://asb2m10.github.io/dexed/
-            Source: https://github.com/asb2m10/dexed
-          Both are free software under the GNU General Public License, version 3 (GPL-3.0.txt).
-          They are separate programs that Musiton loads; Musiton itself is not covered by the GPL.
-          "@ | Set-Content "$out\README.txt"
+          if (-not (Test-Path "$out\SurgeXTData")) { Write-Warning "Surge XT factory data not found; Surge XT starts without its presets" }
+          # The installer builder (NSIS) cannot take '$' in file names (e.g. "Ka$$h.fxp").
+          Get-ChildItem $out -Recurse | Where-Object { $_.Name -match '\$' } |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object { Rename-Item -LiteralPath $_.FullName -NewName ($_.Name -replace '\$', 'S'); Write-Host "renamed $($_.Name)" }
+          $lines = @('Plugins shipped with Musiton', '============================', '') + $shipped + @('',
+            'They are free software, each under its own licence (see the licenses folder).',
+            'They are separate programs that Musiton loads; Musiton itself is not covered by their licences.')
+          $lines | Set-Content "$out\README.txt"
+          Get-Content "$out\README.txt"
           Get-ChildItem $out
       - name: Build installer
         working-directory: crates/musiton-app
