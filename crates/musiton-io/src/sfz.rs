@@ -251,8 +251,11 @@ fn strip_comments(text: &str) -> String {
 
 /// Splits the text into headers and `opcode=value` pairs. Values may contain spaces
 /// (sample paths): a value runs until the next `name=` or header.
-fn tokens(text: &str) -> Vec<(Option<String>, Vec<(String, String)>)> {
-    let mut sections: Vec<(Option<String>, Vec<(String, String)>)> = vec![(None, Vec::new())];
+/// A header (`None` before the first one) and its `opcode=value` pairs.
+type Section = (Option<String>, Vec<(String, String)>);
+
+fn tokens(text: &str) -> Vec<Section> {
+    let mut sections: Vec<Section> = vec![(None, Vec::new())];
     for line in text.lines() {
         let mut rest = line.trim();
         while !rest.is_empty() {
