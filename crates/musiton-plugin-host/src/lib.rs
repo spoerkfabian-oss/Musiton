@@ -113,9 +113,17 @@ pub fn scan_file(path: &Path) -> Result<Vec<PluginInfo>, PluginError> {
     }
 }
 
-/// The standard plugin folders of this system.
+/// The plugin folders searched by default: the `plugins/` folder shipped next to Musiton,
+/// then the standard plugin folders of this system.
 pub fn default_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    // Plugins shipped with Musiton live in `plugins/` next to the program.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("plugins")))
+    {
+        dirs.push(dir);
+    }
     if cfg!(windows) {
         for var in ["COMMONPROGRAMFILES", "LOCALAPPDATA"] {
             if let Some(base) = std::env::var_os(var).map(PathBuf::from) {

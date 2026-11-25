@@ -38,6 +38,57 @@ jobs:
           New-Item -ItemType Directory -Force target/release | Out-Null
           Copy-Item "$($dir.FullName)/bin/ffmpeg.exe" target/release/ffmpeg.exe
           Copy-Item "$($dir.FullName)/LICENSE.txt" target/release/FFMPEG-LICENSE.txt
+      - name: Fetch bundled plugins (Surge XT, Dexed; GPL-3.0)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $out = "target/release/plugins"
+          New-Item -ItemType Directory -Force $out, dl | Out-Null
+          function Get-Zip($repo, $pattern) {
+            $rel = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
+            $asset = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
+            if (-not $asset) { throw "no asset matching $pattern in $repo; assets: $($rel.assets.name -join ', ')" }
+            Write-Host "Using $repo $($rel.tag_name): $($asset.name)"
+            $dir = "dl\$($repo -replace '/','_')"
+            Invoke-WebRequest $asset.browser_download_url -OutFile "$dir.zip"
+            Expand-Archive "$dir.zip" -DestinationPath $dir
+            Get-ChildItem $dir -Recurse -Depth 3 | ForEach-Object { Write-Host "  $($_.FullName.Substring((Resolve-Path $dir).Path.Length))" }
+            # A .vst3 is a folder (bundle) or a file; never look inside a bundle.
+            Get-ChildItem $dir -Recurse -Filter *.vst3 | Where-Object { $_.FullName -notmatch '\.vst3\\.+' } |
+              ForEach-Object { Copy-Item $_.FullName $out -Recurse -Force; Write-Host "VST3: $($_.Name)" }
+            Get-ChildItem $dir -Recurse -Filter *.clap -File |
+              ForEach-Object { Copy-Item $_.FullName $out -Force; Write-Host "CLAP: $($_.Name)" }
+            return $rel.tag_name
+          }
+          $surge = Get-Zip 'surge-synthesizer/releases-xt' 'win64.*pluginsonly.*\.zip$'
+          $dexed = Get-Zip 'asb2m10/dexed' '(?i)win.*\.zip$'
+          # Surge XT's factory patches and wavetables: the plugins-only zip has none, so take
+          # them from the source of the same release ("portable" data folder next to the plugin).
+          $src = $null
+          foreach ($tag in "release_xt_$surge", $surge) {
+            try { Invoke-WebRequest "https://github.com/surge-synthesizer/surge/archive/refs/tags/$tag.zip" -OutFile dl\surge-src.zip; $src = $tag; break } catch { Write-Host "no source archive for tag $tag" }
+          }
+          if ($src) {
+            Expand-Archive dl\surge-src.zip -DestinationPath dl\surge-src
+            $root = Get-ChildItem dl\surge-src -Directory | Select-Object -First 1
+            Copy-Item "$($root.FullName)\resources\data" "$out\SurgeXTData" -Recurse
+            Copy-Item "$($root.FullName)\LICENSE" "$out\GPL-3.0.txt"
+          } else {
+            Write-Warning "Surge XT factory data not found; Surge XT starts without its presets"
+            Invoke-WebRequest "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "$out\GPL-3.0.txt"
+          }
+          @"
+          Plugins shipped with Musiton
+          ============================
+          Surge XT and Surge XT Effects $surge - https://surge-synthesizer.github.io
+            Source: https://github.com/surge-synthesizer/surge
+          Dexed $dexed - https://asb2m10.github.io/dexed/
+            Source: https://github.com/asb2m10/dexed
+          Both are free software under the GNU General Public License, version 3 (GPL-3.0.txt).
+          They are separate programs that Musiton loads; Musiton itself is not covered by the GPL.
+          "@ | Set-Content "$out\README.txt"
+          Get-ChildItem $out
       - name: Build installer
         working-directory: crates/musiton-app
         run: cargo packager --release
@@ -53,6 +104,7 @@ jobs:
           Copy-Item target/release/musiton.exe target/portable/Musiton.exe
           Copy-Item target/release/ffmpeg.exe target/portable/ffmpeg.exe
           Copy-Item target/release/FFMPEG-LICENSE.txt target/portable/FFMPEG-LICENSE.txt
+          Copy-Item target/release/plugins target/portable/plugins -Recurse
       - uses: actions/upload-artifact@v4
         with:
           name: Musiton-portable

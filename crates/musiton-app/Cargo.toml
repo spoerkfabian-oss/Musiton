@@ -49,9 +49,13 @@ formats = ["nsis"]
 before-packaging-command = "cargo build --release -p musiton-app"
 binaries-dir = "../../target/release"
 out-dir = "../../target/packages"
-# ffmpeg.exe and its licence are downloaded into target/release by installer.yml.
+# ffmpeg.exe, its licence and the bundled plugins are downloaded into target/release by
+# installer.yml.
 binaries = [{ path = "musiton", main = true }, { path = "ffmpeg", main = false }]
-resources = [{ src = "../../target/release/FFMPEG-LICENSE.txt", target = "FFMPEG-LICENSE.txt" }]
+resources = [
+    { src = "../../target/release/FFMPEG-LICENSE.txt", target = "FFMPEG-LICENSE.txt" },
+    { src = "../../target/release/plugins", target = "plugins" },
+]
 
 [package.metadata.packager.nsis]
 installer-icon = "assets/icon.ico"

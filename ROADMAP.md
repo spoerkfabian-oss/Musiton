@@ -139,10 +139,16 @@ Ideas taken from LYNX SHARE (ideas only, no code: it is AGPL).
 - [x] Polysynth: unison voices with detune and stereo spread
 
 ## Phase 17 — More built-in instruments
+Owner decision (2026-11-25): also plucked strings, a string/pad ensemble, an acid bass synth and more synth sounds; ship Surge XT and Dexed with Musiton.
+- [ ] Ship Surge XT, Surge XT Effects and Dexed (GPL-3.0) in a `plugins/` folder next to Musiton; found without a scan setting
 - [ ] Wavetable synth
 - [ ] FM synth
 - [ ] Drum synth (kick, snare, hi-hat … without samples)
 - [ ] Electric piano / organ
+- [ ] Plucked strings (physical model: guitar, harp, pizzicato)
+- [ ] String / pad ensemble
+- [ ] Acid bass (monophonic, slide and accent)
+- [ ] Presets for every new instrument (a range of synth sounds)
 
 ## Phase 18 — More built-in effects
 - [ ] Chorus, flanger, phaser
