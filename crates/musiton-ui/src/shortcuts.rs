@@ -4,6 +4,7 @@ use egui::Ui;
 
 /// All keyboard shortcuts: (keys, action).
 pub const SHORTCUTS: &[(&str, &str)] = &[
+    ("Ctrl+K", "Command search (every command and setting)"),
     ("Space", "Play / stop"),
     ("Home", "Return to start"),
     ("L", "Loop on/off"),

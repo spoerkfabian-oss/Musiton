@@ -310,6 +310,20 @@ impl Injector {
         });
     }
 
+    /// Queues a key press with `modifiers` (used by the command search too).
+    pub fn press(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        for pressed in [true, false] {
+            let event = egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            };
+            self.push(vec![event], modifiers);
+        }
+    }
+
     /// Queues the input of `command` (scaled by `ppp` pixels per point); `reply` is
     /// answered after the last step. Returns `false` for commands that are not input.
     pub fn queue(&mut self, command: &Command, ppp: f32, reply: &mpsc::Sender<Value>) -> bool {
@@ -318,13 +332,6 @@ impl Injector {
             pos,
             button,
             pressed,
-            modifiers,
-        };
-        let key = |key, pressed, modifiers| egui::Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
             modifiers,
         };
         match command {
@@ -387,9 +394,7 @@ impl Injector {
                         reply.send(json!({"ok": false, "error": format!("unknown key {name}")}));
                     return true;
                 };
-                let m = modifiers(mods);
-                self.push(vec![key(k, true, m)], m);
-                self.push(vec![key(k, false, m)], m);
+                self.press(k, modifiers(mods));
             }
             Command::Text { text } => {
                 self.push(

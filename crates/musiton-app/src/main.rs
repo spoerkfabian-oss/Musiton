@@ -6,6 +6,7 @@ mod assets;
 mod audio_dialog;
 mod auto_record;
 mod browser;
+mod command_search;
 mod demo;
 mod document;
 mod engine_graph;
@@ -219,6 +220,8 @@ struct App {
     user_presets: presets::PresetMap,
     bottom_tab: BottomTab,
     show_shortcuts: bool,
+    /// The Ctrl+K command search.
+    command_search: command_search::CommandSearch,
     assets: AssetStore,
     importer: Importer,
     relink: relink::RelinkDialog,
@@ -374,6 +377,7 @@ impl App {
             user_presets: presets::load_all(),
             bottom_tab: BottomTab::default(),
             show_shortcuts: false,
+            command_search: command_search::CommandSearch::default(),
             assets: AssetStore::default(),
             importer: Importer::default(),
             relink: relink::RelinkDialog::default(),
@@ -1270,6 +1274,45 @@ impl App {
         }
     }
 
+    /// Runs an entry picked in the command search.
+    fn run_command(&mut self, ctx: &egui::Context, action: command_search::Action) {
+        use command_search::{Action, AppCommand as C};
+        let command = match action {
+            Action::Key(key, modifiers) => {
+                self.injector.press(key, modifiers);
+                return;
+            }
+            Action::App(c) => c,
+        };
+        match command {
+            C::New => self.request(Pending::New),
+            C::Open => self.request(Pending::Open(None)),
+            C::Save => {
+                self.save();
+            }
+            C::SaveAs => {
+                self.save_as();
+            }
+            C::ExportAudio => self.export_dialog.open = true,
+            C::ImportMidi => self.import_midi(),
+            C::ExportMidi => self.export_midi(),
+            C::ImportVideo => self.import_video(),
+            C::ShowVideo => self.video.open = true,
+            C::Undo => self.undo(),
+            C::Redo => self.redo(),
+            C::Settings => self.settings_dialog.open = true,
+            C::AudioSettings => self.audio_dialog.open(&self.settings.audio),
+            C::Plugins => self.plugins.open = true,
+            C::Theme(theme) => {
+                self.settings.ui.theme = theme;
+                self.save_settings();
+            }
+            C::Demo => self.open_demo(),
+            C::Shortcuts => self.show_shortcuts = true,
+            C::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -1362,6 +1405,10 @@ impl App {
                 }
             });
             ui.menu_button("Help", |ui| {
+                if ui.button("Command search…   Ctrl+K").clicked() {
+                    self.command_search.open();
+                    ui.close();
+                }
                 if ui.button("Open demo song").clicked() {
                     self.open_demo();
                 }
@@ -2588,6 +2635,9 @@ impl App {
         }
         self.serve_remote(&ctx);
         if self.pending.is_none() {
+            if let Some(action) = self.command_search.show(&ctx) {
+                self.run_command(&ctx, action);
+            }
             self.shortcuts(&ctx);
         }
 
