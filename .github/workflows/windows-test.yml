@@ -31,6 +31,14 @@ jobs:
           Write-Host "Installer run $run"
           gh run download $run -R $env:GITHUB_REPOSITORY -n Musiton-portable -D app
           Get-ChildItem app
+      - name: Bundled FFmpeg can write MP3 and OGG
+        shell: pwsh
+        run: |
+          $enc = & app\ffmpeg.exe -hide_banner -encoders
+          foreach ($e in 'libmp3lame', 'libvorbis') {
+            if (-not ($enc -match " $e ")) { throw "the bundled FFmpeg has no $e encoder" }
+            Write-Host "$e found"
+          }
       - name: Install free plugins (Surge XT, Dexed)
         shell: pwsh
         run: |

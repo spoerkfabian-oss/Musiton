@@ -106,7 +106,7 @@ pub fn ffmpeg() -> Result<&'static Path, VideoError> {
 }
 
 /// A quiet FFmpeg command (no console window on Windows, no stdin).
-fn command(exe: &Path) -> Command {
+pub(crate) fn command(exe: &Path) -> Command {
     let mut c = Command::new(exe);
     c.arg("-hide_banner")
         .arg("-nostdin")

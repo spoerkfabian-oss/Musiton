@@ -1,4 +1,5 @@
-//! Writing rendered audio to WAV (16/24-bit, 32-bit float) or FLAC (16/24-bit).
+//! Writing rendered audio to WAV (16/24-bit, 32-bit float), FLAC (16/24-bit), or MP3 and
+//! Ogg Vorbis through the external `ffmpeg` program (see [`crate::video`]).
 
 use std::path::Path;
 
@@ -22,16 +23,22 @@ pub enum ExportFormat {
     Flac16,
     /// FLAC, 24-bit.
     Flac24,
+    /// MP3, 320 kbit/s (needs FFmpeg).
+    Mp3,
+    /// Ogg Vorbis, quality 6 (about 192 kbit/s, needs FFmpeg).
+    Ogg,
 }
 
 impl ExportFormat {
     /// All formats with display names.
-    pub const ALL: [(ExportFormat, &'static str); 5] = [
+    pub const ALL: [(ExportFormat, &'static str); 7] = [
         (ExportFormat::Wav16, "WAV 16-bit"),
         (ExportFormat::Wav24, "WAV 24-bit"),
         (ExportFormat::Wav32Float, "WAV 32-bit float"),
         (ExportFormat::Flac16, "FLAC 16-bit"),
         (ExportFormat::Flac24, "FLAC 24-bit"),
+        (ExportFormat::Mp3, "MP3 320 kbit/s"),
+        (ExportFormat::Ogg, "OGG Vorbis"),
     ];
 
     /// Integer bit depth (`None` for float).
@@ -39,7 +46,7 @@ impl ExportFormat {
         match self {
             ExportFormat::Wav16 | ExportFormat::Flac16 => Some(16),
             ExportFormat::Wav24 | ExportFormat::Flac24 => Some(24),
-            ExportFormat::Wav32Float => None,
+            ExportFormat::Wav32Float | ExportFormat::Mp3 | ExportFormat::Ogg => None,
         }
     }
 
@@ -47,7 +54,9 @@ impl ExportFormat {
     pub fn extension(self) -> &'static str {
         match self {
             ExportFormat::Flac16 | ExportFormat::Flac24 => "flac",
-            _ => "wav",
+            ExportFormat::Mp3 => "mp3",
+            ExportFormat::Ogg => "ogg",
+            ExportFormat::Wav16 | ExportFormat::Wav24 | ExportFormat::Wav32Float => "wav",
         }
     }
 }
@@ -129,23 +138,7 @@ pub fn write_export(
     let n_ch = channels.len().max(1);
     let werr = |e: hound::Error| AudioFileError::Write(e.to_string());
     match opts.format {
-        ExportFormat::Wav32Float => {
-            let spec = hound::WavSpec {
-                channels: n_ch as u16,
-                sample_rate,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            };
-            let mut w = hound::WavWriter::create(path, spec).map_err(werr)?;
-            let frames = channels.first().map_or(0, Vec::len);
-            for i in 0..frames {
-                for ch in channels {
-                    w.write_sample(ch.get(i).copied().unwrap_or(0.0) * gain)
-                        .map_err(werr)?;
-                }
-            }
-            w.finalize().map_err(werr)
-        }
+        ExportFormat::Wav32Float => write_float_wav(path, channels, sample_rate, gain),
         ExportFormat::Wav16 | ExportFormat::Wav24 => {
             let bits = opts.format.bits().unwrap_or(24);
             let spec = hound::WavSpec {
@@ -190,8 +183,79 @@ pub fn write_export(
             std::fs::write(path, bytes)?;
             Ok(())
         }
+        ExportFormat::Mp3 => encode_lossy(path, channels, sample_rate, gain, MP3_ARGS),
+        ExportFormat::Ogg => encode_lossy(path, channels, sample_rate, gain, OGG_ARGS),
     }
 }
+
+/// Writes a 32-bit float WAV, scaled by `gain`.
+fn write_float_wav(
+    path: &Path,
+    channels: &[Vec<f32>],
+    sample_rate: u32,
+    gain: f32,
+) -> Result<(), AudioFileError> {
+    let werr = |e: hound::Error| AudioFileError::Write(e.to_string());
+    let spec = hound::WavSpec {
+        channels: channels.len().max(1) as u16,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(path, spec).map_err(werr)?;
+    let frames = channels.first().map_or(0, Vec::len);
+    for i in 0..frames {
+        for ch in channels {
+            w.write_sample(ch.get(i).copied().unwrap_or(0.0) * gain)
+                .map_err(werr)?;
+        }
+    }
+    w.finalize().map_err(werr)
+}
+
+/// FFmpeg encoder settings for MP3 and Ogg Vorbis.
+const MP3_ARGS: &[&str] = &["-c:a", "libmp3lame", "-b:a", "320k"];
+const OGG_ARGS: &[&str] = &["-c:a", "libvorbis", "-q:a", "6"];
+
+/// Writes a temporary 32-bit float WAV and lets FFmpeg encode it to `path`.
+fn encode_lossy(
+    path: &Path,
+    channels: &[Vec<f32>],
+    sample_rate: u32,
+    gain: f32,
+    codec: &[&str],
+) -> Result<(), AudioFileError> {
+    let exe = crate::video::ffmpeg().map_err(|e| AudioFileError::Write(e.to_string()))?;
+    let tmp = std::env::temp_dir().join(format!(
+        "musiton-encode-{}-{}.wav",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let result = write_float_wav(&tmp, channels, sample_rate, gain).and_then(|()| {
+        let out = crate::video::command(exe)
+            .arg("-y")
+            .arg("-i")
+            .arg(&tmp)
+            .args(codec)
+            .arg(path)
+            .output()?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let msg = String::from_utf8_lossy(&out.stderr);
+            Err(AudioFileError::Write(format!(
+                "FFmpeg could not encode the file: {}",
+                msg.trim()
+            )))
+        }
+    });
+    // The temporary file may already be gone; nothing to do then.
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+/// Makes temporary file names unique within this process.
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
 mod tests {
@@ -226,6 +290,34 @@ mod tests {
         .unwrap();
         let back = decode_file(&p).unwrap();
         assert_eq!(back.channels, s);
+    }
+
+    #[test]
+    fn mp3_and_ogg_sound_like_the_mix() {
+        if crate::video::ffmpeg().is_err() {
+            eprintln!("ffmpeg not available; skipping");
+            return;
+        }
+        let s = signal();
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        for format in [ExportFormat::Mp3, ExportFormat::Ogg] {
+            let p = tmp(&format!("lossy.{}", format.extension()));
+            let opts = ExportOptions {
+                format,
+                ..Default::default()
+            };
+            write_export(&p, &s, 48_000, opts).unwrap();
+            let back = decode_file(&p).unwrap();
+            assert_eq!(back.channels.len(), 2, "{format:?}");
+            // Encoders add a little silence at the start; compare levels, not samples.
+            for (orig, dec) in s.iter().zip(&back.channels) {
+                let ratio = rms(&dec[2_000..18_000]) / rms(&orig[2_000..18_000]);
+                assert!(
+                    (0.9..1.1).contains(&ratio),
+                    "{format:?}: level ratio {ratio}"
+                );
+            }
+        }
     }
 
     #[test]

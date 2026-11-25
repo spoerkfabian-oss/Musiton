@@ -13,13 +13,13 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 - **Step sequencer:** the "Steps" tab shows the open MIDI clip as a grid (1/8, 1/16 or 1/32 steps); drum-mode samplers get one row per pad; Shift+click accents a step.
 - **Plugins:** VST3 and CLAP instruments and effects (Options → Plugins… lists what was found; plugins are scanned in a separate process, so a crashing plugin cannot take Musiton down). Their settings are saved with the song; delays of plugins are compensated; each plugin can run in its own process ("Run in sandbox"), so a crash inside it cannot take Musiton down. Plugin editors open in their own window (Windows).
 - **Instruments and effects:**
-  - Instruments: a polysynth and a sampler with a drum mode.
+  - Instruments: a polysynth (with unison detune and stereo width) and a sampler with a drum mode.
   - Effects: EQ with spectrum view, compressor, delay, FDN reverb, limiter, saturation and utility.
   - Presets for all of them.
 - **Mixer:** faders, pan, mute, solo and solo-safe; sends and buses; meters in the mixer and in the track headers. Sidechain: a compressor can listen to another track (e.g. duck the bass with the kick).
 - **Automation:** lanes for volume, pan and every device parameter, with curves; read, write, touch and latch modes.
 - **Video:** File → Import video… shows the video in a window in sync with the song, and puts its sound on a new audio track. The video's start can be shifted.
-- **Export:** WAV 16/24/32f and FLAC 16/24, with normalize, dither and stems; faster than real time.
+- **Export:** WAV 16/24/32f, FLAC 16/24, MP3 (320 kbit/s) and OGG Vorbis (MP3 and OGG use the bundled FFmpeg), with normalize, dither and stems; faster than real time.
 - **Safety:** autosave, crash recovery, a dialog for relinking missing audio files, and error dialogs instead of crashes.
 - **Demo song:** Help → Open demo song.
 
