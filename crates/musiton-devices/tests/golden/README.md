@@ -1,4 +1,4 @@
-# Golden renders: built-in effects
+# Golden renders: built-in effects and instruments
 
 One reference render per effect, compared sample by sample by `tests/effects.rs` → `golden_renders` (tolerance 1e-4).
 
@@ -10,4 +10,12 @@ When an effect's sound changes on purpose, regenerate the files and listen to th
 
 ```bash
 MUSITON_BLESS=1 cargo test -p musiton-devices --test effects
+```
+
+## Instruments
+
+`tests/instruments.rs` → `golden_renders` renders the first two factory presets of every built-in synth (`<type id>-<preset>.wav`, e.g. `fm-e-piano.wav`): 1 s at 48 kHz of a C-major chord (or, for the drum synth, one hit of each drum) released after 0.5 s. Regenerate with:
+
+```bash
+MUSITON_BLESS=1 cargo test -p musiton-devices --test instruments golden
 ```

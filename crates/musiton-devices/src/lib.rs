@@ -12,6 +12,7 @@ pub mod polysynth;
 pub mod sampler;
 pub mod strings;
 pub mod voices;
+pub mod wavetable;
 
 use std::sync::Arc;
 
@@ -41,7 +42,7 @@ pub struct InstrumentType {
 }
 
 /// All built-in instruments.
-pub const INSTRUMENTS: [InstrumentType; 9] = [
+pub const INSTRUMENTS: [InstrumentType; 10] = [
     InstrumentType {
         type_id: POLYSYNTH,
         name: "Polysynth",
@@ -104,6 +105,13 @@ pub const INSTRUMENTS: [InstrumentType; 9] = [
         params: &drums::PARAMS,
         uses_samples: false,
         presets: drums::PRESETS,
+    },
+    InstrumentType {
+        type_id: "wavetable",
+        name: "Wavetable synth",
+        params: &wavetable::PARAMS,
+        uses_samples: false,
+        presets: wavetable::PRESETS,
     },
 ];
 
@@ -227,6 +235,7 @@ pub fn create_instrument(
         "pluck" => Box::<pluck::Pluck>::default(),
         "strings" => Box::<strings::Strings>::default(),
         "drums" => Box::<drums::Drums>::default(),
+        "wavetable" => Box::<wavetable::Wavetable>::default(),
         _ => Box::new(polysynth::Polysynth::new()),
     };
     for &(id, value) in params {

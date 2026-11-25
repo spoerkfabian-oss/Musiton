@@ -25,7 +25,9 @@ musiton/
 │  │                        # delay line, smoothing, FFT, mipmap resampling, WSOLA time-stretch. No threads, no I/O.
 │  ├─ musiton-engine/       # real-time engine: AudioNode trait, compiled graph, transport, command ring,
 │  │                        # GC thread, automation, nodes (clip player, MIDI track, strip, FX slot, …)
-│  ├─ musiton-devices/      # built-in instruments (polysynth, sampler) and effects; implement AudioNode
+│  ├─ musiton-devices/      # built-in instruments (polysynth, sampler, FM, wavetable, acid bass, organ,
+│  │                        #   electric piano, plucked strings, string ensemble, drum synth;
+│  │                        #   shared voice handling in voices.rs) and effects; implement AudioNode
 │  ├─ musiton-io/           # cpal audio in/out, midir MIDI, file decode (symphonia), resample (rubato),
 │  │                        # recording disk thread, WAV/FLAC export, video via an ffmpeg child process
 │  ├─ musiton-project/      # project model (source of truth), RON save/load + migrations, Edit/undo

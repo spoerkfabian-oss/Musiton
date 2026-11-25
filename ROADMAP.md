@@ -13,9 +13,10 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 | Later list | done except the plugin items, which come with phase 12. |
 | 15 — Remote control | done |
 | 16 — Quick wins | done |
-| 17–19 | planned (owner decision 2026-11-25). |
+| 17 — More instruments | done (bundled plugins to be confirmed on Windows) |
+| 18–19 | planned (owner decision 2026-11-25). |
 
-Work order from here: phases 17–19 in order; the owner's test of phase 12 (Vital, Valhalla, real sound) and phase 14's fresh-install check whenever the owner has time, with fixes from those tests first.
+Work order from here: phases 18–19 in order; the owner's test of phase 12 (Vital, Valhalla, real sound) and phase 14's fresh-install check whenever the owner has time, with fixes from those tests first.
 
 ## Phase 0 — Foundation
 - [x] Cargo workspace with all crates from ARCHITECTURE.md (empty stubs), `rust-toolchain.toml`, `.gitignore`, README; licence: ask owner (suggest MIT OR Apache-2.0)
@@ -141,14 +142,14 @@ Ideas taken from LYNX SHARE (ideas only, no code: it is AGPL).
 ## Phase 17 — More built-in instruments
 Owner decision (2026-11-25): also plucked strings, a string/pad ensemble, an acid bass synth and more synth sounds; ship Surge XT and Dexed with Musiton.
 - [ ] Ship Surge XT, Surge XT Effects and Dexed (GPL-3.0) in a `plugins/` folder next to Musiton; found without a scan setting
-- [ ] Wavetable synth
-- [ ] FM synth
-- [ ] Drum synth (kick, snare, hi-hat … without samples)
-- [ ] Electric piano / organ
-- [ ] Plucked strings (physical model: guitar, harp, pizzicato)
-- [ ] String / pad ensemble
-- [ ] Acid bass (monophonic, slide and accent)
-- [ ] Presets for every new instrument (a range of synth sounds)
+- [x] Wavetable synth
+- [x] FM synth
+- [x] Drum synth (kick, snare, hi-hat … without samples)
+- [x] Electric piano / organ
+- [x] Plucked strings (physical model: guitar, harp, pizzicato)
+- [x] String / pad ensemble
+- [x] Acid bass (monophonic, slide and accent)
+- [x] Presets for every new instrument (a range of synth sounds)
 
 ## Phase 18 — More built-in effects
 - [ ] Chorus, flanger, phaser

@@ -118,3 +118,23 @@ fn golden_renders() {
         }
     }
 }
+
+#[test]
+fn wavetable_high_notes_do_not_alias() {
+    use musiton_devices::wavetable::id;
+    let t = musiton_devices::instrument_type("wavetable").unwrap();
+    // The saw frame of the basic table; key 120 ≈ 8372 Hz. Aliases of a naive saw would
+    // fall at ≈2.2 and 6.1 kHz.
+    let out = play(
+        t,
+        &[(id::POSITION, 2.0 / 3.0), (id::CUTOFF, 20_000.0)],
+        &[note(0, 120, true)],
+        24_000,
+    );
+    let x = &out[0][4_800..14_400];
+    let fund = magnitude(x, 8_372.0);
+    for alias in [2_163.0, 6_118.0] {
+        let db = 20.0 * (magnitude(x, alias) / fund).log10();
+        assert!(db < -30.0, "alias at {alias} Hz: {db:.1} dB");
+    }
+}
