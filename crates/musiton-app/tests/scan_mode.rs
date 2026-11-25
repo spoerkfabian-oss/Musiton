@@ -40,7 +40,17 @@ fn check_mode_reports_a_working_plugin() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    let lines: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(lines.len() >= 4, "{lines:?}");
-    assert!(lines.iter().all(|l| l.starts_with("ok")), "{lines:?}");
+    // One JSON string per line; "..." lines name the step under way; "end" comes last.
+    let lines: Vec<String> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.last().map(String::as_str), Some("end"), "{lines:?}");
+    let results: Vec<_> = lines[..lines.len() - 1]
+        .iter()
+        .filter(|l| !l.starts_with("..."))
+        .collect();
+    assert!(results.len() >= 4, "{lines:?}");
+    assert!(results.iter().all(|l| l.starts_with("ok")), "{lines:?}");
 }

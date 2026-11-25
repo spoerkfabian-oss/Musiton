@@ -36,9 +36,25 @@ pub fn scan_mode(file: &Path) -> ! {
 /// Runs `cmd` (a scanner or checker process) and parses its JSON output; kills it after
 /// `timeout`.
 pub fn run_scanner<T: serde::de::DeserializeOwned>(
-    mut cmd: Command,
+    cmd: Command,
     timeout: Duration,
 ) -> Result<T, String> {
+    let (status, out, err) = run_process(cmd, timeout)?;
+    if status.success() {
+        serde_json::from_str(out.trim()).map_err(|e| format!("unreadable result: {e}"))
+    } else if status.code() == Some(2) {
+        Err(err.trim().to_owned())
+    } else {
+        Err(format!("crashed ({status})"))
+    }
+}
+
+/// Runs `cmd` with its output captured; kills it after `timeout`. Returns how it ended
+/// and what it printed (stdout, stderr).
+pub fn run_process(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<(std::process::ExitStatus, String, String), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -86,15 +102,11 @@ pub fn run_scanner<T: serde::de::DeserializeOwned>(
             Err(e) => return Err(e.to_string()),
         }
     };
-    let out = out.join().unwrap_or_default();
-    let err = err.join().unwrap_or_default();
-    if status.success() {
-        serde_json::from_str(out.trim()).map_err(|e| format!("unreadable result: {e}"))
-    } else if status.code() == Some(2) {
-        Err(err.trim().to_owned())
-    } else {
-        Err(format!("crashed ({status})"))
-    }
+    Ok((
+        status,
+        out.join().unwrap_or_default(),
+        err.join().unwrap_or_default(),
+    ))
 }
 
 /// Seconds since 1970 of the last change of `path` (0 if unknown).

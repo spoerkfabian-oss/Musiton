@@ -13,7 +13,7 @@ use musiton_core::{TempoMap, TimeSig};
 use musiton_engine::node::{AudioIo, AudioNode, Event, EventKind, ProcessContext};
 use musiton_plugin_host::{find_plugin_files, Plugin, PluginFormat, PluginInfo};
 
-use crate::plugins::{run_scanner, SCAN_ARG};
+use crate::plugins::{run_process, run_scanner, SCAN_ARG};
 
 /// Switch for the whole check: `--check-plugins <report file>`.
 pub const CHECK_ALL_ARG: &str = "--check-plugins";
@@ -59,10 +59,30 @@ pub fn check_all(report: &Path) -> anyhow::Result<()> {
                 .arg(&p.path)
                 .arg(&p.id)
                 .arg(if p.instrument { "1" } else { "0" });
-            match run_scanner::<Vec<String>>(cmd, CHECK_TIMEOUT) {
-                Ok(lines) => lines.iter().for_each(|l| {
-                    let _ = writeln!(text, "  {l}");
-                }),
+            match run_process(cmd, CHECK_TIMEOUT) {
+                Ok((status, out, _)) => {
+                    // One JSON string per line, so lines written before a crash survive.
+                    // "... step" lines only matter when the process ended during that step.
+                    let mut finished = false;
+                    let mut step = String::new();
+                    for line in out.lines() {
+                        match serde_json::from_str::<String>(line) {
+                            Ok(l) if l == END => finished = true,
+                            Ok(l) if l.starts_with("...") => step = l,
+                            Ok(l) => {
+                                let _ = writeln!(text, "  {l}");
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    if !finished {
+                        let _ = writeln!(
+                            text,
+                            "  FAIL the check process ended early ({status}) while {}",
+                            step.trim_start_matches('.').trim()
+                        );
+                    }
+                }
                 Err(e) => {
                     let _ = writeln!(text, "  FAIL check process: {e}");
                 }
@@ -82,20 +102,30 @@ fn format_arg(f: PluginFormat) -> &'static str {
     }
 }
 
-/// Checks one plugin (`args` after [`CHECK_ONE_ARG`]); prints the results as JSON.
+/// Last line of a check that ran to the end.
+const END: &str = "end";
+
+/// Checks one plugin (`args` after [`CHECK_ONE_ARG`]); prints each result as soon as it is
+/// known, as one JSON string per line, and [`END`] last.
 pub fn check_one(args: &[String]) -> ! {
-    let lines = match args {
+    let mut emit = |line: String| {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{}", serde_json::to_string(&line).unwrap_or_default());
+        let _ = out.flush();
+    };
+    match args {
         [format, path, id, instrument] => {
             let format = if format == "clap" {
                 PluginFormat::Clap
             } else {
                 PluginFormat::Vst3
             };
-            run_checks(format, Path::new(path), id, instrument == "1")
+            run_checks(format, Path::new(path), id, instrument == "1", &mut emit);
         }
-        _ => vec!["FAIL bad arguments".to_owned()],
-    };
-    println!("{}", serde_json::to_string(&lines).unwrap_or_default());
+        _ => emit("FAIL bad arguments".to_owned()),
+    }
+    emit(END.to_owned());
     std::process::exit(0)
 }
 
@@ -107,37 +137,46 @@ fn ok(cond: bool) -> &'static str {
     }
 }
 
-fn run_checks(format: PluginFormat, path: &Path, id: &str, instrument: bool) -> Vec<String> {
-    let mut out = Vec::new();
+fn run_checks(
+    format: PluginFormat,
+    path: &Path,
+    id: &str,
+    instrument: bool,
+    out: &mut dyn FnMut(String),
+) {
+    out("... loading".to_owned());
     let plugin = match Plugin::load(format, path, id, RATE, BLOCK) {
         Ok(p) => p,
-        Err(e) => return vec![format!("FAIL load: {e}")],
+        Err(e) => return out(format!("FAIL load: {e}")),
     };
-    out.push(format!(
+    out(format!(
         "ok   load: {} parameters, latency {} samples, editor: {}",
         plugin.params().len(),
         plugin.latency(),
         if plugin.has_editor() { "yes" } else { "no" }
     ));
+    out("... playing".to_owned());
     let peak = render(&mut *plugin.node(), instrument, false);
-    out.push(format!("{} sound: peak {peak:.3}", ok(peak > 0.001)));
+    out(format!("{} sound: peak {peak:.3}", ok(peak > 0.001)));
 
+    out("... saving and restoring settings".to_owned());
     match plugin.state() {
         Ok(state) => match plugin.set_state(&state) {
             Ok(()) => {
                 let again = render(&mut *plugin.node(), instrument, false);
-                out.push(format!(
+                out(format!(
                     "{} settings saved and restored ({} bytes); peak afterwards {again:.3}",
                     ok(again > 0.001),
                     state.len()
                 ));
             }
-            Err(e) => out.push(format!("FAIL restore settings: {e}")),
+            Err(e) => out(format!("FAIL restore settings: {e}")),
         },
-        Err(e) => out.push(format!("FAIL save settings: {e}")),
+        Err(e) => out(format!("FAIL save settings: {e}")),
     }
     let mut plugin = plugin;
     if plugin.has_editor() {
+        out("... opening the editor".to_owned());
         match plugin.open_editor("Musiton plugin check") {
             Ok(()) => {
                 for _ in 0..30 {
@@ -146,12 +185,14 @@ fn run_checks(format: PluginFormat, path: &Path, id: &str, instrument: bool) -> 
                 }
                 let open = plugin.editor_open();
                 plugin.close_editor();
-                out.push(format!("{} editor opened and closed", ok(open)));
+                out(format!("{} editor opened and closed", ok(open)));
             }
-            Err(e) => out.push(format!("FAIL editor: {e}")),
+            Err(e) => out(format!("FAIL editor: {e}")),
         }
     }
+    out("... unloading".to_owned());
     drop(plugin);
+    out("... loading in the sandbox".to_owned());
 
     match std::env::current_exe()
         .map_err(|e| e.to_string())
@@ -161,15 +202,14 @@ fn run_checks(format: PluginFormat, path: &Path, id: &str, instrument: bool) -> 
         Ok(plugin) => {
             let peak = render(&mut *plugin.node(), instrument, true);
             let failure = plugin.failure();
-            out.push(format!(
+            out(format!(
                 "{} sandbox: peak {peak:.3}{}",
                 ok(peak > 0.001 && failure.is_none()),
                 failure.map(|f| format!(" ({f})")).unwrap_or_default()
             ));
         }
-        Err(e) => out.push(format!("FAIL sandbox load: {e}")),
+        Err(e) => out(format!("FAIL sandbox load: {e}")),
     }
-    out
 }
 
 /// Plays a note (instrument) or a tone (effect) through `node`; returns the output peak.
@@ -192,13 +232,15 @@ fn render(node: &mut dyn AudioNode, instrument: bool, slow: bool) -> f32 {
                 }
             }
         }
+        // The note starts a little later: some plugins finish loading settings in the
+        // first blocks after a restore and drop notes meanwhile.
         let note = match b {
-            0 => Some(EventKind::NoteOn {
+            20 => Some(EventKind::NoteOn {
                 ch: 0,
                 key: 60,
                 vel: 0.8,
             }),
-            100 => Some(EventKind::NoteOff { ch: 0, key: 60 }),
+            120 => Some(EventKind::NoteOff { ch: 0, key: 60 }),
             _ => None,
         };
         let events: Vec<Event> = note

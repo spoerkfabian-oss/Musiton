@@ -68,7 +68,7 @@ jobs:
           $exe = "$PWD\app\Musiton.exe"
           $endpoint = "$env:APPDATA\Musiton\data\remote.json"
           Remove-Item $endpoint -ErrorAction SilentlyContinue
-          function R([string]$json) {
+          function Remote([string]$json) {
             Set-Content -Encoding utf8NoBOM cmd.json $json
             Start-Process $exe -ArgumentList '--remote', "@$PWD\cmd.json" -Wait -NoNewWindow -RedirectStandardOutput answer.txt | Out-Null
             $a = Get-Content answer.txt -Raw
@@ -78,18 +78,18 @@ jobs:
           Start-Process $exe -ArgumentList '--remote-control'
           for ($i = 0; $i -lt 90 -and -not (Test-Path $endpoint); $i++) { Start-Sleep 1 }
           Start-Sleep 5
-          R '{"cmd":"state"}'
-          R "{`"cmd`":`"screenshot`",`"path`":`"$($PWD -replace '\\','/')/out/1-start.png`"}"
-          R '{"cmd":"demo"}'
+          Remote '{"cmd":"state"}'
+          Remote "{`"cmd`":`"screenshot`",`"path`":`"$($PWD -replace '\\','/')/out/1-start.png`"}"
+          Remote '{"cmd":"demo"}'
           Start-Sleep 5
-          R '{"cmd":"state"}'
-          R '{"cmd":"play"}'
+          Remote '{"cmd":"state"}'
+          Remote '{"cmd":"play"}'
           Start-Sleep 4
-          R '{"cmd":"state"}'
-          R "{`"cmd`":`"screenshot`",`"path`":`"$($PWD -replace '\\','/')/out/2-demo-playing.png`"}"
-          R '{"cmd":"stop"}'
-          R '{"cmd":"log","lines":80}'
-          R '{"cmd":"quit"}'
+          Remote '{"cmd":"state"}'
+          Remote "{`"cmd`":`"screenshot`",`"path`":`"$($PWD -replace '\\','/')/out/2-demo-playing.png`"}"
+          Remote '{"cmd":"stop"}'
+          Remote '{"cmd":"log","lines":80}'
+          Remote '{"cmd":"quit"}'
           Start-Sleep 3
       - name: Collect the log
         if: always()
