@@ -9,6 +9,7 @@ pub mod organ;
 pub mod pluck;
 pub mod polysynth;
 pub mod sampler;
+pub mod strings;
 pub mod voices;
 
 use std::sync::Arc;
@@ -39,7 +40,7 @@ pub struct InstrumentType {
 }
 
 /// All built-in instruments.
-pub const INSTRUMENTS: [InstrumentType; 7] = [
+pub const INSTRUMENTS: [InstrumentType; 8] = [
     InstrumentType {
         type_id: POLYSYNTH,
         name: "Polysynth",
@@ -88,6 +89,13 @@ pub const INSTRUMENTS: [InstrumentType; 7] = [
         params: &pluck::PARAMS,
         uses_samples: false,
         presets: pluck::PRESETS,
+    },
+    InstrumentType {
+        type_id: "strings",
+        name: "String ensemble",
+        params: &strings::PARAMS,
+        uses_samples: false,
+        presets: strings::PRESETS,
     },
 ];
 
@@ -209,6 +217,7 @@ pub fn create_instrument(
         "organ" => Box::<organ::Organ>::default(),
         "epiano" => Box::<epiano::EPiano>::default(),
         "pluck" => Box::<pluck::Pluck>::default(),
+        "strings" => Box::<strings::Strings>::default(),
         _ => Box::new(polysynth::Polysynth::new()),
     };
     for &(id, value) in params {
