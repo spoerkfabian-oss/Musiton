@@ -481,6 +481,9 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - `musiton --remote '<json>'` is the client (prints one JSON answer; exit code 0 when ok). Positions for clicks are in screenshot pixels. Mouse and key commands answer once their last input step was fed to the window, so a following screenshot shows the result.
 - Tested in the cloud on a virtual X display: state, click "+ Instrument", play/stop, locate, screenshot, log, quit.
 - `windows-test.yml` (owner decision: test in a VM): GitHub's Windows machines run the plugin self-test with Surge XT and Dexed and a remote-control walk through the app after each installer build. Vital (account needed) and Valhalla are not downloaded automatically. No sound card or GPU there.
+- First Windows test results (GitHub's Windows machine): Surge XT and Surge XT Effects (VST3 and CLAP) pass every check: load, sound, settings round trip, editor, sandbox. Dexed passes in-process; in the sandbox its start hung for 30 s. Likely cause: a plugin printing its own text to stdout, which the sandbox used for its messages. Messages now start with a marker and the reader skips foreign text and broken frames.
+- The check's test note now starts after 20 blocks: Surge XT finishes restoring settings in the first blocks and drops notes meanwhile (this looked like "silent after restore").
+- The Windows machine has no audio device, so play/levels cannot be tested there.
 - Limits: screenshots show Musiton's main window only, not plugin editor windows; native file dialogs cannot be driven (use `open`/`save` with a path).
 
 ## Open: CI maintenance

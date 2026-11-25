@@ -232,19 +232,46 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Marks the start of a message. Plugins may print their own text to the same output
+/// (stdout); the reader skips everything until this marker.
+const FRAME_MARK: [u8; 4] = *b"MsTn";
+/// Largest message accepted (a plugin's saved state can be a few megabytes).
+const MAX_MESSAGE: usize = 256 << 20;
+
 fn send<T: Serialize>(out: &mut impl Write, msg: &T) -> std::io::Result<()> {
     let body = serde_json::to_vec(msg).map_err(std::io::Error::other)?;
-    out.write_all(&(body.len() as u32).to_le_bytes())?;
-    out.write_all(&body)?;
+    // One write, so text a plugin prints at the same time cannot land inside it.
+    let mut frame = Vec::with_capacity(body.len() + 8);
+    frame.extend_from_slice(&FRAME_MARK);
+    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&body);
+    out.write_all(&frame)?;
     out.flush()
 }
 
+/// The next message; skips foreign text and broken frames. `None` at the end of input.
 fn receive<T: for<'de> Deserialize<'de>>(input: &mut impl Read) -> Option<T> {
-    let mut len = [0u8; 4];
-    input.read_exact(&mut len).ok()?;
-    let mut body = vec![0u8; u32::from_le_bytes(len) as usize];
-    input.read_exact(&mut body).ok()?;
-    serde_json::from_slice(&body).ok()
+    loop {
+        let mut window = [0u8; 4];
+        input.read_exact(&mut window).ok()?;
+        while window != FRAME_MARK {
+            let mut byte = [0u8; 1];
+            input.read_exact(&mut byte).ok()?;
+            window.rotate_left(1);
+            window[3] = byte[0];
+        }
+        let mut len = [0u8; 4];
+        input.read_exact(&mut len).ok()?;
+        let len = u32::from_le_bytes(len) as usize;
+        if len > MAX_MESSAGE {
+            continue;
+        }
+        let mut body = vec![0u8; len];
+        input.read_exact(&mut body).ok()?;
+        if let Ok(msg) = serde_json::from_slice(&body) {
+            return Some(msg);
+        }
+    }
 }
 
 /// Starts plugin `id` of the file at `path` in a sandbox process (`exe`).
@@ -318,9 +345,15 @@ pub(crate) fn load(
             return Err(PluginError::Failed(error));
         }
         _ => {
+            let why = match child.try_wait() {
+                Ok(Some(status)) => {
+                    format!("the plugin process ended before it was ready ({status})")
+                }
+                _ => "the plugin process did not get ready within 30 s".to_owned(),
+            };
             let _ = child.kill();
             let _ = child.wait();
-            return Err(failed("the plugin process did not start".into()));
+            return Err(failed(why));
         }
     };
     let params: Vec<PluginParam> = params
@@ -949,6 +982,24 @@ fn serve_audio(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_a_plugin_prints_does_not_break_the_messages() {
+        let mut buf = b"JUCE v8.0.4\nsome plugin log\n".to_vec();
+        send(&mut buf, &Request::Values).unwrap();
+        // A frame with an absurd length, then a broken one, then a good one.
+        buf.extend_from_slice(&FRAME_MARK);
+        buf.extend_from_slice(&u32::MAX.to_le_bytes());
+        buf.extend_from_slice(&FRAME_MARK);
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(b"{{{");
+        buf.extend_from_slice(b"more noise");
+        send(&mut buf, &Request::Values).unwrap();
+        let mut input = buf.as_slice();
+        assert!(matches!(receive(&mut input), Some(Request::Values)));
+        assert!(matches!(receive(&mut input), Some(Request::Values)));
+        assert!(receive::<Request>(&mut input).is_none());
+    }
 
     #[test]
     fn messages_and_bytes_survive_the_pipe() {
