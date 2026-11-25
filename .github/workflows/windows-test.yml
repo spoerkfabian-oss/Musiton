@@ -62,6 +62,7 @@ jobs:
           Get-Content out\plugin-report.txt
           Get-Content out\plugin-report.txt | Out-File -Append $env:GITHUB_STEP_SUMMARY
           if ($p.ExitCode -ne 0) { throw "check exited with $($p.ExitCode)" }
+          if (Select-String -Path out\plugin-report.txt -Pattern '^\s+FAIL' -Quiet) { throw 'the plugin check found failures' }
       - name: Drive the app by remote control
         shell: pwsh
         run: |
