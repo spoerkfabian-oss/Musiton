@@ -24,6 +24,56 @@ impl FilterMode {
     }
 }
 
+/// 24 dB/octave low-pass ladder (four one-pole stages in a resonant loop, zero-delay
+/// feedback, soft saturation in the loop): the classic acid-bass filter.
+#[derive(Debug, Clone, Default)]
+pub struct Ladder {
+    s: [f32; 4],
+    g: f32,
+    k: f32,
+}
+
+impl Ladder {
+    /// Sets cutoff (Hz) and resonance (0 = none … 1 = self-oscillation).
+    pub fn set(&mut self, cutoff: f32, resonance: f32, sample_rate: f32) {
+        let fc = cutoff.clamp(10.0, sample_rate * 0.45);
+        let g = (std::f32::consts::PI * fc / sample_rate).tan();
+        self.g = g / (1.0 + g);
+        self.k = 4.0 * resonance.clamp(0.0, 1.0);
+    }
+
+    /// Filters one sample.
+    #[inline]
+    pub fn process(&mut self, x: f32) -> f32 {
+        let g = self.g;
+        // Response of the four stages to their states (the loop is solved, not delayed).
+        let g2 = g * g;
+        let big_g = g2 * g2;
+        let sigma = (1.0 - g) * (g2 * g * self.s[0] + g2 * self.s[1] + g * self.s[2] + self.s[3]);
+        // Bass loss at high resonance is made up partly by mixing the input back in.
+        let u = (x * (1.0 + 0.5 * self.k) - self.k * sigma) / (1.0 + self.k * big_g);
+        let mut v = soft_clip(u);
+        for s in &mut self.s {
+            let y = g * (v - *s) + *s;
+            *s = 2.0 * y - *s;
+            v = y;
+        }
+        v
+    }
+
+    /// Clears the state.
+    pub fn reset(&mut self) {
+        self.s = [0.0; 4];
+    }
+}
+
+/// Smooth saturation: about linear below 0.5, reaches ±1 at ±3 and stays there.
+#[inline]
+fn soft_clip(x: f32) -> f32 {
+    let x = x.clamp(-3.0, 3.0);
+    x * (27.0 + x * x) / (27.0 + 9.0 * x * x)
+}
+
 /// 12 dB/octave state-variable filter.
 #[derive(Debug, Clone, Default)]
 pub struct Svf {

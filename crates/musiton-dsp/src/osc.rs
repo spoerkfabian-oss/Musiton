@@ -115,6 +115,25 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
     }
 }
 
+/// Fast sine of `turns` (one turn = 2π), accurate to about 1e-5: no table, no libm call.
+#[inline]
+pub fn sin_turns(turns: f32) -> f32 {
+    // Reduce to −0.5 … 0.5 turns, then fold onto −0.25 … 0.25 (sin(π − x) = sin x).
+    let t = turns - turns.round();
+    let t = if t > 0.25 {
+        0.5 - t
+    } else if t < -0.25 {
+        -0.5 - t
+    } else {
+        t
+    };
+    let x = t * std::f32::consts::TAU;
+    let x2 = x * x;
+    // Taylor series to x⁹ (error < 4e-6 on ±π/2).
+    x * (1.0
+        + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5_040.0 + x2 * (1.0 / 362_880.0)))))
+}
+
 /// Anti-aliased oscillator (PolyBLEP saw/square, naive triangle, sine). The phase is never
 /// reset by frequency changes, so retriggering is click-free.
 #[derive(Debug, Clone, Default)]
@@ -200,6 +219,15 @@ mod blep_tests {
                     "{wave:?} alias at {alias} Hz only {a:.1} dB down"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn fast_sine_matches_the_real_one() {
+        for i in -3_000..3_000 {
+            let t = i as f32 / 997.0;
+            let err = (sin_turns(t) - (t * std::f32::consts::TAU).sin()).abs();
+            assert!(err < 2e-5, "{t}: {err}");
         }
     }
 

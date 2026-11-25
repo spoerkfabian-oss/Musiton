@@ -1,9 +1,12 @@
 //! Built-in instruments and effects for Musiton (they implement `musiton_engine::node::AudioNode`).
 
+pub mod acid;
 pub mod controllers;
 pub mod effects;
+pub mod fm;
 pub mod polysynth;
 pub mod sampler;
+pub mod voices;
 
 use std::sync::Arc;
 
@@ -33,7 +36,7 @@ pub struct InstrumentType {
 }
 
 /// All built-in instruments.
-pub const INSTRUMENTS: [InstrumentType; 2] = [
+pub const INSTRUMENTS: [InstrumentType; 4] = [
     InstrumentType {
         type_id: POLYSYNTH,
         name: "Polysynth",
@@ -47,6 +50,20 @@ pub const INSTRUMENTS: [InstrumentType; 2] = [
         params: &sampler::PARAMS,
         uses_samples: true,
         presets: &[],
+    },
+    InstrumentType {
+        type_id: "fm",
+        name: "FM synth",
+        params: &fm::PARAMS,
+        uses_samples: false,
+        presets: fm::PRESETS,
+    },
+    InstrumentType {
+        type_id: "acid",
+        name: "Acid bass",
+        params: &acid::PARAMS,
+        uses_samples: false,
+        presets: acid::PRESETS,
     },
 ];
 
@@ -163,6 +180,8 @@ pub fn create_instrument(
                 .map(|(k, a)| sampler::Zone::new(*k, a))
                 .collect(),
         )),
+        "fm" => Box::<fm::Fm>::default(),
+        "acid" => Box::<acid::Acid>::default(),
         _ => Box::new(polysynth::Polysynth::new()),
     };
     for &(id, value) in params {
