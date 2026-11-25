@@ -37,7 +37,7 @@ jobs:
           $vst3 = "$env:CommonProgramFiles\VST3"; $clap = "$env:CommonProgramFiles\CLAP"
           New-Item -ItemType Directory -Force $vst3, $clap | Out-Null
           function Get-Plugins($repo, $pattern) {
-            $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+            $rel = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
             $asset = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
             if (-not $asset) { Write-Host "No asset for $repo; assets: $($rel.assets.name -join ', ')"; return }
             Write-Host "Using $($asset.name)"

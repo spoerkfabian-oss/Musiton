@@ -25,7 +25,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $rel = Invoke-RestMethod https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $rel = gh api repos/BtbN/FFmpeg-Builds/releases/tags/latest | ConvertFrom-Json
           $asset = $rel.assets |
             Where-Object { $_.name -match '^ffmpeg-n([\d.]+)-latest-win64-lgpl-[\d.]+\.zip$' } |
             Sort-Object { [version]($_.name -replace '^ffmpeg-n([\d.]+)-.*$', '$1') } -Descending |
