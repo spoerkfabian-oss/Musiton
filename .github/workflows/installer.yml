@@ -44,11 +44,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $out = "target/release/plugins"
+          # The build cache can keep an older plugins folder: start clean.
+          Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force $out, "$out/licenses", dl | Out-Null
           # Only plugins under these licences are shipped (checked against GitHub's licence data).
           $free = 'GPL-3.0', 'GPL-3.0-or-later', 'GPL-2.0', 'GPL-2.0-or-later', 'LGPL-3.0', 'LGPL-2.1', 'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Apache-2.0'
           $shipped = @()
-          function Get-Plugin($name, $repo, $pattern, $licenceRepo) {
+          function Get-Plugin($name, $repo, $pattern, $licenceRepo, $only) {
             if (-not $licenceRepo) { $licenceRepo = $repo }
             try {
               $licence = gh api "repos/$licenceRepo" --jq '.license.spdx_id'
@@ -63,9 +65,9 @@ jobs:
               $found = 0
               # A .vst3 is a folder (bundle) or a file; never look inside a bundle. Skip 32-bit builds.
               $is32 = { param($f) $f -match '(?i)(\\|_|-)(x86|win32|32[ -]?bit)(\\|_|-|\.)' -and $f -notmatch '(?i)x86[_-]64' }
-              Get-ChildItem $dir -Recurse -Filter *.vst3 | Where-Object { $_.FullName -notmatch '\.vst3\\.+' -and -not (& $is32 $_.FullName) } |
+              Get-ChildItem $dir -Recurse -Filter *.vst3 | Where-Object { $_.FullName -notmatch '\.vst3\\.+' -and -not (& $is32 $_.FullName) -and (-not $only -or $_.Name -match $only) } |
                 ForEach-Object { Copy-Item $_.FullName $out -Recurse -Force; Write-Host "VST3: $($_.Name)"; $found++ }
-              Get-ChildItem $dir -Recurse -Filter *.clap -File | Where-Object { -not (& $is32 $_.FullName) } |
+              Get-ChildItem $dir -Recurse -Filter *.clap -File | Where-Object { -not (& $is32 $_.FullName) -and (-not $only -or $_.Name -match $only) } |
                 ForEach-Object { Copy-Item $_.FullName $out -Force; Write-Host "CLAP: $($_.Name)"; $found++ }
               if ($found -eq 0) { Write-Warning "${name}: no VST3 or CLAP in $($asset.name)"; return }
               $lic = "$out\licenses\$name"
@@ -83,13 +85,11 @@ jobs:
           }
           $surge = Get-Plugin 'Surge XT' 'surge-synthesizer/releases-xt' 'win64.*pluginsonly.*\.zip$' 'surge-synthesizer/surge'
           Get-Plugin 'Dexed' 'asb2m10/dexed' '(?i)win.*\.zip$' | Out-Null
-          Get-Plugin 'Odin 2' 'TheWaveWarden/odin2' '(?i)win.*\.zip$' | Out-Null
-          Get-Plugin 'OB-Xd' 'reales/OB-Xd' '(?i)win.*\.zip$' | Out-Null
-          Get-Plugin 'Firefly Synth' 'sjoerdvankreel/firefly-synth' '(?i)win.*\.zip$' | Out-Null
-          Get-Plugin 'sfizz' 'sfztools/sfizz' '(?i)win.*\.zip$' | Out-Null
-          Get-Plugin 'Cardinal' 'DISTRHO/Cardinal' '(?i)win.*64.*\.zip$' | Out-Null
-          Get-Plugin 'Airwindows Consolidated' 'baconpaul/airwin2rack' '(?i)win.*\.zip$' | Out-Null
-          Get-Plugin 'Dragonfly Reverb' 'michaelwillis/dragonfly-reverb' '(?i)win.*\.zip$' | Out-Null
+          Get-Plugin 'sfizz' 'sfztools/sfizz' '(?i)win64.*\.zip$' | Out-Null
+          # Cardinal: only the VST3 synth and effect (the CLAP builds and the main "Cardinal"
+          # failed the Windows plugin check: no sound, no editor).
+          Get-Plugin 'Cardinal' 'DISTRHO/Cardinal' '(?i)win64.*\.zip$' '' '^Cardinal (Synth|FX)\.vst3$' | Out-Null
+          Get-Plugin 'Dragonfly Reverb' 'michaelwillis/dragonfly-reverb' '(?i)win64.*\.zip$' | Out-Null
           if (-not $surge) { throw 'Surge XT could not be fetched' }
           # Surge XT's factory patches and wavetables: the plugins-only zip has none, so take
           # them from the source of the same release ("portable" data folder next to the plugin).
@@ -124,6 +124,9 @@ jobs:
       - name: Portable exe
         shell: pwsh
         run: |
+          # Start clean: the build cache can keep an older folder, and copying into an
+          # existing plugins folder would nest it (plugins/plugins).
+          Remove-Item -Recurse -Force target/portable -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force target/portable | Out-Null
           Copy-Item target/release/musiton.exe target/portable/Musiton.exe
           Copy-Item target/release/ffmpeg.exe target/portable/ffmpeg.exe
