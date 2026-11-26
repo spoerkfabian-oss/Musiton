@@ -6,10 +6,10 @@
 use musiton_core::ids::{ClipId, DeviceId, TrackId};
 use musiton_core::{TempoMap, Tick, PPQ};
 use musiton_devices::drums::id as dr;
-use musiton_devices::effects::{compressor, delay, limiter, reverb, saturation, utility};
+use musiton_devices::effects::{compressor, delay, eq, limiter, reverb, saturation, utility};
 use musiton_project::{
-    AutoMode, AutoPoint, AutomationLane, Clip, DeviceSlot, MidiClip, Note, OutputRoute,
-    ParamTarget, Project, Track, TrackKind,
+    AutoMode, AutoPoint, AutomationLane, ChannelStrip, Clip, DeviceSlot, MidiClip, Note,
+    OutputRoute, ParamTarget, Project, Track, TrackKind,
 };
 
 /// One bar of 4/4 in ticks.
@@ -1198,7 +1198,8 @@ fn edm_drums(kit: &str) -> Vec<Part> {
                 (10, key::OPEN_HAT, 1, 105),
                 (14, key::OPEN_HAT, 1, 105),
             ];
-            v.extend([1, 3, 5, 7, 9, 11, 13, 15].map(|s| (s, key::HAT, 1, 70)));
+            // Sixteenth hats, accented off the beat: the top end of the drop.
+            v.extend((0..16).map(|s| (s, key::HAT, 1, if s % 2 == 1 { 100 } else { 70 })));
             v
         }
         Section::Outro => (0..16).step_by(2).map(|s| (s, key::HAT, 1, 70)).collect(),
@@ -1215,7 +1216,7 @@ fn edm_drums(kit: &str) -> Vec<Part> {
             trim_db: 0.0,
             instrument: "drums",
             params: preset("drums", kit),
-            effects: vec![drive_fx(6.0, 0.0)],
+            effects: vec![drive_fx(12.0, 0.0)],
             notes: kick,
         },
         Part {
@@ -1336,7 +1337,7 @@ fn edm_melodic() -> Project {
             Part {
                 name: "Bass",
                 color: [90, 170, 230],
-                trim_db: -3.0,
+                trim_db: -6.0,
                 instrument: musiton_devices::POLYSYNTH,
                 params: preset(musiton_devices::POLYSYNTH, "EDM bass"),
                 effects: Vec::new(),
@@ -1369,7 +1370,7 @@ fn edm_melodic() -> Project {
         musiton_devices::polysynth::id::CUTOFF,
         &cut,
     );
-    master_bus(&mut project, 18.0);
+    master_bus(&mut project, 20.0);
     project
 }
 
@@ -1447,7 +1448,7 @@ fn edm_big_room() -> Project {
             Part {
                 name: "Bass",
                 color: [90, 170, 230],
-                trim_db: -2.0,
+                trim_db: -5.0,
                 instrument: musiton_devices::POLYSYNTH,
                 params: preset(musiton_devices::POLYSYNTH, "EDM bass"),
                 effects: Vec::new(),
@@ -1477,7 +1478,7 @@ fn edm_big_room() -> Project {
         musiton_devices::polysynth::id::CUTOFF,
         &cut,
     );
-    master_bus(&mut project, 18.0);
+    master_bus(&mut project, 20.0);
     project
 }
 
@@ -1494,9 +1495,27 @@ fn master_bus(project: &mut Project, drive_db: f32) {
     ] {
         glue.set_param(p, Some(v));
     }
+    // Brighter, wider top end, as in the reference songs (high shelf on band 7).
+    let mut tone = DeviceSlot::builtin(DeviceId(project.alloc_id()), "eq");
+    let shelf = 6 * eq::PER_BAND;
+    tone.set_param(shelf + 1, Some(5_000.0));
+    tone.set_param(shelf + 2, Some(4.0));
+    let mut width = DeviceSlot::builtin(DeviceId(project.alloc_id()), "utility");
+    width.set_param(utility::id::WIDTH, Some(1.4));
+    // A soft clipper rounds off the kick peaks before the limiter (loudness without pumping).
+    let mut clip = DeviceSlot::builtin(DeviceId(project.alloc_id()), "saturation");
+    for (p, v) in [
+        (saturation::id::DRIVE, 6.0),
+        (saturation::id::TONE, 20_000.0),
+        (saturation::id::OUTPUT, -6.0),
+    ] {
+        clip.set_param(p, Some(v));
+    }
     let mut lim = DeviceSlot::builtin(DeviceId(project.alloc_id()), "limiter");
     lim.set_param(limiter::id::INPUT, Some(drive_db));
     lim.set_param(limiter::id::CEILING, Some(-0.3));
+    // A fast release lets the limiter follow the kick instead of ducking the whole beat.
+    lim.set_param(limiter::id::RELEASE, Some(0.02));
     for t in &mut project.tracks {
         t.output = OutputRoute::Bus(id);
     }
@@ -1505,7 +1524,13 @@ fn master_bus(project: &mut Project, drive_db: f32) {
         name: "Master bus".to_owned(),
         color: [120, 120, 120],
         kind: TrackKind::Bus,
-        devices: vec![glue, lim],
+        devices: vec![tone, width, glue, clip, lim],
+        // Makes up the −3 dB centre pan law of this strip and the master strip, so the
+        // limiter's ceiling is the song's peak.
+        strip: ChannelStrip {
+            gain_db: 6.0,
+            ..ChannelStrip::default()
+        },
         ..Track::default()
     });
 }

@@ -531,6 +531,7 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
             (id::CLAP_LEVEL, 0.9),
             (id::CLAP_DECAY, 0.3),
             (id::HAT_TONE, 10_000.0),
+            (id::HAT_LEVEL, 0.8),
             (id::OPEN_DECAY, 0.25),
             (id::CYMBAL_DECAY, 1.5),
         ],
