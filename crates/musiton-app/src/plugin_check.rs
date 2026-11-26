@@ -76,9 +76,13 @@ pub fn check_all(report: &Path) -> anyhow::Result<()> {
                         }
                     }
                     if !finished {
+                        let how = match status {
+                            Some(s) => format!("ended early ({s})"),
+                            None => format!("did not finish within {} s", CHECK_TIMEOUT.as_secs()),
+                        };
                         let _ = writeln!(
                             text,
-                            "  FAIL the check process ended early ({status}) while {}",
+                            "  FAIL the check process {how} while {}",
                             step.trim_start_matches('.').trim()
                         );
                     }

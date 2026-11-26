@@ -40,6 +40,9 @@ pub fn run_scanner<T: serde::de::DeserializeOwned>(
     timeout: Duration,
 ) -> Result<T, String> {
     let (status, out, err) = run_process(cmd, timeout)?;
+    let Some(status) = status else {
+        return Err(format!("did not finish within {} s", timeout.as_secs()));
+    };
     if status.success() {
         serde_json::from_str(out.trim()).map_err(|e| format!("unreadable result: {e}"))
     } else if status.code() == Some(2) {
@@ -50,11 +53,11 @@ pub fn run_scanner<T: serde::de::DeserializeOwned>(
 }
 
 /// Runs `cmd` with its output captured; kills it after `timeout`. Returns how it ended
-/// and what it printed (stdout, stderr).
+/// (`None`: killed after the timeout) and what it printed until then (stdout, stderr).
 pub fn run_process(
     mut cmd: Command,
     timeout: Duration,
-) -> Result<(std::process::ExitStatus, String, String), String> {
+) -> Result<(Option<std::process::ExitStatus>, String, String), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -92,11 +95,11 @@ pub fn run_process(
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => break Some(status),
             Ok(None) if started.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("did not finish within {} s", timeout.as_secs()));
+                break None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => return Err(e.to_string()),
