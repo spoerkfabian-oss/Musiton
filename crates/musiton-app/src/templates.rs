@@ -60,7 +60,7 @@ pub struct Template {
 pub const TEMPLATES: &[Template] = &[
     Template {
         name: "Raw",
-        description: "Plain saws in pure-tuned chords (Aloboi style), gated sixteenths at 120 BPM",
+        description: "Plain saws in overtone-series chords over a deep sine (Aloboi style), gated sixteenths at 120 BPM",
         build: raw,
     },
     Template {
@@ -259,14 +259,15 @@ fn chord(root: u8, third: u8) -> Vec<u8> {
 
 fn raw() -> Project {
     assemble(Some("raw"), 120.0, 4, 1, || {
-        // Voicings measured from Aloboi's "Just Raw" videos (the synth tunes them pure):
-        // C#maj7, F#m, F, F7 with its natural seventh. All five notes wide, root and
-        // fifth low like the first chord (the owner hears that one as closest).
+        // Voicings measured from the owner's recording of Aloboi's "Want To Love (Just
+        // Raw)": overtone stacks from the second octave up to about 1 kHz (9/8, 5/4,
+        // 27/16, 7/4, 15/8 over the root), with a sine an octave below the root as loud
+        // as the chord. B – C# – D# – C#.
         const CHORDS: [&[u8]; 4] = [
-            &[37, 44, 49, 53, 60],
-            &[42, 49, 54, 57, 61],
-            &[41, 48, 53, 57, 60],
-            &[41, 48, 53, 57, 63],
+            &[35, 42, 51, 58, 61, 63, 70],
+            &[37, 44, 51, 58, 63, 65, 71],
+            &[39, 46, 51, 55, 58, 63, 74],
+            &[37, 44, 51, 58, 63, 65, 71],
         ];
         let chord_of = |bar: i64| CHORDS.get(bar as usize % 4).copied().unwrap_or(&[]);
         // Gated sixteenths: about 80 ms on, 40 ms off, some held over two steps.
@@ -301,15 +302,19 @@ fn raw() -> Project {
                 trim_db: -1.0,
                 instrument: musiton_devices::POLYSYNTH,
                 params: preset(musiton_devices::POLYSYNTH, "Raw stab"),
-                effects: vec![reverb_fx(0.08)],
+                // About 1.5 s of room, the only stereo in the reference.
+                effects: vec![(
+                    "reverb",
+                    vec![(reverb::id::MIX, 0.35), (reverb::id::DECAY, 1.5)],
+                )],
                 notes: stabs,
             },
             Part {
                 name: "Sub",
                 color: [90, 170, 230],
-                trim_db: -3.0,
+                trim_db: -4.0,
                 instrument: musiton_devices::POLYSYNTH,
-                params: preset(musiton_devices::POLYSYNTH, "Dirty sub"),
+                params: preset(musiton_devices::POLYSYNTH, "Sine sub"),
                 effects: Vec::new(),
                 notes: seq(4, |bar| {
                     let root = chord_of(bar).first().copied().unwrap_or(36);

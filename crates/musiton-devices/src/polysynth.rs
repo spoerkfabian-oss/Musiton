@@ -1160,13 +1160,15 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
             (id::AMP_A, 0.002),
             (id::AMP_D, 0.1),
             (id::AMP_S, 1.0),
-            (id::AMP_R, 0.03),
+            (id::AMP_R, 0.08),
             (id::DRIVE, 0.1),
             (id::DRIVE_TYPE, 2.0),
             (id::DRIFT, 0.0),
             (id::JUST, 1.0),
             (id::JUST_KEYS, 2.0),
-            (id::WIDTH, 0.4),
+            // Measured on the owner's reference: overtone-series chords (27/16, 7/4 …),
+            // dry and centred (the width comes from the reverb).
+            (id::TUNING, 1.0),
         ],
     ),
     (
