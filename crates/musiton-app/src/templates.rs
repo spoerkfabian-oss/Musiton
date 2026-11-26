@@ -257,10 +257,10 @@ fn chord(root: u8, third: u8) -> Vec<u8> {
 
 // ---- templates -------------------------------------------------------------------------
 
-/// Raw chord velocity: the low notes loudest, as in the reference (root and fifth carry
+/// Raw chord velocity (−3 per semitone above B1): the low notes loudest, as in the reference (root and fifth carry
 /// the sound, the upper overtones colour it).
 fn chord_velocity(pitch: u8) -> u8 {
-    (127 - (i32::from(pitch) - 35) * 2).clamp(50, 127) as u8
+    (127 - (i32::from(pitch) - 35) * 3).clamp(50, 127) as u8
 }
 
 fn raw() -> Project {
