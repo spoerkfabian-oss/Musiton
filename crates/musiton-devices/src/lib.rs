@@ -11,6 +11,7 @@ pub mod organ;
 pub mod pluck;
 pub mod polysynth;
 pub mod sampler;
+pub mod sfz_player;
 pub mod strings;
 pub mod voices;
 pub mod wavetable;
@@ -26,6 +27,8 @@ use musiton_engine::node::AudioNode;
 pub const POLYSYNTH: &str = "polysynth";
 /// Type id of the sampler.
 pub const SAMPLER: &str = "sampler";
+/// Type id of the sample instrument (SFZ player).
+pub const SFZ: &str = "sfz";
 
 /// A built-in instrument type.
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +46,7 @@ pub struct InstrumentType {
 }
 
 /// All built-in instruments.
-pub const INSTRUMENTS: [InstrumentType; 10] = [
+pub const INSTRUMENTS: [InstrumentType; 11] = [
     InstrumentType {
         type_id: POLYSYNTH,
         name: "Polysynth",
@@ -113,6 +116,13 @@ pub const INSTRUMENTS: [InstrumentType; 10] = [
         params: &wavetable::PARAMS,
         uses_samples: false,
         presets: wavetable::PRESETS,
+    },
+    InstrumentType {
+        type_id: SFZ,
+        name: "Sample instrument",
+        params: &sfz_player::PARAMS,
+        uses_samples: true,
+        presets: &[("Init", &[])],
     },
 ];
 
@@ -257,6 +267,18 @@ pub fn instrument_type(type_id: &str) -> Option<&'static InstrumentType> {
     INSTRUMENTS.iter().find(|t| t.type_id == type_id)
 }
 
+/// Creates a sample instrument playing `regions` (off the audio thread).
+pub fn create_sfz(
+    params: &[(u64, f32)],
+    regions: Vec<sfz_player::SfzRegion>,
+) -> Box<dyn AudioNode> {
+    let mut node: Box<dyn AudioNode> = Box::new(sfz_player::SfzPlayer::new(regions));
+    for &(id, value) in params {
+        node.set_param(ParamId(id), value);
+    }
+    node
+}
+
 /// Creates an instrument (off the audio thread). Unknown types give a polysynth.
 /// `samples` are (key, audio) pairs: the root sample, or one per pad in drum mode.
 pub fn create_instrument(
@@ -265,6 +287,7 @@ pub fn create_instrument(
     samples: &[(u8, Arc<AudioData>)],
 ) -> Box<dyn AudioNode> {
     let mut node: Box<dyn AudioNode> = match type_id {
+        SFZ => Box::new(sfz_player::SfzPlayer::new(Vec::new())),
         SAMPLER => Box::new(sampler::Sampler::new(
             samples
                 .iter()

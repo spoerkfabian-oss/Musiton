@@ -163,7 +163,7 @@ Owner decision (2026-11-25): also plucked strings, a string/pad ensemble, an aci
 ## Phase 18b — Realistic sound (owner decision 2026-11-26)
 The owner finds the built-in instruments too alike and not real; unison/detune never sounds great. Both ways:
 - [ ] Owner decision: full quality, as big as needed. The NSIS installer cannot exceed ~2 GB, so the samples are not in the installer: Options → Sound library downloads each instrument from its original source (progress, resume, checksum) into the data folder
-- [ ] The built-in sampler plays SFZ instruments (regions by key and velocity, round robin, loops, envelopes, release samples): what the free libraries use
+- [x] A built-in sample instrument plays SFZ instruments (regions by key and velocity, round robin, random, loops, envelopes, release samples, groups/off_by): what the free libraries use
 - [ ] Library list (check each licence before adding): Salamander Grand Piano (CC-BY 3.0), VSCO-2 Community Edition orchestra (CC0), VCSL (CC0), Karoryfer/sfzinstruments basses and guitars (CC0 where stated), a real drum kit (licence to be found), Sonatina Symphonic Orchestra (CC Sampling Plus 1.0)
 - [x] Polysynth sounds more alive: analog-style drift, random start phases, uneven unison spread, mono bass, drive (anti-aliased), just intonation
 - [ ] The same for the other synths (wavetable, strings, FM …)

@@ -514,11 +514,22 @@ pub fn build(
                 let instrument = match t.devices.first().filter(|d| d.is_plugin()) {
                     // A plugin that is not loaded stays silent.
                     Some(d) => plugins.node(d.id).unwrap_or_else(|| Box::new(Mix::new(2))),
-                    None => musiton_devices::create_instrument(
-                        &type_id,
-                        &instrument_params(t),
-                        &samples,
-                    ),
+                    None => match t.devices.first().and_then(|d| d.sfz()) {
+                        Some(path) if type_id == musiton_devices::SFZ => {
+                            musiton_devices::create_sfz(
+                                &instrument_params(t),
+                                assets
+                                    .sfz(path)
+                                    .map(|r| r.as_ref().clone())
+                                    .unwrap_or_default(),
+                            )
+                        }
+                        _ => musiton_devices::create_instrument(
+                            &type_id,
+                            &instrument_params(t),
+                            &samples,
+                        ),
+                    },
                 };
                 let mut instrument = instrument;
                 instrument.prepare(sample_rate, max_block);

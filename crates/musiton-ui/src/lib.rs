@@ -60,6 +60,11 @@ pub enum UiAction {
         /// Pad key in drum mode; `None` = the melodic sample.
         key: Option<u8>,
     },
+    /// Ask the user for an SFZ file and put it into the track's sample instrument.
+    LoadSfz {
+        /// Which track.
+        track: musiton_core::ids::TrackId,
+    },
     /// Move a parameter of a plugin device (normalized value).
     PluginParam {
         /// The device.

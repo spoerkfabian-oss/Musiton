@@ -8,7 +8,9 @@ use std::sync::Arc;
 use musiton_core::audio::{AudioData, Peaks};
 use musiton_core::ids::{AssetId, TrackId};
 use musiton_core::{TempoMap, Tick};
+use musiton_devices::sfz_player::{Looping, SfzRegion};
 use musiton_io::file::{import_audio, Imported};
+use musiton_io::sfz::{LoopMode, Trigger};
 use musiton_project::Project;
 
 /// Result of a background rate conversion: per asset the converted audio (`None` = failed).
@@ -23,6 +25,8 @@ pub struct AssetStore {
     peaks: HashMap<AssetId, Arc<Peaks>>,
     /// Time-stretched renderings of warped clips, by [`crate::warp::key`].
     warped: HashMap<u64, Arc<AudioData>>,
+    /// Sample instruments by SFZ path (regions with their decoded samples).
+    sfz: HashMap<String, Arc<Vec<SfzRegion>>>,
     /// Bumped whenever the set of loaded files changes (triggers a graph rebuild).
     pub generation: u64,
 }
@@ -52,7 +56,33 @@ impl AssetStore {
                 }
             }
         }
+        for path in project
+            .tracks
+            .iter()
+            .filter_map(|t| t.devices.first()?.sfz())
+        {
+            if let Err(e) = self.load_sfz(path) {
+                tracing::error!("cannot load {path}: {e}");
+            }
+        }
         failed
+    }
+
+    /// Reads an SFZ instrument and decodes its samples (once per path).
+    pub fn load_sfz(&mut self, path: &str) -> Result<usize, String> {
+        if let Some(r) = self.sfz.get(path) {
+            return Ok(r.len());
+        }
+        let regions = sfz_regions(Path::new(path))?;
+        let n = regions.len();
+        self.sfz.insert(path.to_owned(), Arc::new(regions));
+        self.generation += 1;
+        Ok(n)
+    }
+
+    /// The regions of a loaded SFZ instrument.
+    pub fn sfz(&self, path: &str) -> Option<&Arc<Vec<SfzRegion>>> {
+        self.sfz.get(path)
     }
 
     /// Adds decoded audio (computes its peaks).
@@ -245,5 +275,126 @@ mod tests {
         let (a, _, skip) = place_take(&tempo, 0, 1000, 300, 48_000.0).unwrap();
         assert_eq!((a, skip), (Tick(0), 300));
         assert!(place_take(&tempo, 0, 100, 300, 48_000.0).is_none());
+    }
+}
+
+/// Reads `path` and builds playable regions; every sample file is decoded once. Regions
+/// whose sample cannot be read are left out (logged).
+pub fn sfz_regions(path: &Path) -> Result<Vec<SfzRegion>, String> {
+    let inst = musiton_io::sfz::read_sfz(path).map_err(|e| e.to_string())?;
+    let mut audio: HashMap<PathBuf, Option<Arc<AudioData>>> = HashMap::new();
+    let mut out = Vec::with_capacity(inst.regions.len());
+    for r in inst.regions {
+        let sample = audio
+            .entry(r.sample.clone())
+            .or_insert_with(|| match musiton_io::file::decode_file(&r.sample) {
+                Ok(a) => Some(Arc::new(a)),
+                Err(e) => {
+                    tracing::warn!("SFZ sample {} unreadable: {e}", r.sample.display());
+                    None
+                }
+            })
+            .clone();
+        let Some(sample) = sample else { continue };
+        out.push(SfzRegion {
+            keys: (r.lokey, r.hikey),
+            vels: (r.lovel.max(1), r.hivel),
+            keycenter: r.pitch_keycenter,
+            keytrack: r.pitch_keytrack,
+            tune: r.tune,
+            volume_db: r.volume,
+            pan: r.pan,
+            veltrack: r.amp_veltrack,
+            attack: r.ampeg_attack,
+            decay: r.ampeg_decay,
+            sustain: r.ampeg_sustain / 100.0,
+            release: r.ampeg_release,
+            offset: r.offset,
+            on_release: r.trigger == Trigger::Release,
+            looping: match r.loop_mode {
+                LoopMode::NoLoop => Looping::None,
+                LoopMode::OneShot => Looping::OneShot,
+                LoopMode::Continuous => Looping::Continuous,
+                LoopMode::Sustain => Looping::Sustain,
+            },
+            loop_points: r.loop_start.zip(r.loop_end),
+            seq_length: r.seq_length,
+            seq_position: r.seq_position,
+            rand: (r.lorand, r.hirand),
+            group: r.group,
+            off_by: r.off_by,
+            ..SfzRegion::new(sample)
+        });
+    }
+    if out.is_empty() {
+        return Err("no playable regions (are the sample files next to it?)".into());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod sfz_tests {
+    use super::*;
+    use musiton_io::export::{write_export, ExportFormat, ExportOptions};
+
+    #[test]
+    fn an_sfz_instrument_loads_and_plays_in_a_song() {
+        let dir = std::env::temp_dir().join(format!("musiton-sfz-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("samples")).unwrap();
+        let tone: Vec<f32> = (0..24_000)
+            .map(|i| (std::f32::consts::TAU * 440.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        let opts = ExportOptions {
+            format: ExportFormat::Wav24,
+            normalize: false,
+            dither: false,
+        };
+        write_export(&dir.join("samples/a4.wav"), &[tone], 48_000, opts).unwrap();
+        let sfz = dir.join("test.sfz");
+        std::fs::write(
+            &sfz,
+            "<control> default_path=samples/\n<region> sample=a4.wav pitch_keycenter=69 ampeg_release=0.1\n<region> sample=missing.wav lokey=0 hikey=10\n",
+        )
+        .unwrap();
+        let path = sfz.to_string_lossy().into_owned();
+        let mut assets = AssetStore::default();
+        assert_eq!(
+            assets.load_sfz(&path),
+            Ok(1),
+            "the missing sample is skipped"
+        );
+
+        let mut project = crate::templates::assemble(None, 120.0, 1, 1, || {
+            vec![crate::templates::Part {
+                name: "Piano",
+                color: [0, 0, 0],
+                trim_db: 0.0,
+                instrument: musiton_devices::SFZ,
+                params: Vec::new(),
+                effects: Vec::new(),
+                notes: vec![crate::templates::note(69, 100, 0, 480)],
+            }]
+        });
+        if let Some(musiton_project::DeviceSlot {
+            kind: musiton_project::DeviceKind::Builtin { sfz, .. },
+            ..
+        }) = project.tracks[0].devices.first_mut()
+        {
+            *sfz = Some(path.clone());
+        }
+        let out = crate::export::render_project(
+            &project,
+            &assets,
+            &crate::engine_graph::PluginNodes::default(),
+            0,
+            24_000,
+            &|_| {},
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let peak = out[0].iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.05, "peak {peak}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

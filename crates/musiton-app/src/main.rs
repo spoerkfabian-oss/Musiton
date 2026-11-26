@@ -319,6 +319,7 @@ fn effect_types() -> Vec<musiton_ui::device_panel::DeviceType> {
             params: t.params,
             uses_samples: false,
             listed: true,
+            sfz: false,
             presets: Vec::new(),
             drum_param: None,
             root_param: None,
@@ -751,6 +752,7 @@ impl App {
                     params: t.params,
                     uses_samples: t.uses_samples,
                     listed: genre.is_none_or(|g| g.has_instrument(t.type_id)),
+                    sfz: t.type_id == musiton_devices::SFZ,
                     presets,
                     drum_param: sampler.then_some(musiton_devices::sampler::id::DRUM),
                     root_param: sampler.then_some(musiton_devices::sampler::id::ROOT),
@@ -831,6 +833,56 @@ impl App {
         match self.doc.perform(musiton_project::Edit::Batch(edits), false) {
             Ok(()) => self.set_status(format!("Loaded {}", src.display())),
             Err(e) => self.set_status(format!("Loading the sample failed: {e}")),
+        }
+    }
+
+    /// Asks for an SFZ file, loads it and makes it the track's instrument.
+    fn load_sfz(&mut self, track: musiton_core::ids::TrackId) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Load SFZ instrument")
+            .add_filter("SFZ instrument", &["sfz"]);
+        if let Some(lib) = Settings::data_dir()
+            .map(|d| d.join("Library"))
+            .filter(|d| d.is_dir())
+        {
+            dialog = dialog.set_directory(lib);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        let path_str = path.to_string_lossy().into_owned();
+        if let Err(e) = self.assets.load_sfz(&path_str) {
+            self.set_status(format!("Loading {} failed: {e}", path.display()));
+            return;
+        }
+        let p = &mut self.doc.project;
+        let Some(t) = p.track(track) else {
+            return;
+        };
+        let mut devices = t.devices.clone();
+        let keep = devices
+            .first()
+            .filter(|d| d.type_id() == musiton_devices::SFZ)
+            .cloned();
+        let mut d = keep.unwrap_or_else(|| {
+            musiton_project::DeviceSlot::builtin(
+                musiton_core::ids::DeviceId(p.alloc_id()),
+                musiton_devices::SFZ,
+            )
+        });
+        if let musiton_project::DeviceKind::Builtin { sfz, .. } = &mut d.kind {
+            *sfz = Some(path_str);
+        }
+        match devices.first_mut() {
+            Some(x) => *x = d,
+            None => devices.push(d),
+        }
+        match self
+            .doc
+            .perform(musiton_project::Edit::SetDevices { track, devices }, false)
+        {
+            Ok(()) => self.set_status(format!("Loaded {}", path.display())),
+            Err(e) => self.set_status(format!("Loading the instrument failed: {e}")),
         }
     }
 
@@ -2421,6 +2473,7 @@ impl App {
                     }
                 }
                 UiAction::LoadSample { track, key } => self.load_sample(track, key),
+                UiAction::LoadSfz { track } => self.load_sfz(track),
                 UiAction::MoveDevice { from, device, to } => self.move_device(from, device, to),
                 UiAction::SavePreset {
                     type_id,

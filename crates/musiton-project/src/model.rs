@@ -432,6 +432,10 @@ pub enum DeviceKind {
         /// Samples (sampler): one root sample, or one per pad key in drum mode.
         #[serde(default)]
         samples: Vec<SampleZone>,
+        /// SFZ file the sample instrument plays (absolute path; libraries are not copied
+        /// into the project).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sfz: Option<String>,
     },
     /// A VST3 or CLAP plugin. Its settings are the plugin's own state, saved next to the
     /// song file as `plugins/<device id>.state`.
@@ -463,6 +467,7 @@ impl DeviceSlot {
                 type_id: type_id.to_owned(),
                 params: Vec::new(),
                 samples: Vec::new(),
+                sfz: None,
             },
             sidechain: None,
         }
@@ -514,6 +519,15 @@ impl DeviceSlot {
     }
 
     /// Sample zones.
+    /// The SFZ file of a sample instrument.
+    pub fn sfz(&self) -> Option<&str> {
+        match &self.kind {
+            DeviceKind::Builtin { sfz, .. } => sfz.as_deref(),
+            DeviceKind::Plugin { .. } => None,
+        }
+    }
+
+    /// Samples of a sampler.
     pub fn samples(&self) -> &[SampleZone] {
         match &self.kind {
             DeviceKind::Builtin { samples, .. } => samples,

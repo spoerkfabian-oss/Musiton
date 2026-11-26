@@ -30,6 +30,8 @@ pub struct DeviceType {
     pub uses_samples: bool,
     /// Offered in the instrument menu (false: outside the song's genre environment).
     pub listed: bool,
+    /// Plays an SFZ file (shows the instrument file instead of the sample section).
+    pub sfz: bool,
     /// Presets: (name, values) — factory presets first, then the user's.
     pub presets: Vec<(String, Vec<(u64, f32)>)>,
     /// Id of the "drum mode" parameter, if any.
@@ -421,7 +423,28 @@ impl DevicePanel {
 
         let value =
             |id: u64, default: f32| slot.as_ref().and_then(|s| s.param(id)).unwrap_or(default);
-        if ty.uses_samples {
+        if ty.sfz {
+            let file = slot.as_ref().and_then(|s| s.sfz()).map_or_else(
+                || "No instrument loaded".to_owned(),
+                |p| {
+                    std::path::Path::new(p)
+                        .file_stem()
+                        .map_or_else(|| p.to_owned(), |n| n.to_string_lossy().into_owned())
+                },
+            );
+            ui.horizontal(|ui| {
+                ui.label(format!("Instrument: {file}"));
+                if ui
+                    .button("Load SFZ…")
+                    .on_hover_text(
+                        "A multi-sampled instrument (.sfz), e.g. from Options → Sound library",
+                    )
+                    .clicked()
+                {
+                    actions.push(UiAction::LoadSfz { track: t.id });
+                }
+            });
+        } else if ty.uses_samples {
             let drum = ty.drum_param.is_some_and(|p| value(p, 0.0) > 0.5);
             let samples = slot
                 .as_ref()
