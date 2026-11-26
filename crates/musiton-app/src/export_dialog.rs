@@ -21,6 +21,8 @@ pub struct ExportDialog {
     pub tail: f32,
     /// One file per track.
     pub stems: bool,
+    /// Render at playback speed (cloud or streaming plugins).
+    pub realtime: bool,
 }
 
 impl Default for ExportDialog {
@@ -33,6 +35,7 @@ impl Default for ExportDialog {
             dither: true,
             tail: 2.0,
             stems: false,
+            realtime: false,
         }
     }
 }
@@ -106,6 +109,8 @@ impl ExportDialog {
                                 egui::Checkbox::new(&mut self.dither, "Dither (16-bit)"),
                             );
                             ui.checkbox(&mut self.stems, "Stems: one file per track");
+                            ui.checkbox(&mut self.realtime, "Real time")
+                                .on_hover_text("Renders only as fast as the song plays. For plugins that render in the cloud (e.g. Vienna Performer) or stream samples and fall behind in a fast export.");
                         });
                         ui.end_row();
                     });

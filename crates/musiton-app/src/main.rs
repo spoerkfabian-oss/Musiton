@@ -671,6 +671,7 @@ impl App {
                     tail_secs: self.export_dialog.tail,
                     options,
                     stems: self.export_dialog.stems,
+                    realtime: self.export_dialog.realtime,
                     path,
                 };
                 let assets = self.assets.clone();

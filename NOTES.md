@@ -558,5 +558,9 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 ## Fix: notes after pause/play (2026-11-26)
 - Owner: pausing in the middle of a note and pressing play gave no sound until the next note. The MIDI track now chases notes that span the playback start or a jump (note-on at the new position).
 
+## Vienna Performer and real-time export (2026-11-26)
+- The owner sent VSL's Vienna Performer licence (AI orchestral/vocal renders in the cloud through a plug-in) and installed the free plugins. Licence reading: the owner may use the plug-in in any compatible host (Musiton) and use the renders in his own productions, also commercially; Musiton must not ship it, talk to the VSL service other than through the plug-in, or put renders into sound packs/libraries for others (6.3); every render costs credits and needs an internet connection; buyers must be adults (or a parent's account); AI-use disclosure is the user's duty. Owner decision: support it (cloud plugins) and plan it into templates.
+- Built: export option "Real time" (renders the song part no faster than it plays, for cloud/streaming plugins that fall behind a fast export). The VSL documentation could not be read from the cloud session (host not allowed), so how the plug-in behaves (formats, transport sync, offline bounce, choir) is unknown; the Windows plugin check on the owner's PC will show whether it loads. Template support waits for that.
+
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

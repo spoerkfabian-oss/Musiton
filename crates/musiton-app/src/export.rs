@@ -46,6 +46,8 @@ pub struct ExportJob {
     pub options: ExportOptions,
     /// One file per track instead of the mix.
     pub stems: bool,
+    /// Render no faster than playback (for plugins that render in the cloud or stream).
+    pub realtime: bool,
     /// Output file (mix) or folder (stems).
     pub path: PathBuf,
 }
@@ -71,6 +73,23 @@ pub fn render_project(
     frames: usize,
     progress: &dyn Fn(f32),
     cancel: &AtomicBool,
+) -> Option<Vec<Vec<f32>>> {
+    render_paced(
+        project, assets, plugins, start, frames, progress, cancel, false,
+    )
+}
+
+/// [`render_project`], with `realtime`: the song part is rendered no faster than it plays.
+#[allow(clippy::too_many_arguments)]
+fn render_paced(
+    project: &Project,
+    assets: &AssetStore,
+    plugins: &engine_graph::PluginNodes,
+    start: u64,
+    frames: usize,
+    progress: &dyn Fn(f32),
+    cancel: &AtomicBool,
+    realtime: bool,
 ) -> Option<Vec<Vec<f32>>> {
     let mut project = project.clone();
     project.metronome = false;
@@ -101,6 +120,7 @@ pub fn render_project(
     };
     render_offline(&mut e, pre_roll, 2, BLOCK);
     h.send(EngineCommand::Play).ok()?;
+    let began = std::time::Instant::now();
     let mut left = Vec::with_capacity(frames);
     let mut right = Vec::with_capacity(frames);
     let mut done = 0;
@@ -116,6 +136,12 @@ pub fn render_project(
         }
         done += n;
         progress(done as f32 / frames as f32);
+        if realtime {
+            let due = std::time::Duration::from_secs_f64(done as f64 / f64::from(sr));
+            if let Some(wait) = due.checked_sub(began.elapsed()) {
+                std::thread::sleep(wait);
+            }
+        }
     }
     Some(vec![left, right])
 }
@@ -227,8 +253,17 @@ fn run(
     for (k, (path, p)) in renders.iter().enumerate() {
         let report =
             |x: f32| progress.store(((k as f32 + x) / total * 1000.0) as u32, Ordering::Relaxed);
-        let audio = render_project(p, assets, plugins, start, frames, &report, cancel)
-            .ok_or("Export cancelled.")?;
+        let audio = render_paced(
+            p,
+            assets,
+            plugins,
+            start,
+            frames,
+            &report,
+            cancel,
+            job.realtime,
+        )
+        .ok_or("Export cancelled.")?;
         write_export(path, &audio, project.sample_rate, job.options).map_err(|e| e.to_string())?;
         written.push(path.clone());
     }
@@ -319,6 +354,7 @@ mod tests {
                 dither: false,
             },
             stems: false,
+            realtime: false,
             path: dir.join("mix.wav"),
         };
         let progress = AtomicU32::new(0);
@@ -368,6 +404,29 @@ mod tests {
     }
 
     #[test]
+    fn a_real_time_render_takes_as_long_as_the_song() {
+        let project = (crate::templates::TEMPLATES[0].build)();
+        let began = std::time::Instant::now();
+        let out = render_paced(
+            &project,
+            &AssetStore::default(),
+            &engine_graph::PluginNodes::default(),
+            0,
+            24_000,
+            &|_| {},
+            &AtomicBool::new(false),
+            true,
+        )
+        .unwrap();
+        assert_eq!(out[0].len(), 24_000);
+        assert!(
+            began.elapsed().as_secs_f32() >= 0.49,
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    #[test]
     fn stems_solo_each_track_and_cancel_stops() {
         let mut project = sweep_project();
         let mut second = project.tracks[0].clone();
@@ -384,6 +443,7 @@ mod tests {
                 dither: false,
             },
             stems: true,
+            realtime: false,
             path: dir.clone(),
         };
         let files = run(

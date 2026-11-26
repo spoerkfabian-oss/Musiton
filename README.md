@@ -20,7 +20,7 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 - **Mixer:** faders, pan, mute, solo and solo-safe; sends and buses; meters in the mixer and in the track headers. Sidechain: a compressor can listen to another track (e.g. duck the bass with the kick).
 - **Automation:** lanes for volume, pan and every device parameter, with curves; read, write, touch and latch modes. "Capture automation" (Edit menu) turns knob moves made while playing into automation afterwards.
 - **Video:** File → Import video… shows the video in a window in sync with the song, and puts its sound on a new audio track. The video's start can be shifted.
-- **Export:** WAV 16/24/32f, FLAC 16/24, MP3 (320 kbit/s) and OGG Vorbis (MP3 and OGG use the bundled FFmpeg), with normalize, dither and stems; faster than real time.
+- **Export:** WAV 16/24/32f, FLAC 16/24, MP3 (320 kbit/s) and OGG Vorbis (MP3 and OGG use the bundled FFmpeg), with normalize, dither and stems; faster than real time, or in real time for cloud plugins.
 - **Command search:** Ctrl+K finds any command, shortcut or setting by typing a few letters.
 - **Safety:** autosave, crash recovery, a dialog for relinking missing audio files, and error dialogs instead of crashes.
 - **Demo song:** Help → Open demo song.
