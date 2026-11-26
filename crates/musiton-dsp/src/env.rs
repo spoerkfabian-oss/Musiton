@@ -4,6 +4,7 @@
 enum Stage {
     Idle,
     Attack,
+    Hold,
     Decay,
     Sustain,
     Release,
@@ -21,6 +22,9 @@ pub struct Adsr {
     release_coef: f32,
     /// Glide towards a changed sustain level (~10 ms) instead of jumping.
     sustain_coef: f32,
+    /// Samples the peak is held between attack and decay (0 = none).
+    hold: u32,
+    hold_left: u32,
 }
 
 impl Default for Adsr {
@@ -33,6 +37,8 @@ impl Default for Adsr {
             sustain: 1.0,
             release_coef: 0.0,
             sustain_coef: 0.0,
+            hold: 0,
+            hold_left: 0,
         }
     }
 }
@@ -50,6 +56,11 @@ impl Adsr {
         self.sustain = sustain.clamp(0.0, 1.0);
         self.release_coef = coef(release, sample_rate);
         self.sustain_coef = coef(0.01, sample_rate);
+    }
+
+    /// Holds the peak for `secs` after the attack before the decay starts.
+    pub fn set_hold(&mut self, secs: f32, sample_rate: f32) {
+        self.hold = (secs.max(0.0) * sample_rate) as u32;
     }
 
     /// Starts (or restarts) the envelope.
@@ -88,6 +99,17 @@ impl Adsr {
                 self.level += self.attack_step;
                 if self.level >= 1.0 {
                     self.level = 1.0;
+                    self.hold_left = self.hold;
+                    self.stage = if self.hold > 0 {
+                        Stage::Hold
+                    } else {
+                        Stage::Decay
+                    };
+                }
+            }
+            Stage::Hold => {
+                self.hold_left = self.hold_left.saturating_sub(1);
+                if self.hold_left == 0 {
                     self.stage = Stage::Decay;
                 }
             }
@@ -116,6 +138,17 @@ impl Adsr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hold_keeps_the_peak_before_the_decay() {
+        let mut e = Adsr::default();
+        e.set(0.001, 0.05, 0.0, 0.1, 48_000.0);
+        e.set_hold(0.1, 48_000.0);
+        e.gate_on();
+        let levels: Vec<f32> = (0..9_600).map(|_| e.next_value()).collect();
+        assert!(levels[100..4_800].iter().all(|&l| l == 1.0));
+        assert!(levels[9_000] < 0.1, "decays after the hold");
+    }
 
     #[test]
     fn stages_have_their_lengths() {

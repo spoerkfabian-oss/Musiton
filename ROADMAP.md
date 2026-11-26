@@ -165,7 +165,8 @@ The owner finds the built-in instruments too alike and not real; unison/detune n
 - [x] Owner decision: full quality, as big as needed. The NSIS installer cannot exceed ~2 GB, so the samples are not in the installer: Options → Sound library downloads each library from its original source (progress, resume, per-file CRC check) into the data folder
 - [x] A built-in sample instrument plays SFZ instruments (regions by key and velocity, round robin, random, loops, envelopes, release samples, groups/off_by): what the free libraries use
 - [x] Library list (licences checked): Salamander Grand Piano (CC BY 3.0), VSCO-2 Community Edition orchestra (CC0), VCSL (CC0)
-- [ ] More libraries: a free choir (none with a clean licence found yet), a real drum kit, Karoryfer/sfzinstruments basses and guitars (CC0 where stated), Sonatina (licence to check)
+- [x] More libraries: real drum kits (Virtuosity, Big Rusty), basses (Black and Blue, Meatbass), guitars (Black and Green), all CC0; the sample instrument reads their controller modulation, crossfades, velocity curves, hold and release decay
+- [ ] Still missing: a free choir (none with a clean licence found yet), Sonatina (licence to check)
 - [x] Polysynth sounds more alive: analog-style drift, random start phases, uneven unison spread, mono bass, drive (anti-aliased), just intonation
 - [ ] The same for the other synths (wavetable, strings, FM …)
 - [x] Owner sends reference audio (Google Drive, also videos): measure spectrum, envelope, stereo width and detune and match the presets to it ("Raw stab")
@@ -181,7 +182,8 @@ Per genre a project template (File → New from template: tracks, instruments, e
 - [x] Epic orchestral: strings, horns, timpani, harp from VSCO-2 when installed (built-in sounds otherwise)
 - [ ] Choir: waits for a free choir library with a clean licence
 - [x] EDM (owner's 11 reference songs): genre environment, presets (EDM bass, Big room lead, Melodic pluck, Hard lead, Riser, Big room kit), two arranged full-song templates, sound pack
-- [ ] EDM: reach the references' loudness (drops −8 dBFS RMS; templates now −15) and top end (more 2–11 kHz, wider highs)
+- [x] EDM: reach the references' loudness (drops now −9.0 / −8.5 dBFS RMS, crest ≈ 8.5 dB) and a brighter, wider top end
+- [x] SFZ instruments load in the background (no freeze while a big library decodes)
 - [ ] Free CC0 sample packs per genre through the sound library downloader (licence checked per pack)
 
 ## Phase 19 — Bigger features

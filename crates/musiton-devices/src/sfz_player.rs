@@ -20,7 +20,7 @@ use musiton_engine::node::{AudioIo, AudioNode, Event, EventKind, ProcessContext}
 use crate::controllers::{Change, Controllers};
 
 /// Number of voices (orchestral parts with release samples need many).
-pub const VOICES: usize = 64;
+pub const VOICES: usize = 128;
 /// Fade (seconds) of a voice cut by `off_by` or stolen.
 const CUT_FADE: f32 = 0.01;
 
@@ -106,6 +106,95 @@ pub struct SfzRegion {
     pub keyswitch: Option<u8>,
     /// Plays only while each controller is within its range: (cc, lo, hi) on 0 … 127.
     pub cc_ranges: Vec<(u8, f32, f32)>,
+    /// Last sample frame played (`None`: the whole sample).
+    pub end: Option<u64>,
+    /// Seconds the peak is held before the decay.
+    pub hold: f32,
+    /// Velocity curve points (velocity, gain 0 … 1), sorted; empty: `veltrack` decides.
+    pub vel_curve: Vec<(u8, f32)>,
+    /// Controller modulation, read when a note starts.
+    pub cc_mods: Vec<CcMod>,
+    /// Controller crossfades (e.g. between microphone positions).
+    pub crossfades: Vec<Crossfade>,
+    /// Release samples get this many dB quieter per second the key was held.
+    pub rt_decay: f32,
+}
+
+/// What a controller modulates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModTarget {
+    /// Gain factor: depth % × controller (several multiply).
+    Amplitude,
+    /// dB added.
+    Volume,
+    /// Sample frames added to the start offset.
+    Offset,
+    /// Seconds added to the attack.
+    Attack,
+    /// Seconds added to the hold.
+    Hold,
+    /// Seconds added to the decay.
+    Decay,
+    /// Percent added to the sustain level.
+    Sustain,
+    /// Seconds added to the release.
+    Release,
+}
+
+/// `depth` × (controller `cc` / 127) added to (or, for amplitude, multiplied into) `target`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CcMod {
+    /// What changes.
+    pub target: ModTarget,
+    /// Controller number.
+    pub cc: u8,
+    /// Change at controller value 127.
+    pub depth: f32,
+}
+
+/// A region fades in (or out) while controller `cc` moves from `lo` to `hi` (power curve).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Crossfade {
+    /// Controller number.
+    pub cc: u8,
+    /// Controller value where the fade starts.
+    pub lo: f32,
+    /// Controller value where it ends.
+    pub hi: f32,
+    /// Fades in (`true`) or out.
+    pub fade_in: bool,
+}
+
+impl Crossfade {
+    /// Gain at controller value `v`.
+    fn gain(&self, v: f32) -> f32 {
+        let t = if self.hi > self.lo {
+            ((v - self.lo) / (self.hi - self.lo)).clamp(0.0, 1.0)
+        } else if v >= self.hi {
+            1.0
+        } else {
+            0.0
+        };
+        if self.fade_in {
+            t.sqrt()
+        } else {
+            (1.0 - t).sqrt()
+        }
+    }
+}
+
+/// Gain of `curve` (sorted points, (0, 0) and (127, 1) implied) at velocity `vel`.
+fn curve_gain(curve: &[(u8, f32)], vel: u8) -> f32 {
+    let mut lo = (0_u8, 0.0_f32);
+    for &(v, g) in curve {
+        if v >= vel {
+            let span = f32::from(v.saturating_sub(lo.0)).max(1.0);
+            return lo.1 + (g - lo.1) * f32::from(vel.saturating_sub(lo.0)) / span;
+        }
+        lo = (v, g);
+    }
+    let span = f32::from(127_u8.saturating_sub(lo.0)).max(1.0);
+    lo.1 + (1.0 - lo.1) * f32::from(vel.saturating_sub(lo.0)) / span
 }
 
 /// Instrument-wide settings of an SFZ file.
@@ -147,6 +236,12 @@ impl SfzRegion {
             off_by: 0,
             keyswitch: None,
             cc_ranges: Vec::new(),
+            end: None,
+            hold: 0.0,
+            vel_curve: Vec::new(),
+            cc_mods: Vec::new(),
+            crossfades: Vec::new(),
+            rt_decay: 0.0,
         }
     }
 
@@ -198,6 +293,10 @@ pub struct SfzPlayer {
     sample_rate: f32,
     clock: u64,
     controllers: Controllers,
+    /// Frame of the event being handled (frames processed since the start).
+    now: u64,
+    /// Frame of the last note-on per key (for `rt_decay`).
+    key_on_at: [u64; 128],
 }
 
 impl SfzPlayer {
@@ -223,6 +322,8 @@ impl SfzPlayer {
             sample_rate: 48_000.0,
             clock: 0,
             controllers: Controllers::default(),
+            now: 0,
+            key_on_at: [0; 128],
         }
     }
 
@@ -299,18 +400,59 @@ impl SfzPlayer {
         let ratio = f64::from((semis / 12.0).exp2()) * f64::from(reg.audio.sample_rate.max(1))
             / f64::from(sr);
         let velocity = f32::from(vel) / 127.0;
-        let vel_gain = velocity.powf(2.0 * reg.veltrack / 100.0);
-        let gain = 10.0_f32.powf(reg.volume_db / 20.0) * vel_gain;
+        let vel_gain = if reg.vel_curve.is_empty() {
+            velocity.powf(2.0 * reg.veltrack / 100.0)
+        } else {
+            curve_gain(&reg.vel_curve, vel)
+        };
+        let cc = |n: u8| self.cc.get(n as usize).copied().unwrap_or(0.0) / 127.0;
+        let modded = |t: ModTarget| -> f32 {
+            reg.cc_mods
+                .iter()
+                .filter(|m| m.target == t)
+                .map(|m| m.depth * cc(m.cc))
+                .sum()
+        };
+        let amplitude: f32 = reg
+            .cc_mods
+            .iter()
+            .filter(|m| m.target == ModTarget::Amplitude)
+            .map(|m| m.depth / 100.0 * cc(m.cc))
+            .product();
+        let fades: f32 = reg
+            .crossfades
+            .iter()
+            .map(|x| x.gain(self.cc.get(x.cc as usize).copied().unwrap_or(0.0)))
+            .product();
+        let held = if release {
+            let on = self
+                .key_on_at
+                .get(key as usize)
+                .copied()
+                .unwrap_or(self.now);
+            self.now.saturating_sub(on) as f32 / sr.max(1.0)
+        } else {
+            0.0
+        };
+        let db = reg.volume_db + modded(ModTarget::Volume) - reg.rt_decay * held;
+        let gain = 10.0_f32.powf(db / 20.0) * vel_gain * amplitude * fades;
+        // Silent layers (a microphone turned down, the other side of a crossfade) take no voice.
+        if gain < 1e-4 {
+            return;
+        }
         let angle = (reg.pan.clamp(-100.0, 100.0) + 100.0) / 200.0 * std::f32::consts::FRAC_PI_2;
         let (left, right) = (
             angle.cos() * std::f32::consts::SQRT_2 * gain,
             angle.sin() * std::f32::consts::SQRT_2 * gain,
         );
         let (a, r) = (
-            reg.attack * self.v(id::ATTACK),
-            reg.release * self.v(id::RELEASE),
+            (reg.attack + modded(ModTarget::Attack)).max(0.0) * self.v(id::ATTACK),
+            (reg.release + modded(ModTarget::Release)).max(0.0) * self.v(id::RELEASE),
         );
-        let (decay, sustain, offset) = (reg.decay, reg.sustain, reg.offset);
+        let decay = reg.decay + modded(ModTarget::Decay);
+        let sustain = (reg.sustain + modded(ModTarget::Sustain) / 100.0).clamp(0.0, 1.0);
+        let hold = reg.hold + modded(ModTarget::Hold);
+        let offset = (reg.offset as f32 + modded(ModTarget::Offset)).max(0.0) as u64;
         self.clock += 1;
         let clock = self.clock;
         let idx = self.voices.iter().position(|v| !v.playing).or_else(|| {
@@ -345,6 +487,7 @@ impl SfzPlayer {
             (decay, sustain)
         };
         v.env.set(a, decay, sustain, r.max(0.001), sr);
+        v.env.set_hold(hold, sr);
         v.env.gate_on();
     }
 
@@ -406,7 +549,9 @@ impl SfzPlayer {
                     v.playing = false;
                     continue;
                 };
-                let len = reg.audio.frames();
+                let len = reg.end.map_or(reg.audio.frames(), |e| {
+                    (e as usize + 1).min(reg.audio.frames())
+                });
                 let e = v.env.next_value();
                 if v.cut > 0.0 {
                     v.cut_gain -= v.cut;
@@ -460,16 +605,21 @@ impl AudioNode for SfzPlayer {
 
     fn process(&mut self, _ctx: &ProcessContext, io: &mut AudioIo, events: &[Event]) {
         let n = io.frames();
+        let block_start = self.now;
         let mut pos = 0;
         for e in events {
             let at = (e.offset as usize).min(n);
             self.render(io, pos, at);
             pos = at;
+            self.now = block_start + at as u64;
             match e.kind {
                 EventKind::NoteOn { key, vel, .. } => {
                     let vel = (vel * 127.0).round().clamp(1.0, 127.0) as u8;
                     if let Some(slot) = self.last_vel.get_mut(key as usize) {
                         *slot = vel;
+                    }
+                    if let Some(t) = self.key_on_at.get_mut(key as usize) {
+                        *t = self.now;
                     }
                     self.trigger(key, vel, false);
                 }
@@ -487,6 +637,7 @@ impl AudioNode for SfzPlayer {
             }
         }
         self.render(io, pos, n);
+        self.now = block_start + n as u64;
     }
 
     fn reset(&mut self) {
@@ -762,5 +913,121 @@ mod tests {
         };
         let q = rms(&render(&mut player(vec![quieter]), &[ev(0, 60, true, 1.0)], 9_600)[960..]);
         assert!((q / hard - 0.501).abs() < 0.02, "{}", q / hard);
+    }
+
+    fn cc_event(cc: u8, val: f32) -> Event {
+        Event {
+            offset: 0,
+            kind: EventKind::Cc { ch: 0, cc, val },
+        }
+    }
+
+    #[test]
+    fn controllers_set_microphone_levels_and_crossfades() {
+        // Close mic at controller 30 (default full), room mic at 31 (default off).
+        let close = SfzRegion {
+            cc_mods: vec![CcMod {
+                target: ModTarget::Amplitude,
+                cc: 30,
+                depth: 100.0,
+            }],
+            ..SfzRegion::new(sine(440.0, 1.0))
+        };
+        let room = SfzRegion {
+            cc_mods: vec![CcMod {
+                target: ModTarget::Amplitude,
+                cc: 31,
+                depth: 100.0,
+            }],
+            ..SfzRegion::new(sine(1000.0, 1.0))
+        };
+        // A layer that fades in over controller 1.
+        let layer = SfzRegion {
+            crossfades: vec![Crossfade {
+                cc: 1,
+                lo: 0.0,
+                hi: 127.0,
+                fade_in: true,
+            }],
+            ..SfzRegion::new(sine(3000.0, 1.0))
+        };
+        let setup = SfzSetup {
+            cc_defaults: vec![(30, 127.0), (31, 0.0), (1, 0.0)],
+            ..SfzSetup::default()
+        };
+        let mut p = SfzPlayer::new(vec![close, room, layer], setup);
+        p.prepare(48_000.0, 48_000);
+        let x = render(&mut p, &[ev(0, 60, true, 1.0)], 4_800);
+        assert!(magnitude(&x[960..], 440.0) > 100.0 * magnitude(&x[960..], 1000.0));
+        assert!(magnitude(&x[960..], 440.0) > 100.0 * magnitude(&x[960..], 3000.0));
+        assert_eq!(
+            p.voices.iter().filter(|v| v.playing).count(),
+            1,
+            "silent layers take no voice"
+        );
+        p.reset();
+        let y = render(
+            &mut p,
+            &[cc_event(31, 1.0), cc_event(1, 0.25), ev(0, 60, true, 1.0)],
+            4_800,
+        );
+        let (a, b, c) = (
+            magnitude(&y[960..], 440.0),
+            magnitude(&y[960..], 1000.0),
+            magnitude(&y[960..], 3000.0),
+        );
+        assert!((b / a - 1.0).abs() < 0.05, "room mic on: {}", b / a);
+        // A quarter of the way: power curve → √0.25 = 0.5.
+        assert!((c / a - 0.5).abs() < 0.05, "crossfade: {}", c / a);
+    }
+
+    #[test]
+    fn velocity_curve_hold_end_and_release_decay() {
+        // Velocity curve: everything above 64 at full level.
+        let flat = SfzRegion {
+            vel_curve: vec![(64, 1.0)],
+            ..SfzRegion::new(sine(440.0, 1.0))
+        };
+        let mid = rms(&render(
+            &mut player(vec![flat.clone()]),
+            &[ev(0, 60, true, 0.5)],
+            4_800,
+        )[960..]);
+        let hard = rms(&render(&mut player(vec![flat]), &[ev(0, 60, true, 1.0)], 4_800)[960..]);
+        assert!((mid / hard - 1.0).abs() < 0.03, "{}", mid / hard);
+        // Hold 0.1 s, then a fast decay to silence; `end` stops the sample at 0.5 s.
+        let held = SfzRegion {
+            hold: 0.1,
+            decay: 0.02,
+            sustain: 0.0,
+            ..SfzRegion::new(sine(440.0, 1.0))
+        };
+        let x = render(&mut player(vec![held]), &[ev(0, 60, true, 1.0)], 9_600);
+        assert!(rms(&x[2_400..4_000]) > 0.25, "held");
+        assert!(rms(&x[7_200..]) < 0.01, "decayed");
+        let short = SfzRegion {
+            end: Some(23_999),
+            ..SfzRegion::new(sine(440.0, 1.0))
+        };
+        let y = render(&mut player(vec![short]), &[ev(0, 60, true, 1.0)], 36_000);
+        assert!(rms(&y[20_000..23_000]) > 0.25 && rms(&y[25_000..]) == 0.0);
+        // A release sample after a held key is quieter by rt_decay dB per second.
+        let rel = SfzRegion {
+            on_release: true,
+            rt_decay: 20.0,
+            ..SfzRegion::new(sine(440.0, 1.0))
+        };
+        let mut p = player(vec![rel]);
+        render(&mut p, &[ev(0, 60, true, 1.0)], 24_000);
+        let late = render(&mut p, &[ev(0, 60, false, 0.0)], 4_800);
+        let mut q = player(vec![SfzRegion {
+            on_release: true,
+            ..SfzRegion::new(sine(440.0, 1.0))
+        }]);
+        render(&mut q, &[ev(0, 60, true, 1.0)], 24_000);
+        let plain = render(&mut q, &[ev(0, 60, false, 0.0)], 4_800);
+        // Held 0.5 s → −10 dB.
+        let ratio = rms(&late[960..]) / rms(&plain[960..]);
+        assert!((ratio - 0.316).abs() < 0.02, "{ratio}");
     }
 }

@@ -8,9 +8,9 @@ use std::sync::Arc;
 use musiton_core::audio::{AudioData, Peaks};
 use musiton_core::ids::{AssetId, TrackId};
 use musiton_core::{TempoMap, Tick};
-use musiton_devices::sfz_player::{Looping, SfzRegion, SfzSetup};
+use musiton_devices::sfz_player::{CcMod, Crossfade, Looping, ModTarget, SfzRegion, SfzSetup};
 use musiton_io::file::{import_audio, Imported};
-use musiton_io::sfz::{LoopMode, Trigger};
+use musiton_io::sfz::{CcTarget, LoopMode, Trigger};
 use musiton_project::Project;
 
 /// Result of a background rate conversion: per asset the converted audio (`None` = failed).
@@ -393,6 +393,38 @@ pub fn load_sfz_file(path: &Path) -> Result<LoadedSfz, String> {
             off_by: r.off_by,
             keyswitch: r.sw_last,
             cc_ranges: r.cc_ranges,
+            end: r.end,
+            hold: r.ampeg_hold,
+            vel_curve: r.amp_velcurve,
+            cc_mods: r
+                .cc_mods
+                .iter()
+                .map(|m| CcMod {
+                    target: match m.target {
+                        CcTarget::Amplitude => ModTarget::Amplitude,
+                        CcTarget::Volume => ModTarget::Volume,
+                        CcTarget::Offset => ModTarget::Offset,
+                        CcTarget::Attack => ModTarget::Attack,
+                        CcTarget::Hold => ModTarget::Hold,
+                        CcTarget::Decay => ModTarget::Decay,
+                        CcTarget::Sustain => ModTarget::Sustain,
+                        CcTarget::Release => ModTarget::Release,
+                    },
+                    cc: m.cc,
+                    depth: m.depth,
+                })
+                .collect(),
+            crossfades: r
+                .crossfades
+                .iter()
+                .map(|&(cc, lo, hi, fade_in)| Crossfade {
+                    cc,
+                    lo,
+                    hi,
+                    fade_in,
+                })
+                .collect(),
+            rt_decay: r.rt_decay,
             ..SfzRegion::new(sample)
         });
     }

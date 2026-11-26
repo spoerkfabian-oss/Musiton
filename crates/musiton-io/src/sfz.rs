@@ -116,6 +116,125 @@ pub struct Region {
     pub sw_last: Option<u8>,
     /// Plays only while each of these controllers is within its range: (cc, lo, hi).
     pub cc_ranges: Vec<(u8, f32, f32)>,
+    /// Last sample frame played (`end`).
+    pub end: Option<u64>,
+    /// Velocity curve points `amp_velcurve_N` (velocity, gain 0 … 1), sorted.
+    pub amp_velcurve: Vec<(u8, f32)>,
+    /// Controller modulation (`amplitude_oncc`, `volume_oncc`, `ampeg_*_oncc`, `offset_oncc`).
+    pub cc_mods: Vec<CcMod>,
+    /// Controller crossfades: (cc, lo, hi, fades in) from `xfin_*cc` / `xfout_*cc`.
+    pub crossfades: Vec<(u8, f32, f32, bool)>,
+    /// dB per second held that a release sample gets quieter (`rt_decay`).
+    pub rt_decay: f32,
+}
+
+/// What a controller modulates in a region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CcTarget {
+    /// Gain in percent (several multiply).
+    Amplitude,
+    /// dB.
+    Volume,
+    /// Start offset in sample frames.
+    Offset,
+    /// Envelope attack (seconds).
+    Attack,
+    /// Envelope hold (seconds).
+    Hold,
+    /// Envelope decay (seconds).
+    Decay,
+    /// Envelope sustain (percent).
+    Sustain,
+    /// Envelope release (seconds).
+    Release,
+}
+
+/// `depth` at controller value 127 for `target` (linear; curves are not read).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CcMod {
+    /// What changes.
+    pub target: CcTarget,
+    /// Controller number.
+    pub cc: u8,
+    /// Amount at controller value 127.
+    pub depth: f32,
+}
+
+/// Splits `name123` into (`name`, 123).
+fn trailing_number(k: &str) -> Option<(&str, u8)> {
+    let digits = k.len() - k.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 {
+        return None;
+    }
+    let (name, n) = k.split_at(k.len() - digits);
+    Some((name, n.parse().ok()?))
+}
+
+/// Reads a controller opcode (modulation, crossfade or velocity curve point).
+fn controller_opcode(r: &mut Region, k: &str, x: f32) -> bool {
+    let Some((name, n)) = trailing_number(k) else {
+        return false;
+    };
+    let target = match name {
+        "amplitude_cc" | "amplitude_oncc" => Some(CcTarget::Amplitude),
+        "volume_cc" | "volume_oncc" | "gain_cc" | "gain_oncc" => Some(CcTarget::Volume),
+        "offset_cc" | "offset_oncc" => Some(CcTarget::Offset),
+        "ampeg_attackcc" | "ampeg_attack_oncc" => Some(CcTarget::Attack),
+        "ampeg_holdcc" | "ampeg_hold_oncc" => Some(CcTarget::Hold),
+        "ampeg_decaycc" | "ampeg_decay_oncc" => Some(CcTarget::Decay),
+        "ampeg_sustaincc" | "ampeg_sustain_oncc" => Some(CcTarget::Sustain),
+        "ampeg_releasecc" | "ampeg_release_oncc" => Some(CcTarget::Release),
+        _ => None,
+    };
+    if let Some(target) = target {
+        let m = CcMod {
+            target,
+            cc: n,
+            depth: x,
+        };
+        match r
+            .cc_mods
+            .iter_mut()
+            .find(|c| c.target == target && c.cc == n)
+        {
+            Some(c) => *c = m,
+            None => r.cc_mods.push(m),
+        }
+        return true;
+    }
+    if name == "amp_velcurve_" {
+        r.amp_velcurve.retain(|p| p.0 != n);
+        r.amp_velcurve.push((n.min(127), x.clamp(0.0, 1.0)));
+        r.amp_velcurve.sort_by_key(|p| p.0);
+        return true;
+    }
+    let fade = match name {
+        "xfin_locc" => Some((true, true)),
+        "xfin_hicc" => Some((true, false)),
+        "xfout_locc" => Some((false, true)),
+        "xfout_hicc" => Some((false, false)),
+        _ => None,
+    };
+    if let Some((fade_in, low)) = fade {
+        let i = match r.crossfades.iter().position(|c| c.0 == n && c.3 == fade_in) {
+            Some(i) => i,
+            None => {
+                // Unset ends: a fade-in is complete at 0, a fade-out starts at 127.
+                let (lo, hi) = if fade_in { (0.0, 0.0) } else { (127.0, 127.0) };
+                r.crossfades.push((n, lo, hi, fade_in));
+                r.crossfades.len() - 1
+            }
+        };
+        if let Some(c) = r.crossfades.get_mut(i) {
+            if low {
+                c.1 = x;
+            } else {
+                c.2 = x;
+            }
+        }
+        return true;
+    }
+    false
 }
 
 impl Default for Region {
@@ -150,6 +269,11 @@ impl Default for Region {
             hirand: 1.0,
             sw_last: None,
             cc_ranges: Vec::new(),
+            end: None,
+            amp_velcurve: Vec::new(),
+            cc_mods: Vec::new(),
+            crossfades: Vec::new(),
+            rt_decay: 0.0,
         }
     }
 }
@@ -430,6 +554,9 @@ fn apply(r: &mut Region, transpose: &mut f32, k: &str, v: &str, dir: &Path, defa
         "off_by" => r.off_by = v.parse().unwrap_or(0),
         "lorand" => r.lorand = f().unwrap_or(r.lorand),
         "hirand" => r.hirand = f().unwrap_or(r.hirand),
+        "end" => r.end = v.parse().ok(),
+        "rt_decay" => r.rt_decay = f().unwrap_or(r.rt_decay),
+        _ if f().is_some_and(|x| controller_opcode(r, k, x)) => {}
         _ => {
             let range = k
                 .strip_prefix("locc")
@@ -568,6 +695,36 @@ mod tests {
             (Trigger::Release, LoopMode::OneShot)
         );
         assert_eq!(inst.samples().len(), 3);
+    }
+
+    #[test]
+    fn controller_modulation_crossfades_and_velocity_curves() {
+        let text = r#"
+            <group> amplitude_oncc30=100 xfin_locc1=0 xfin_hicc1=64 amp_velcurve_64=1
+                    ampeg_sustain_oncc4=50 end=999 rt_decay=6
+            <region> sample=a.wav amplitude_oncc30=80 amplitude_cc31=50 xfout_locc1=100
+        "#;
+        let inst = parse(text, Path::new("/lib"));
+        let r = &inst.regions[0];
+        let m = |t, cc| {
+            r.cc_mods
+                .iter()
+                .find(|m| m.target == t && m.cc == cc)
+                .map(|m| m.depth)
+        };
+        assert_eq!(
+            m(CcTarget::Amplitude, 30),
+            Some(80.0),
+            "the region overrides its group"
+        );
+        assert_eq!(m(CcTarget::Amplitude, 31), Some(50.0));
+        assert_eq!(m(CcTarget::Sustain, 4), Some(50.0));
+        assert_eq!(
+            r.crossfades,
+            vec![(1, 0.0, 64.0, true), (1, 100.0, 127.0, false)]
+        );
+        assert_eq!(r.amp_velcurve, vec![(64, 1.0)]);
+        assert_eq!((r.end, r.rt_decay), (Some(999), 6.0));
     }
 
     #[test]

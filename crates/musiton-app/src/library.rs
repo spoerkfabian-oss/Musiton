@@ -57,6 +57,51 @@ pub const LIBRARIES: &[Library] = &[
         url: "https://github.com/sfzinstruments/SalamanderGrandPiano/archive/refs/heads/master.zip",
         approx_size: "about 1.2 GB",
     },
+    Library {
+        id: "virtuosity",
+        name: "Virtuosity Drums",
+        description: "Acoustic drum kit played with sticks, several microphone positions (Programs: basic and full kit)",
+        licence: "CC0 (public domain)",
+        source: "github.com/sfzinstruments/virtuosity_drums",
+        url: "https://github.com/sfzinstruments/virtuosity_drums/archive/refs/heads/master.zip",
+        approx_size: "size not stated",
+    },
+    Library {
+        id: "big-rusty-drums",
+        name: "Big Rusty Drums (Karoryfer)",
+        description: "Big, raw acoustic drum kit with close and room microphones",
+        licence: "CC0 (public domain)",
+        source: "github.com/sfzinstruments/karoryfer.big-rusty-drums",
+        url: "https://github.com/sfzinstruments/karoryfer.big-rusty-drums/archive/refs/heads/main.zip",
+        approx_size: "size not stated",
+    },
+    Library {
+        id: "black-and-blue-basses",
+        name: "Black and Blue Basses (Karoryfer)",
+        description: "Two electric bass guitars, fingered and picked, with articulation key switches",
+        licence: "CC0 (public domain)",
+        source: "github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+        url: "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses/archive/refs/heads/main.zip",
+        approx_size: "size not stated",
+    },
+    Library {
+        id: "black-and-green-guitars",
+        name: "Black and Green Guitars (Karoryfer)",
+        description: "Two electric guitars (Gretsch and Hofner): sustain, staccato, twang, with key switches",
+        licence: "CC0 (public domain)",
+        source: "github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+        url: "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars/archive/refs/heads/main.zip",
+        approx_size: "size not stated",
+    },
+    Library {
+        id: "meatbass",
+        name: "Meatbass (Karoryfer)",
+        description: "Double bass, arco and pizzicato",
+        licence: "CC0 (public domain)",
+        source: "github.com/sfzinstruments/karoryfer.meatbass",
+        url: "https://github.com/sfzinstruments/karoryfer.meatbass/archive/refs/heads/master.zip",
+        approx_size: "size not stated",
+    },
 ];
 
 /// Where a download stands.
@@ -245,7 +290,9 @@ fn unpack(archive: &Path, target: &Path, job: &Job) -> anyhow::Result<()> {
 
 /// The `.sfz` files of an installed library: (name relative to the library, path).
 pub fn instruments(dir: &Path) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    // File names that another .sfz includes: parts of an instrument, not instruments.
+    let mut included: Vec<String> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
@@ -256,11 +303,22 @@ pub fn instruments(dir: &Path) -> Vec<(String, PathBuf)> {
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("sfz")) {
+                if let Ok(text) = std::fs::read_to_string(&p) {
+                    included.extend(text.lines().filter_map(|l| {
+                        let rest = l.trim_start().strip_prefix("#include")?;
+                        let name = rest.trim().trim_matches('"');
+                        Some(name.rsplit(['/', '\\']).next()?.to_owned())
+                    }));
+                }
                 let rel = p.strip_prefix(dir).unwrap_or(&p);
                 out.push((rel.with_extension("").to_string_lossy().into_owned(), p));
             }
         }
     }
+    out.retain(|(_, p)| {
+        p.file_name()
+            .is_none_or(|n| !included.iter().any(|i| *i == n.to_string_lossy()))
+    });
     out.sort();
     out
 }
@@ -414,7 +472,10 @@ mod tests {
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         w.start_file("Lib-main/Piano/piano.sfz", opts).unwrap();
-        w.write_all(b"<region> sample=a.wav\n").unwrap();
+        w.write_all(b"#include \"parts/map.sfz\"\n").unwrap();
+        // A part of the instrument (included), not listed as an instrument itself.
+        w.start_file("Lib-main/Piano/parts/map.sfz", opts).unwrap();
+        w.write_all(b"<region> sample=../a.wav\n").unwrap();
         w.start_file("Lib-main/Piano/a.wav", opts).unwrap();
         w.write_all(&vec![7_u8; 200_000]).unwrap();
         w.finish().unwrap();
