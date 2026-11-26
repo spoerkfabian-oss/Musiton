@@ -311,7 +311,12 @@ impl Engine {
     }
 
     fn drain_commands(&mut self) {
-        for _ in 0..MAX_COMMANDS_PER_BLOCK {
+        self.apply_commands(MAX_COMMANDS_PER_BLOCK);
+    }
+
+    /// Applies up to `max` queued commands.
+    fn apply_commands(&mut self, max: usize) {
+        for _ in 0..max {
             let Ok(cmd) = self.commands.pop() else {
                 break;
             };
@@ -566,6 +571,9 @@ pub fn render_offline(
     channels: usize,
     callback_frames: usize,
 ) -> Vec<f32> {
+    // Offline there is no deadline: everything sent so far takes effect before the first
+    // sample (the device callback spreads a long queue over several blocks).
+    engine.apply_commands(usize::MAX);
     let mut out = vec![0.0; frames * channels];
     for buf in out.chunks_mut(callback_frames.max(1) * channels.max(1)) {
         engine.process(buf, channels);
