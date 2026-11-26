@@ -1,9 +1,11 @@
 //! Reading SFZ instrument files (the text format most free sample libraries use).
 //!
-//! Supported: `<control>` (`default_path`), `<global>`, `<master>`, `<group>` and
-//! `<region>` headers with inheritance, `#define $NAME value`, `#include "file"`,
-//! comments, and the opcodes Musiton's sample player understands (see [`Region`]).
-//! Unknown opcodes are ignored.
+//! Supported: `<control>` (`default_path`, `set_ccN`, `set_hdccN`), `<global>`, `<master>`,
+//! `<group>` and `<region>` headers with inheritance, `#define $NAME value` and
+//! `#include "file"` anywhere in the text (in order, as in sforzando), comments, key
+//! switches (`sw_lokey`/`sw_hikey`/`sw_default`/`sw_last`), CC conditions
+//! (`loccN`/`hiccN`) and the opcodes Musiton's sample player understands (see
+//! [`Region`]). Unknown opcodes are ignored.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -110,6 +112,10 @@ pub struct Region {
     pub lorand: f32,
     /// See `lorand`.
     pub hirand: f32,
+    /// Plays only while this key switch is the last one pressed.
+    pub sw_last: Option<u8>,
+    /// Plays only while each of these controllers is within its range: (cc, lo, hi).
+    pub cc_ranges: Vec<(u8, f32, f32)>,
 }
 
 impl Default for Region {
@@ -142,6 +148,8 @@ impl Default for Region {
             off_by: 0,
             lorand: 0.0,
             hirand: 1.0,
+            sw_last: None,
+            cc_ranges: Vec::new(),
         }
     }
 }
@@ -151,6 +159,12 @@ impl Default for Region {
 pub struct SfzInstrument {
     /// Every region with a sample, in file order.
     pub regions: Vec<Region>,
+    /// Keys that act as key switches (inclusive).
+    pub sw_range: Option<(u8, u8)>,
+    /// Key switch in effect before one is pressed.
+    pub sw_default: Option<u8>,
+    /// Controller start values (cc, 0 … 127).
+    pub cc_defaults: Vec<(u8, f32)>,
 }
 
 impl SfzInstrument {
@@ -170,8 +184,8 @@ impl SfzInstrument {
 pub fn read_sfz(path: &Path) -> Result<SfzInstrument, SfzError> {
     let mut text = String::new();
     let mut defines = HashMap::new();
-    load(path, &mut text, &mut defines, 0)?;
     let dir = path.parent().unwrap_or(Path::new("."));
+    load(path, dir, &mut text, &mut defines, 0)?;
     let inst = parse(&text, dir);
     if inst.regions.is_empty() {
         return Err(SfzError::Empty(path.to_owned()));
@@ -179,9 +193,12 @@ pub fn read_sfz(path: &Path) -> Result<SfzInstrument, SfzError> {
     Ok(inst)
 }
 
-/// Reads `path` into `out`, resolving `#include` and `#define`.
+/// Reads `path` into `out`, resolving `#include` and `#define` wherever they appear, in
+/// order: a name is replaced only in the text after its definition, so files can
+/// redefine it between includes.
 fn load(
     path: &Path,
+    root: &Path,
     out: &mut String,
     defines: &mut HashMap<String, String>,
     depth: usize,
@@ -193,35 +210,57 @@ fn load(
         path: path.to_owned(),
         source,
     })?;
-    let text = String::from_utf8_lossy(&raw);
+    let text = strip_comments(&String::from_utf8_lossy(&raw));
     let dir = path.parent().unwrap_or(Path::new("."));
-    for line in strip_comments(&text).lines() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix("#define") {
-            let mut parts = rest.split_whitespace();
-            if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                defines.insert(k.to_owned(), v.to_owned());
+    let mut rest = text.as_str();
+    loop {
+        let next = ["#define", "#include"]
+            .iter()
+            .filter_map(|d| rest.find(d).map(|i| (i, *d)))
+            .min();
+        let Some((at, directive)) = next else {
+            out.push_str(&substitute(rest, defines));
+            out.push('\n');
+            return Ok(());
+        };
+        out.push_str(&substitute(&rest[..at], defines));
+        out.push(' ');
+        let after = rest[at + directive.len()..].trim_start_matches([' ', '\t']);
+        if directive == "#define" {
+            let mut words = after.splitn(3, |c: char| c.is_whitespace());
+            let name = words.next().unwrap_or("");
+            let value = words.next().unwrap_or("");
+            if !name.is_empty() {
+                defines.insert(name.to_owned(), value.to_owned());
             }
-            continue;
+            rest = words.next().unwrap_or("");
+        } else {
+            let (name, tail) = match after.strip_prefix('"') {
+                Some(q) => q.split_once('"').unwrap_or((q, "")),
+                None => after.split_once(char::is_whitespace).unwrap_or((after, "")),
+            };
+            // Paths are relative to the main file (as in sforzando); a file next to the
+            // including one is found too.
+            let main = root.join(name);
+            let target = if main.exists() { main } else { dir.join(name) };
+            load(&target, root, out, defines, depth + 1)?;
+            rest = tail;
         }
-        if let Some(rest) = t.strip_prefix("#include") {
-            let name = rest.trim().trim_matches('"');
-            load(&dir.join(name), out, defines, depth + 1)?;
-            continue;
-        }
-        let mut line = line.to_owned();
-        // Longest names first so `$A` does not replace inside `$AB`.
-        let mut keys: Vec<&String> = defines.keys().collect();
-        keys.sort_by_key(|k| std::cmp::Reverse(k.len()));
-        for k in keys {
-            if let Some(v) = defines.get(k) {
-                line = line.replace(k.as_str(), v);
-            }
-        }
-        out.push_str(&line);
-        out.push('\n');
     }
-    Ok(())
+}
+
+/// Replaces defined `$NAMES` in `text` (longest names first, so `$A` does not replace
+/// inside `$AB`).
+fn substitute(text: &str, defines: &HashMap<String, String>) -> String {
+    let mut keys: Vec<&String> = defines.keys().collect();
+    keys.sort_by_key(|k| std::cmp::Reverse(k.len()));
+    let mut out = text.to_owned();
+    for k in keys {
+        if let Some(v) = defines.get(k) {
+            out = out.replace(k.as_str(), v);
+        }
+    }
+    out
 }
 
 /// Removes `//` line comments and `/* */` block comments.
@@ -306,7 +345,7 @@ fn tokens(text: &str) -> Vec<Section> {
 /// Note name or number to a MIDI key ("c4" = 60, "f#3" = 54, "60" = 60).
 fn key(v: &str) -> Option<u8> {
     if let Ok(n) = v.parse::<i32>() {
-        return u8::try_from(n.clamp(0, 127)).ok();
+        return u8::try_from(n.clamp(0, 127)).ok().filter(|_| n >= 0);
     }
     let v = v.to_lowercase();
     let mut chars = v.chars();
@@ -346,8 +385,11 @@ fn apply(r: &mut Region, transpose: &mut f32, k: &str, v: &str, dir: &Path, defa
                 r.pitch_keycenter = f32::from(n);
             }
         }
-        "lokey" => r.lokey = key(v).unwrap_or(r.lokey),
-        "hikey" => r.hikey = key(v).unwrap_or(r.hikey),
+        // A negative key (e.g. `lokey=-1`) means "no keys": the region is not played by
+        // notes (it is meant for controller triggers, which Musiton does not support).
+        "lokey" => r.lokey = key(v).unwrap_or(if v.starts_with('-') { 127 } else { r.lokey }),
+        "hikey" => r.hikey = key(v).unwrap_or(if v.starts_with('-') { 0 } else { r.hikey }),
+        "sw_last" => r.sw_last = key(v),
         "lovel" => r.lovel = v.parse().unwrap_or(r.lovel),
         "hivel" => r.hivel = v.parse().unwrap_or(r.hivel),
         "pitch_keycenter" => {
@@ -388,7 +430,30 @@ fn apply(r: &mut Region, transpose: &mut f32, k: &str, v: &str, dir: &Path, defa
         "off_by" => r.off_by = v.parse().unwrap_or(0),
         "lorand" => r.lorand = f().unwrap_or(r.lorand),
         "hirand" => r.hirand = f().unwrap_or(r.hirand),
-        _ => {}
+        _ => {
+            let range = k
+                .strip_prefix("locc")
+                .map(|n| (n, true))
+                .or_else(|| k.strip_prefix("hicc").map(|n| (n, false)));
+            if let (Some((n, low)), Some(x)) = (range, f()) {
+                if let Ok(cc) = n.parse::<u8>() {
+                    let i = match r.cc_ranges.iter().position(|c| c.0 == cc) {
+                        Some(i) => i,
+                        None => {
+                            r.cc_ranges.push((cc, 0.0, 127.0));
+                            r.cc_ranges.len() - 1
+                        }
+                    };
+                    if let Some(c) = r.cc_ranges.get_mut(i) {
+                        if low {
+                            c.1 = x;
+                        } else {
+                            c.2 = x;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -399,13 +464,37 @@ pub fn parse(text: &str, dir: &Path) -> SfzInstrument {
     let mut global: Vec<(String, String)> = Vec::new();
     let mut master: Vec<(String, String)> = Vec::new();
     let mut group: Vec<(String, String)> = Vec::new();
-    let mut regions = Vec::new();
+    let mut inst = SfzInstrument::default();
     for (header, ops) in tokens(&strip_comments(text)) {
+        // Instrument-wide settings, wherever they appear.
+        for (k, v) in &ops {
+            match k.as_str() {
+                "sw_lokey" => {
+                    let hi = inst.sw_range.map_or(0, |r| r.1);
+                    inst.sw_range = key(v).map(|lo| (lo, hi.max(lo)));
+                }
+                "sw_hikey" => {
+                    let lo = inst.sw_range.map_or(0, |r| r.0);
+                    inst.sw_range = key(v).map(|hi| (lo.min(hi), hi));
+                }
+                "sw_default" => inst.sw_default = key(v),
+                _ => {}
+            }
+        }
         match header.as_deref() {
             Some("control") => {
                 for (k, v) in &ops {
                     if k == "default_path" {
                         default_path = v.clone();
+                    }
+                    let cc = k
+                        .strip_prefix("set_hdcc")
+                        .map(|n| (n, 127.0))
+                        .or_else(|| k.strip_prefix("set_cc").map(|n| (n, 1.0)));
+                    if let (Some((n, scale)), Ok(x)) = (cc, v.parse::<f32>()) {
+                        if let Ok(cc) = n.parse::<u8>() {
+                            inst.cc_defaults.push((cc, x * scale));
+                        }
                     }
                 }
             }
@@ -427,13 +516,13 @@ pub fn parse(text: &str, dir: &Path) -> SfzInstrument {
                 }
                 r.tune += transpose * 100.0;
                 if !r.sample.as_os_str().is_empty() {
-                    regions.push(r);
+                    inst.regions.push(r);
                 }
             }
             _ => {}
         }
     }
-    SfzInstrument { regions }
+    inst
 }
 
 #[cfg(test)]
@@ -498,6 +587,51 @@ mod tests {
         let inst = read_sfz(&dir.join("main.sfz")).unwrap();
         assert_eq!(inst.regions[0].sample, dir.join("kick.wav"));
         assert_eq!(inst.regions[0].lokey, 36);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn includes_mid_line_redefine_in_order_from_the_main_folder() {
+        // Like the Salamander piano: includes on a header line, a name redefined between
+        // includes, include paths relative to the main file.
+        let dir = std::env::temp_dir().join(format!("musiton-sfz-order-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Data")).unwrap();
+        std::fs::write(dir.join("Data/v1.txt"), "#define $VEL v1\n").unwrap();
+        std::fs::write(dir.join("Data/v2.txt"), "#define $VEL v2\n").unwrap();
+        std::fs::write(
+            dir.join("Data/region.txt"),
+            "<region> sample=C4$VEL.wav key=60\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("Data/notes.txt"),
+            "<group> #include \"Data/v1.txt\" lovel=1 hivel=64 #include \"Data/region.txt\"\n\
+             <group> #include \"Data/v2.txt\" lovel=65 hivel=127 #include \"Data/region.txt\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("main.sfz"),
+            "<global> sw_lokey=c0 sw_hikey=c#0 sw_default=c0\n\
+             <control> set_hdcc20=0.5 set_cc7=100\n\
+             <master> sw_last=c0 #include \"Data/notes.txt\"\n\
+             <master> locc20=1 hicc20=100 lokey=-1 hikey=-1\n<region> sample=noise.wav\n",
+        )
+        .unwrap();
+        let inst = read_sfz(&dir.join("main.sfz")).unwrap();
+        let names: Vec<String> = inst
+            .regions
+            .iter()
+            .map(|r| r.sample.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["C4v1.wav", "C4v2.wav", "noise.wav"]);
+        assert_eq!((inst.regions[0].lovel, inst.regions[1].lovel), (1, 65));
+        assert_eq!(inst.regions[0].sw_last, Some(12));
+        assert_eq!(inst.sw_range, Some((12, 13)));
+        assert_eq!(inst.sw_default, Some(12));
+        assert_eq!(inst.cc_defaults, vec![(20, 63.5), (7, 100.0)]);
+        let noise = &inst.regions[2];
+        assert_eq!(noise.cc_ranges, vec![(20, 1.0, 100.0)]);
+        assert!(noise.lokey > noise.hikey, "negative keys: no notes play it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

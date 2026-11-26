@@ -516,12 +516,14 @@ pub fn build(
                     Some(d) => plugins.node(d.id).unwrap_or_else(|| Box::new(Mix::new(2))),
                     None => match t.devices.first().and_then(|d| d.sfz()) {
                         Some(path) if type_id == musiton_devices::SFZ => {
+                            let loaded = assets
+                                .sfz(path)
+                                .map(|l| l.as_ref().clone())
+                                .unwrap_or_default();
                             musiton_devices::create_sfz(
                                 &instrument_params(t),
-                                assets
-                                    .sfz(path)
-                                    .map(|r| r.as_ref().clone())
-                                    .unwrap_or_default(),
+                                loaded.regions,
+                                loaded.setup,
                             )
                         }
                         _ => musiton_devices::create_instrument(

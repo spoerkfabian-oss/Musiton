@@ -532,7 +532,8 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 
 ## Phase 18b — Sample instrument (SFZ) (2026-11-26)
 - New instrument "Sample instrument" (`sfz_player.rs`, type id `sfz`): per note it plays every region whose key and velocity range match; round robin (`seq_length`/`seq_position`, a counter per region), random layers (`lorand`/`hirand`), release samples (`trigger=release`, with the note-on velocity), loop modes (none, one-shot, continuous, sustain) with loop points from the SFZ file, ADSR per region, volume/pan/`amp_veltrack`, `group`/`off_by` (10 ms fade). 64 voices; samples read with cubic interpolation (no mipmaps, so a library takes its plain size in memory as 32-bit float).
-- Not supported yet: `ampeg_hold`, loop points stored inside WAV files, filters/LFOs in SFZ, `rt_decay`. Libraries larger than RAM would need disk streaming (later, if a library needs it).
+- SFZ reader extended for real libraries (checked against the Salamander piano's files: 1121 regions, 16 velocity layers, two tunings): `#include`/`#define` anywhere on a line and in order (names can be redefined between includes), include paths relative to the main file, key switches (`sw_lokey`/`sw_hikey`/`sw_default`/`sw_last`), controller conditions (`loccN`/`hiccN`, start values from `set_ccN`/`set_hdccN`), `lokey=-1` = not played by notes.
+- Not supported yet: `ampeg_hold`, loop points stored inside WAV files, filters/LFOs in SFZ, `rt_decay`, `on_loccN` (controller-triggered samples, e.g. pedal noise), `*_onccN` modulation. Libraries larger than RAM would need disk streaming (later, if a library needs it).
 - File format: optional `sfz` path on built-in devices (absolute; libraries are not copied into the song). Older files load unchanged. The app reads the SFZ and decodes its samples (`assets.rs`, once per path) when the song opens or "Load SFZ…" is used; a missing sample file only drops its regions.
 
 ## Open: CI maintenance

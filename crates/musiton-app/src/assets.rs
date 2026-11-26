@@ -8,7 +8,7 @@ use std::sync::Arc;
 use musiton_core::audio::{AudioData, Peaks};
 use musiton_core::ids::{AssetId, TrackId};
 use musiton_core::{TempoMap, Tick};
-use musiton_devices::sfz_player::{Looping, SfzRegion};
+use musiton_devices::sfz_player::{Looping, SfzRegion, SfzSetup};
 use musiton_io::file::{import_audio, Imported};
 use musiton_io::sfz::{LoopMode, Trigger};
 use musiton_project::Project;
@@ -26,7 +26,7 @@ pub struct AssetStore {
     /// Time-stretched renderings of warped clips, by [`crate::warp::key`].
     warped: HashMap<u64, Arc<AudioData>>,
     /// Sample instruments by SFZ path (regions with their decoded samples).
-    sfz: HashMap<String, Arc<Vec<SfzRegion>>>,
+    sfz: HashMap<String, Arc<LoadedSfz>>,
     /// Bumped whenever the set of loaded files changes (triggers a graph rebuild).
     pub generation: u64,
 }
@@ -71,17 +71,17 @@ impl AssetStore {
     /// Reads an SFZ instrument and decodes its samples (once per path).
     pub fn load_sfz(&mut self, path: &str) -> Result<usize, String> {
         if let Some(r) = self.sfz.get(path) {
-            return Ok(r.len());
+            return Ok(r.regions.len());
         }
-        let regions = sfz_regions(Path::new(path))?;
-        let n = regions.len();
-        self.sfz.insert(path.to_owned(), Arc::new(regions));
+        let loaded = load_sfz_file(Path::new(path))?;
+        let n = loaded.regions.len();
+        self.sfz.insert(path.to_owned(), Arc::new(loaded));
         self.generation += 1;
         Ok(n)
     }
 
-    /// The regions of a loaded SFZ instrument.
-    pub fn sfz(&self, path: &str) -> Option<&Arc<Vec<SfzRegion>>> {
+    /// A loaded SFZ instrument.
+    pub fn sfz(&self, path: &str) -> Option<&Arc<LoadedSfz>> {
         self.sfz.get(path)
     }
 
@@ -278,10 +278,24 @@ mod tests {
     }
 }
 
+/// An SFZ instrument ready to play: regions with decoded samples and its settings.
+#[derive(Debug, Clone, Default)]
+pub struct LoadedSfz {
+    /// The playable regions.
+    pub regions: Vec<SfzRegion>,
+    /// Key switches and controller start values.
+    pub setup: SfzSetup,
+}
+
 /// Reads `path` and builds playable regions; every sample file is decoded once. Regions
 /// whose sample cannot be read are left out (logged).
-pub fn sfz_regions(path: &Path) -> Result<Vec<SfzRegion>, String> {
+pub fn load_sfz_file(path: &Path) -> Result<LoadedSfz, String> {
     let inst = musiton_io::sfz::read_sfz(path).map_err(|e| e.to_string())?;
+    let setup = SfzSetup {
+        keyswitch_range: inst.sw_range,
+        keyswitch_default: inst.sw_default,
+        cc_defaults: inst.cc_defaults.clone(),
+    };
     let mut audio: HashMap<PathBuf, Option<Arc<AudioData>>> = HashMap::new();
     let mut out = Vec::with_capacity(inst.regions.len());
     for r in inst.regions {
@@ -323,13 +337,18 @@ pub fn sfz_regions(path: &Path) -> Result<Vec<SfzRegion>, String> {
             rand: (r.lorand, r.hirand),
             group: r.group,
             off_by: r.off_by,
+            keyswitch: r.sw_last,
+            cc_ranges: r.cc_ranges,
             ..SfzRegion::new(sample)
         });
     }
     if out.is_empty() {
         return Err("no playable regions (are the sample files next to it?)".into());
     }
-    Ok(out)
+    Ok(LoadedSfz {
+        regions: out,
+        setup,
+    })
 }
 
 #[cfg(test)]

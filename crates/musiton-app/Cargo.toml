@@ -30,6 +30,8 @@ png = "0.18"
 directories = "6"
 rfd = "0.17"
 rtrb = "0.4"
+ureq = "3"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 musiton-devices.workspace = true
 musiton-dsp.workspace = true
 musiton-plugin-host.workspace = true

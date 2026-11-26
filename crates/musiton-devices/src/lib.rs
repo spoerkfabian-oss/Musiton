@@ -271,8 +271,9 @@ pub fn instrument_type(type_id: &str) -> Option<&'static InstrumentType> {
 pub fn create_sfz(
     params: &[(u64, f32)],
     regions: Vec<sfz_player::SfzRegion>,
+    setup: sfz_player::SfzSetup,
 ) -> Box<dyn AudioNode> {
-    let mut node: Box<dyn AudioNode> = Box::new(sfz_player::SfzPlayer::new(regions));
+    let mut node: Box<dyn AudioNode> = Box::new(sfz_player::SfzPlayer::new(regions, setup));
     for &(id, value) in params {
         node.set_param(ParamId(id), value);
     }
@@ -287,7 +288,7 @@ pub fn create_instrument(
     samples: &[(u8, Arc<AudioData>)],
 ) -> Box<dyn AudioNode> {
     let mut node: Box<dyn AudioNode> = match type_id {
-        SFZ => Box::new(sfz_player::SfzPlayer::new(Vec::new())),
+        SFZ => Box::new(sfz_player::SfzPlayer::new(Vec::new(), Default::default())),
         SAMPLER => Box::new(sampler::Sampler::new(
             samples
                 .iter()

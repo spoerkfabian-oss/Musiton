@@ -102,6 +102,21 @@ pub struct SfzRegion {
     pub group: i64,
     /// Group whose notes cut this region off (0 = none).
     pub off_by: i64,
+    /// Plays only while this key switch is the last one pressed.
+    pub keyswitch: Option<u8>,
+    /// Plays only while each controller is within its range: (cc, lo, hi) on 0 … 127.
+    pub cc_ranges: Vec<(u8, f32, f32)>,
+}
+
+/// Instrument-wide settings of an SFZ file.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SfzSetup {
+    /// Keys that switch articulations instead of playing (inclusive).
+    pub keyswitch_range: Option<(u8, u8)>,
+    /// Key switch in effect at the start.
+    pub keyswitch_default: Option<u8>,
+    /// Controller start values (cc, 0 … 127).
+    pub cc_defaults: Vec<(u8, f32)>,
 }
 
 impl SfzRegion {
@@ -130,14 +145,21 @@ impl SfzRegion {
             rand: (0.0, 1.0),
             group: 0,
             off_by: 0,
+            keyswitch: None,
+            cc_ranges: Vec::new(),
         }
     }
 
-    fn matches(&self, key: u8, vel: u8, rand: f32) -> bool {
+    fn matches(&self, key: u8, vel: u8, rand: f32, switch: Option<u8>, cc: &[f32; 128]) -> bool {
         (self.keys.0..=self.keys.1).contains(&key)
             && (self.vels.0..=self.vels.1).contains(&vel)
             && rand >= self.rand.0
             && (rand < self.rand.1 || self.rand.1 >= 1.0)
+            && self.keyswitch.is_none_or(|k| Some(k) == switch)
+            && self
+                .cc_ranges
+                .iter()
+                .all(|&(n, lo, hi)| cc.get(n as usize).is_some_and(|&v| v >= lo && v <= hi))
     }
 }
 
@@ -168,6 +190,10 @@ pub struct SfzPlayer {
     voices: Vec<Voice>,
     /// Velocity of the last note-on per key (for release samples).
     last_vel: [u8; 128],
+    /// Key switches and controller values (0 … 127).
+    setup: SfzSetup,
+    switch: Option<u8>,
+    cc: [f32; 128],
     rng: u32,
     sample_rate: f32,
     clock: u64,
@@ -175,15 +201,24 @@ pub struct SfzPlayer {
 }
 
 impl SfzPlayer {
-    /// Player for `regions`.
-    pub fn new(regions: Vec<SfzRegion>) -> Self {
+    /// Player for `regions` with the file's key switch and controller settings.
+    pub fn new(regions: Vec<SfzRegion>, setup: SfzSetup) -> Self {
         let counters = vec![0; regions.len()];
+        let mut cc = [0.0; 128];
+        for &(n, v) in &setup.cc_defaults {
+            if let Some(c) = cc.get_mut(n as usize) {
+                *c = v;
+            }
+        }
         Self {
             values: PARAMS.map(|p| p.default),
             regions,
             counters,
             voices: Vec::new(),
             last_vel: [64; 128],
+            switch: setup.keyswitch_default,
+            cc,
+            setup,
             rng: 0x2545_F491,
             sample_rate: 48_000.0,
             clock: 0,
@@ -206,12 +241,22 @@ impl SfzPlayer {
 
     /// Starts every region that matches (`release` = note-off triggered ones).
     fn trigger(&mut self, key: u8, vel: u8, release: bool) {
+        if self
+            .setup
+            .keyswitch_range
+            .is_some_and(|(lo, hi)| (lo..=hi).contains(&key))
+        {
+            if !release {
+                self.switch = Some(key);
+            }
+            return;
+        }
         let rand = self.random();
         for r in 0..self.regions.len() {
             let Some(reg) = self.regions.get(r) else {
                 continue;
             };
-            if reg.on_release != release || !reg.matches(key, vel, rand) {
+            if reg.on_release != release || !reg.matches(key, vel, rand, self.switch, &self.cc) {
                 continue;
             }
             let Some(count) = self.counters.get_mut(r) else {
@@ -334,6 +379,9 @@ impl SfzPlayer {
     }
 
     fn controller(&mut self, number: u8, val: f32) {
+        if let Some(c) = self.cc.get_mut(number as usize) {
+            *c = val * 127.0;
+        }
         if self.controllers.set(number, val) == Change::PedalUp {
             for v in self.voices.iter_mut().filter(|v| v.pedal_held) {
                 v.pedal_held = false;
@@ -448,6 +496,7 @@ impl AudioNode for SfzPlayer {
         for c in &mut self.counters {
             *c = 0;
         }
+        self.switch = self.setup.keyswitch_default;
     }
 
     fn params(&self) -> &[ParamInfo] {
@@ -521,7 +570,7 @@ mod tests {
     }
 
     fn player(regions: Vec<SfzRegion>) -> SfzPlayer {
-        let mut p = SfzPlayer::new(regions);
+        let mut p = SfzPlayer::new(regions, SfzSetup::default());
         p.prepare(48_000.0, 48_000);
         p
     }
@@ -644,6 +693,53 @@ mod tests {
         };
         let out = render(&mut player(vec![reg]), &[ev(0, 60, true, 0.8)], 48_000);
         assert!(rms(&out[40_000..]) > 0.1);
+    }
+
+    #[test]
+    fn key_switches_and_controllers_choose_regions() {
+        let natural = SfzRegion {
+            keyswitch: Some(24),
+            ..SfzRegion::new(sine(440.0, 1.0))
+        };
+        let other = SfzRegion {
+            keyswitch: Some(25),
+            ..SfzRegion::new(sine(1000.0, 1.0))
+        };
+        let noise = SfzRegion {
+            cc_ranges: vec![(20, 1.0, 127.0)],
+            ..SfzRegion::new(sine(3000.0, 1.0))
+        };
+        let setup = SfzSetup {
+            keyswitch_range: Some((24, 25)),
+            keyswitch_default: Some(24),
+            cc_defaults: vec![(20, 0.0)],
+        };
+        let mut p = SfzPlayer::new(vec![natural, other, noise], setup);
+        p.prepare(48_000.0, 48_000);
+        let first = render(&mut p, &[ev(0, 60, true, 0.8)], 4_800);
+        assert!(magnitude(&first[960..], 440.0) > 10.0 * magnitude(&first[960..], 1000.0));
+        assert!(magnitude(&first[960..], 440.0) > 10.0 * magnitude(&first[960..], 3000.0));
+        // Pressing the switch key makes no sound; the next note uses the other region.
+        p.reset();
+        let cc = Event {
+            offset: 0,
+            kind: EventKind::Cc {
+                ch: 0,
+                cc: 20,
+                val: 1.0,
+            },
+        };
+        let second = render(
+            &mut p,
+            &[ev(0, 25, true, 0.8), cc, ev(10, 60, true, 0.8)],
+            4_800,
+        );
+        let x = &second[960..];
+        assert!(magnitude(x, 1000.0) > 10.0 * magnitude(x, 440.0));
+        assert!(
+            magnitude(x, 3000.0) > 0.1 * magnitude(x, 1000.0),
+            "cc region"
+        );
     }
 
     #[test]
