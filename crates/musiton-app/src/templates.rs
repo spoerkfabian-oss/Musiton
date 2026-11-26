@@ -260,12 +260,13 @@ fn chord(root: u8, third: u8) -> Vec<u8> {
 fn raw() -> Project {
     assemble(Some("raw"), 120.0, 4, 1, || {
         // Voicings measured from Aloboi's "Just Raw" videos (the synth tunes them pure):
-        // C#maj7, F#m, F, F7 with its natural seventh.
+        // C#maj7, F#m, F, F7 with its natural seventh. All five notes wide, root and
+        // fifth low like the first chord (the owner hears that one as closest).
         const CHORDS: [&[u8]; 4] = [
             &[37, 44, 49, 53, 60],
-            &[42, 49, 57],
-            &[41, 48, 57],
-            &[41, 48, 57, 63],
+            &[42, 49, 54, 57, 61],
+            &[41, 48, 53, 57, 60],
+            &[41, 48, 53, 57, 63],
         ];
         let chord_of = |bar: i64| CHORDS.get(bar as usize % 4).copied().unwrap_or(&[]);
         // Gated sixteenths: about 80 ms on, 40 ms off, some held over two steps.
