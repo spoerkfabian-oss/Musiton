@@ -10,7 +10,7 @@ use musiton_dsp::filter::{FilterMode, Svf};
 use musiton_dsp::osc::{sin_turns, BlepOsc, Wave};
 use musiton_engine::node::{AudioIo, AudioNode, Event, ProcessContext};
 
-use crate::voices::{handle_event, note_hz, split_block, Params, Voice, Voices};
+use crate::voices::{handle_event, note_hz, split_block, Drift, Params, Voice, Voices};
 
 /// Number of voices.
 const VOICES: usize = 16;
@@ -32,10 +32,11 @@ pub mod id {
     pub const ENSEMBLE: u64 = 6;
     pub const VELOCITY: u64 = 7;
     pub const VOLUME: u64 = 8;
+    pub const DRIFT: u64 = 9;
 }
 
 /// All parameters (index = id).
-pub const PARAMS: [ParamInfo; 9] = [
+pub const PARAMS: [ParamInfo; 10] = [
     ParamInfo::new(id::LOW, "8' (cello)", 0.0, 1.0, 1.0),
     ParamInfo::new(id::HIGH, "4' (violin)", 0.0, 1.0, 0.5),
     ParamInfo::new(id::DETUNE, "Detune", 0.0, 30.0, 8.0).unit("ct"),
@@ -51,6 +52,7 @@ pub const PARAMS: [ParamInfo; 9] = [
     ParamInfo::new(id::ENSEMBLE, "Ensemble", 0.0, 1.0, 0.7),
     ParamInfo::new(id::VELOCITY, "Velocity", 0.0, 1.0, 0.3),
     ParamInfo::new(id::VOLUME, "Volume", 0.0, 1.0, 0.7),
+    ParamInfo::new(id::DRIFT, "Analog drift", 0.0, 1.0, 0.3),
 ];
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,7 @@ struct StringVoice {
     /// Two saws at 8' and two at 4' (detuned pairs).
     osc: [BlepOsc; 4],
     env: Adsr,
+    drift: Drift<4>,
 }
 
 impl Default for StringVoice {
@@ -69,6 +72,7 @@ impl Default for StringVoice {
             vel: 0.0,
             osc: std::array::from_fn(|i| BlepOsc::with_phase(i as f32 * 0.31)),
             env: Adsr::default(),
+            drift: Drift::default(),
         }
     }
 }
@@ -86,7 +90,7 @@ impl Voice for StringVoice {
 /// The string ensemble node (no inputs, stereo out).
 #[derive(Debug)]
 pub struct Strings {
-    p: Params<9>,
+    p: Params<10>,
     voices: Voices<StringVoice>,
     sample_rate: f32,
     tone: Svf,
@@ -94,6 +98,10 @@ pub struct Strings {
     /// Slow and fast chorus LFO phases (turns).
     slow: f32,
     fast: f32,
+    /// Seeds each note's drift.
+    notes: u32,
+    /// Samples rendered (times the drift's new targets).
+    counter: u32,
 }
 
 impl Default for Strings {
@@ -106,6 +114,8 @@ impl Default for Strings {
             lines: Default::default(),
             slow: 0.0,
             fast: 0.0,
+            notes: 0,
+            counter: 0,
         }
     }
 }
@@ -113,9 +123,21 @@ impl Default for Strings {
 impl Strings {
     fn note_on(&mut self, key: u8, vel: f32) {
         let sens = self.p.target(id::VELOCITY);
+        let drift = self.p.target(id::DRIFT) > 0.0;
+        self.notes = self.notes.wrapping_add(1);
+        let seed = self.notes;
         if let Some(v) = self.voices.note_on(key) {
             v.pitch = f32::from(key);
             v.vel = 1.0 - sens + sens * vel;
+            if drift {
+                v.drift.note(seed);
+                // A silent voice starts at random phases (free-running oscillators).
+                if v.env.level() < 1e-4 {
+                    for o in &mut v.osc {
+                        *o = BlepOsc::with_phase(v.drift.random() * 0.5 + 0.5);
+                    }
+                }
+            }
             v.env.gate_on();
         }
     }
@@ -127,20 +149,26 @@ impl Strings {
         for v in self.voices.all() {
             v.env.set(a, 0.1, 1.0, r, sr);
         }
+        let drift_k = 1.0 / (Drift::<4>::TIME * sr);
         for i in from..to {
             self.p.tick();
             let p = &self.p;
             let (low, high) = (p.get(id::LOW), p.get(id::HIGH));
             let d = p.get(id::DETUNE) / 200.0;
+            let drift = p.get(id::DRIFT);
+            let retarget = self.counter.is_multiple_of(Drift::<4>::STEP);
+            self.counter = self.counter.wrapping_add(1);
             let mut sum = 0.0;
             for v in self.voices.active() {
                 let e = v.env.next_value() * v.vel;
+                let pitch =
+                    v.pitch + v.drift.wander(retarget, drift_k) * Drift::<4>::WANDER * drift;
                 let mut s = 0.0;
-                for (k, o) in v.osc.iter_mut().enumerate() {
+                for (k, (o, sc)) in v.osc.iter_mut().zip(v.drift.scatter).enumerate() {
                     let octave = if k < 2 { 0.0 } else { 12.0 };
-                    let detune = if k % 2 == 0 { -d } else { d };
+                    let detune = if k % 2 == 0 { -d } else { d } + sc * Drift::<4>::SCATTER * drift;
                     let level = if k < 2 { low } else { high };
-                    let x = o.next_sample(Wave::Saw, note_hz(v.pitch + octave + detune) / sr);
+                    let x = o.next_sample(Wave::Saw, note_hz(pitch + octave + detune) / sr);
                     s += x * level;
                 }
                 sum += s * e;

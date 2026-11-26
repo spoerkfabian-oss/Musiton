@@ -238,9 +238,95 @@ pub fn note_hz(pitch: f32) -> f32 {
     440.0 * ((pitch - 69.0) / 12.0).exp2()
 }
 
+/// Analog-style drift for one voice: a slow random pitch wander, a fixed random pitch
+/// offset per unison copy (new on every note) and random values for start phases.
+#[derive(Debug, Clone, Copy)]
+pub struct Drift<const N: usize> {
+    rng: u32,
+    now: f32,
+    to: f32,
+    /// Fixed offset per copy (−1 … 1).
+    pub scatter: [f32; N],
+}
+
+impl<const N: usize> Default for Drift<N> {
+    fn default() -> Self {
+        Self {
+            rng: 1,
+            now: 0.0,
+            to: 0.0,
+            scatter: [0.0; N],
+        }
+    }
+}
+
+impl<const N: usize> Drift<N> {
+    /// Pitch wander at full drift (semitones).
+    pub const WANDER: f32 = 0.10;
+    /// Per-copy offset at full drift (semitones).
+    pub const SCATTER: f32 = 0.05;
+    /// Samples between new wander targets.
+    pub const STEP: u32 = 4_096;
+    /// Seconds the wander takes to reach a target.
+    pub const TIME: f32 = 0.4;
+
+    /// A new note: reseeds from `seed` and draws new per-copy offsets.
+    pub fn note(&mut self, seed: u32) {
+        self.rng = seed.wrapping_mul(0x9E37_79B9) | 1;
+        for k in 0..N {
+            let r = self.random();
+            if let Some(s) = self.scatter.get_mut(k) {
+                *s = r;
+            }
+        }
+    }
+
+    /// Next random value in −1 … 1 (xorshift).
+    pub fn random(&mut self) -> f32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+
+    /// Advances one sample and returns the wander (−1 … 1). `retarget` picks a new goal;
+    /// `k` is `1 / (TIME × sample rate)`.
+    pub fn wander(&mut self, retarget: bool, k: f32) -> f32 {
+        if retarget {
+            self.to = self.random();
+        }
+        self.now += (self.to - self.now) * k;
+        self.now
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drift_wanders_slowly_and_scatters_per_note() {
+        let mut d = Drift::<4>::default();
+        d.note(1);
+        let first = d.scatter;
+        assert!(first.iter().all(|s| (-1.0..=1.0).contains(s)));
+        assert!(first.windows(2).any(|w| w[0] != w[1]), "copies differ");
+        d.note(2);
+        assert_ne!(d.scatter, first, "a new note gets new offsets");
+        let k = 1.0 / (Drift::<4>::TIME * 48_000.0);
+        let path: Vec<f32> = (0..96_000_u32)
+            .map(|i| d.wander(i % Drift::<4>::STEP == 0, k))
+            .collect();
+        assert!(path.iter().all(|w| w.abs() <= 1.0));
+        let moved = path.iter().fold(0.0_f32, |m, w| m.max(w.abs()));
+        assert!(moved > 0.05, "it wanders ({moved})");
+        let step = path
+            .windows(2)
+            .fold(0.0_f32, |m, w| m.max((w[1] - w[0]).abs()));
+        assert!(step < 1e-3, "slowly ({step})");
+    }
 
     #[derive(Debug, Clone, Default)]
     struct V {

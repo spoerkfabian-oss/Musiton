@@ -12,7 +12,7 @@ use musiton_dsp::filter::{FilterMode, Svf};
 use musiton_dsp::osc::sin_turns;
 use musiton_engine::node::{AudioIo, AudioNode, Event, ProcessContext};
 
-use crate::voices::{handle_event, note_hz, split_block, Params, Voice, Voices};
+use crate::voices::{handle_event, note_hz, split_block, Drift, Params, Voice, Voices};
 
 /// Number of voices.
 const VOICES: usize = 16;
@@ -63,10 +63,11 @@ pub mod id {
     pub const MOD_R: u64 = 19;
     pub const VOLUME: u64 = 20;
     pub const VELOCITY: u64 = 21;
+    pub const DRIFT: u64 = 22;
 }
 
 /// All parameters (index = id).
-pub const PARAMS: [ParamInfo; 22] = [
+pub const PARAMS: [ParamInfo; 23] = [
     ParamInfo::choice(id::TABLE, "Table", TABLES, 0),
     ParamInfo::new(id::POSITION, "Position", 0.0, 1.0, 0.0),
     ParamInfo::new(id::POS_ENV, "Env to position", -1.0, 1.0, 0.0),
@@ -105,6 +106,7 @@ pub const PARAMS: [ParamInfo; 22] = [
         .unit("s"),
     ParamInfo::new(id::VOLUME, "Volume", 0.0, 1.0, 0.7),
     ParamInfo::new(id::VELOCITY, "Velocity", 0.0, 1.0, 0.6),
+    ParamInfo::new(id::DRIFT, "Analog drift", 0.0, 1.0, 0.3),
 ];
 
 /// All tables: `[table][frame][mip][sample]`, flattened.
@@ -256,6 +258,7 @@ struct WtVoice {
     amp: Adsr,
     modenv: Adsr,
     filter: [Svf; 2],
+    drift: Drift<MAX_UNISON>,
 }
 
 impl Default for WtVoice {
@@ -268,6 +271,7 @@ impl Default for WtVoice {
             amp: Adsr::default(),
             modenv: Adsr::default(),
             filter: Default::default(),
+            drift: Drift::default(),
         }
     }
 }
@@ -286,12 +290,14 @@ impl Voice for WtVoice {
 /// The wavetable synth node (no inputs, stereo out).
 #[derive(Debug)]
 pub struct Wavetable {
-    p: Params<22>,
+    p: Params<23>,
     voices: Voices<WtVoice>,
     sample_rate: f32,
     tables: Option<Arc<Tables>>,
     lfo: f32,
     counter: u32,
+    /// Seeds each note's drift.
+    notes: u32,
 }
 
 impl Default for Wavetable {
@@ -303,6 +309,7 @@ impl Default for Wavetable {
             tables: None,
             lfo: 0.0,
             counter: 0,
+            notes: 0,
         }
     }
 }
@@ -310,9 +317,22 @@ impl Default for Wavetable {
 impl Wavetable {
     fn note_on(&mut self, key: u8, vel: f32) {
         let sens = self.p.target(id::VELOCITY);
+        let drift = self.p.target(id::DRIFT) > 0.0;
+        self.notes = self.notes.wrapping_add(1);
+        let seed = self.notes;
         if let Some(v) = self.voices.note_on(key) {
             v.pitch = f32::from(key);
             v.vel = 1.0 - sens + sens * vel;
+            if drift {
+                v.drift.note(seed);
+                // A silent voice starts its copies at random phases, like free-running
+                // oscillators (jumping a sounding one would click).
+                if v.amp.level() < 1e-4 {
+                    for ph in &mut v.phase {
+                        *ph = v.drift.random() * 0.5 + 0.5;
+                    }
+                }
+            }
             v.amp.gate_on();
             v.modenv.gate_on();
         }
@@ -335,6 +355,7 @@ impl Wavetable {
         let gain = self.voices.controllers.gain();
         let vibrato = self.voices.controllers.mod_wheel * 0.3;
         let norm = 1.0 / (unison as f32).sqrt();
+        let drift_k = 1.0 / (Drift::<MAX_UNISON>::TIME * sr);
         for i in from..to {
             self.p.tick();
             let p = &self.p;
@@ -348,6 +369,8 @@ impl Wavetable {
             let filt_env = p.get(id::FILTER_ENV) * 6.0;
             let cutoff = p.get(id::CUTOFF);
             let reso = p.get(id::RESONANCE);
+            let drift = p.get(id::DRIFT);
+            let retarget = self.counter.is_multiple_of(Drift::<MAX_UNISON>::STEP);
             let update = self.counter.is_multiple_of(FILTER_UPDATE);
             self.counter = self.counter.wrapping_add(1);
             let (mut l, mut r) = (0.0, 0.0);
@@ -357,15 +380,23 @@ impl Wavetable {
                 let pos = (base_pos + pos_env * m).clamp(0.0, 1.0) * (FRAMES - 1) as f32;
                 let f0 = (pos as usize).min(FRAMES - 2);
                 let ff = pos - f0 as f32;
-                let pitch = v.pitch + vibrato * lfo;
+                let wander = v.drift.wander(retarget, drift_k);
+                let pitch = v.pitch + vibrato * lfo + wander * Drift::<MAX_UNISON>::WANDER * drift;
                 let (mut sl, mut sr_) = (0.0, 0.0);
-                for (k, ph) in v.phase.iter_mut().enumerate().take(unison) {
+                for (k, (ph, sc)) in v
+                    .phase
+                    .iter_mut()
+                    .zip(v.drift.scatter.iter())
+                    .enumerate()
+                    .take(unison)
+                {
                     let spread = if unison > 1 {
                         2.0 * k as f32 / (unison - 1) as f32 - 1.0
                     } else {
                         0.0
                     };
-                    let inc = note_hz(pitch + spread * detune) / sr;
+                    let off = spread * detune + sc * Drift::<MAX_UNISON>::SCATTER * drift;
+                    let inc = note_hz(pitch + off) / sr;
                     // The band-limited copy whose top harmonic stays below Nyquist.
                     let max_h = 0.5 / inc.max(1e-6);
                     let mip = ((MAX_HARMONIC as f32 / max_h).log2().ceil().max(0.0) as usize)
