@@ -237,6 +237,12 @@ const ENTRIES: &[Entry] = &[
         "",
         AppCommand::Template(7),
     ),
+    app(
+        "New from template: Epic orchestral",
+        "genre orchestra strings film",
+        "",
+        AppCommand::Template(8),
+    ),
     app("Keyboard shortcuts", "help keys", "", AppCommand::Shortcuts),
     app("Quit", "exit close", "", AppCommand::Quit),
 ];
@@ -347,6 +353,19 @@ impl CommandSearch {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn template_entries_name_their_template() {
+        let mut seen = 0;
+        for e in ENTRIES {
+            if let Action::App(AppCommand::Template(i)) = e.action {
+                let t = crate::templates::TEMPLATES.get(i).expect("template index");
+                assert!(e.name.ends_with(t.name), "{} vs {}", e.name, t.name);
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, crate::templates::TEMPLATES.len());
+    }
+
     use super::*;
 
     fn find(query: &str) -> Vec<&'static str> {

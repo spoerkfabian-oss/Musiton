@@ -1,6 +1,7 @@
 //! Genre environments: which built-in instruments and factory presets fit a genre. A song
 //! can be set to one (templates do it), and the app then lists only those, so a Raw song
-//! shows no orchestra. "Init" presets and the sampler fit every genre.
+//! shows no orchestra. "Init" presets, the sampler and the sample instrument fit every
+//! genre.
 
 /// One genre environment.
 #[derive(Debug, Clone, Copy)]
@@ -9,7 +10,7 @@ pub struct Genre {
     pub id: &'static str,
     /// Display name.
     pub name: &'static str,
-    /// Instrument type ids that fit (the sampler always does).
+    /// Instrument type ids that fit (the sampler and the sample instrument always do).
     pub instruments: &'static [&'static str],
     /// Factory preset names that fit ("Init" always does).
     pub presets: &'static [&'static str],
@@ -18,7 +19,7 @@ pub struct Genre {
 impl Genre {
     /// Whether instrument `type_id` belongs to this genre.
     pub fn has_instrument(&self, type_id: &str) -> bool {
-        type_id == crate::SAMPLER || self.instruments.contains(&type_id)
+        type_id == crate::SAMPLER || type_id == crate::SFZ || self.instruments.contains(&type_id)
     }
 
     /// Whether the factory preset `name` belongs to this genre.
@@ -183,7 +184,7 @@ pub const GENRES: &[Genre] = &[
     Genre {
         id: "orchestral",
         name: "Orchestral / choir",
-        instruments: &["strings", "pluck", "organ", "epiano"],
+        instruments: &["strings", "pluck", "organ", "epiano", "fm", "drums"],
         presets: &[
             "Lush strings",
             "Dark pad",
@@ -195,6 +196,8 @@ pub const GENRES: &[Genre] = &[
             "Soft flute",
             "Gospel",
             "Mellow",
+            "Brass",
+            "Bell",
         ],
     },
 ];

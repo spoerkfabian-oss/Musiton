@@ -12,6 +12,7 @@ mod document;
 mod engine_graph;
 mod export;
 mod export_dialog;
+mod library;
 mod midi_record;
 mod plugin_check;
 mod plugin_set;
@@ -226,6 +227,7 @@ struct App {
     user_presets: presets::PresetMap,
     bottom_tab: BottomTab,
     show_shortcuts: bool,
+    library: library::Dialog,
     /// The Ctrl+K command search.
     command_search: command_search::CommandSearch,
     assets: AssetStore,
@@ -391,6 +393,7 @@ impl App {
             user_presets: presets::load_all(),
             bottom_tab: BottomTab::default(),
             show_shortcuts: false,
+            library: library::Dialog::default(),
             command_search: command_search::CommandSearch::default(),
             assets: AssetStore::default(),
             importer: Importer::default(),
@@ -1591,6 +1594,10 @@ impl App {
                 }
                 if ui.button("Audio settings…").clicked() {
                     self.audio_dialog.open(&self.settings.audio);
+                    ui.close();
+                }
+                if ui.button("Sound library…").clicked() {
+                    self.library.open = true;
                     ui.close();
                 }
             });
@@ -2938,6 +2945,7 @@ impl App {
         if self.importer.running() > 0 {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
+        self.library.show(&ctx, Settings::data_dir().as_deref());
         egui::Window::new("Keyboard shortcuts")
             .open(&mut self.show_shortcuts)
             .collapsible(false)

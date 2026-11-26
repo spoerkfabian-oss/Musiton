@@ -95,6 +95,11 @@ pub const TEMPLATES: &[Template] = &[
         description: "Long distorted kick, offbeat bass, euphoric supersaw lead (150 BPM, F minor)",
         build: hardstyle,
     },
+    Template {
+        name: "Epic orchestral",
+        description: "Strings, horns, timpani and harp (90 BPM, D minor). Uses the VSCO-2 orchestra from Options → Sound library when installed, built-in sounds otherwise",
+        build: orchestral,
+    },
 ];
 
 /// A note `start` and `length` in ticks.
@@ -799,6 +804,184 @@ fn hardstyle() -> Project {
             ),
         ]
     })
+}
+
+/// An instrument of an installed library: the `.sfz` whose file name is `file`.
+fn library_sfz(library: &str, file: &str) -> Option<String> {
+    let data = crate::settings::Settings::data_dir()?;
+    let dir = crate::library::installed_dir(&data, library)?;
+    crate::library::instruments(&dir)
+        .into_iter()
+        .find(|(_, p)| p.file_name().is_some_and(|n| n == file))
+        .map(|(_, p)| p.to_string_lossy().into_owned())
+}
+
+/// A part that plays `sfz` from a library when it is installed, else `fallback`.
+fn sampled(sfz: Option<&String>, fallback: Part) -> Part {
+    match sfz {
+        Some(_) => Part {
+            instrument: musiton_devices::SFZ,
+            params: Vec::new(),
+            ..fallback
+        },
+        None => fallback,
+    }
+}
+
+fn orchestral() -> Project {
+    // Dm – Bb – F – C.
+    const ROOTS: [u8; 4] = [50, 46, 53, 48];
+    let root = |bar: i64| ROOTS[bar as usize % 4];
+    let minor = |bar: i64| bar % 4 == 0;
+    let files = [
+        "ViolinEnsSusVib.sfz",
+        "CelloEnsSusVib.sfz",
+        "ContrabassSusVB.sfz",
+        "FHornSus.sfz",
+        "Timpani.sfz",
+        "Harp.sfz",
+    ];
+    let sfz: Vec<Option<String>> = files.iter().map(|f| library_sfz("vsco2", f)).collect();
+    let pick = move |i: usize| sfz.get(i).cloned().flatten();
+    let paths: Vec<Option<String>> = (0..files.len()).map(&pick).collect();
+    let mut project = assemble(Some("orchestral"), 90.0, 4, 1, move || {
+        let chord = |bar: i64, octave: u8| {
+            let r = root(bar) + octave;
+            let third = if minor(bar) { 3 } else { 4 };
+            vec![r, r + third, r + 7]
+        };
+        let strings = |name, preset_name: &str, notes| Part {
+            name,
+            color: [200, 150, 90],
+            trim_db: 0.0,
+            instrument: "strings",
+            params: preset("strings", preset_name),
+            effects: vec![reverb_fx(0.3)],
+            notes,
+        };
+        vec![
+            sampled(
+                pick(0).as_ref(),
+                strings(
+                    "Violins",
+                    "Bright violins",
+                    seq(4, |bar| {
+                        chord(bar, 12).into_iter().map(|p| (0, p, 16, 80)).collect()
+                    }),
+                ),
+            ),
+            sampled(
+                pick(1).as_ref(),
+                strings(
+                    "Celli",
+                    "Lush strings",
+                    seq(4, |bar| {
+                        vec![(0, root(bar) - 12, 16, 85), (0, root(bar) - 5, 16, 75)]
+                    }),
+                ),
+            ),
+            sampled(
+                pick(2).as_ref(),
+                strings(
+                    "Basses",
+                    "Dark pad",
+                    seq(4, |bar| vec![(0, root(bar) - 24, 16, 90)]),
+                ),
+            ),
+            sampled(
+                pick(3).as_ref(),
+                Part {
+                    name: "Horns",
+                    color: [230, 180, 60],
+                    trim_db: -2.0,
+                    instrument: "fm",
+                    params: preset("fm", "Brass"),
+                    effects: vec![reverb_fx(0.3)],
+                    notes: seq(4, |bar| {
+                        let line: &[(i64, u8, i64)] = match bar % 4 {
+                            0 => &[(0, 69, 4), (4, 74, 8), (12, 76, 4)],
+                            1 => &[(0, 77, 12), (12, 76, 4)],
+                            2 => &[(0, 72, 8), (8, 69, 8)],
+                            _ => &[(0, 67, 8), (8, 76, 8)],
+                        };
+                        line.iter().map(|&(s, p, l)| (s, p, l, 95)).collect()
+                    }),
+                },
+            ),
+            sampled(
+                pick(4).as_ref(),
+                Part {
+                    name: "Timpani",
+                    color: [220, 90, 80],
+                    trim_db: 0.0,
+                    instrument: "drums",
+                    params: vec![(dr::TOM_TUNE, 70.0), (dr::TOM_DECAY, 1.2)],
+                    effects: vec![reverb_fx(0.25)],
+                    notes: seq(4, |bar| {
+                        let mut hits = vec![(0, 41, 4, 120)];
+                        if bar % 2 == 1 {
+                            hits.extend([
+                                (12, 41, 1, 90),
+                                (13, 41, 1, 95),
+                                (14, 41, 1, 100),
+                                (15, 41, 1, 110),
+                            ]);
+                        }
+                        hits
+                    }),
+                },
+            ),
+            sampled(
+                pick(5).as_ref(),
+                Part {
+                    name: "Harp",
+                    color: [150, 210, 240],
+                    trim_db: 0.0,
+                    instrument: "pluck",
+                    params: preset("pluck", "Harp"),
+                    effects: vec![reverb_fx(0.35)],
+                    notes: seq(4, |bar| {
+                        let c = chord(bar, 0);
+                        let up = [
+                            c[0],
+                            c[1],
+                            c[2],
+                            c[0] + 12,
+                            c[1] + 12,
+                            c[2] + 12,
+                            c[0] + 24,
+                            c[2] + 12,
+                        ];
+                        up.into_iter()
+                            .enumerate()
+                            .map(|(i, p)| (2 * i as i64, p, 2, 80))
+                            .collect()
+                    }),
+                },
+            ),
+        ]
+    });
+    // Sampled parts: the timpani sample plays the written pitch (D2), not the tom key.
+    for (track, path) in project.tracks.iter_mut().zip(paths) {
+        let Some(path) = path else { continue };
+        if let Some(musiton_project::DeviceSlot {
+            kind: musiton_project::DeviceKind::Builtin { sfz, .. },
+            ..
+        }) = track.devices.first_mut()
+        {
+            *sfz = Some(path);
+        }
+        if track.name == "Timpani" {
+            for clip in &mut track.clips {
+                if let musiton_project::Clip::Midi(m) = clip {
+                    for n in &mut m.notes {
+                        n.pitch = 38;
+                    }
+                }
+            }
+        }
+    }
+    project
 }
 
 #[cfg(test)]

@@ -162,9 +162,10 @@ Owner decision (2026-11-25): also plucked strings, a string/pad ensemble, an aci
 
 ## Phase 18b — Realistic sound (owner decision 2026-11-26)
 The owner finds the built-in instruments too alike and not real; unison/detune never sounds great. Both ways:
-- [ ] Owner decision: full quality, as big as needed. The NSIS installer cannot exceed ~2 GB, so the samples are not in the installer: Options → Sound library downloads each instrument from its original source (progress, resume, checksum) into the data folder
+- [x] Owner decision: full quality, as big as needed. The NSIS installer cannot exceed ~2 GB, so the samples are not in the installer: Options → Sound library downloads each library from its original source (progress, resume, per-file CRC check) into the data folder
 - [x] A built-in sample instrument plays SFZ instruments (regions by key and velocity, round robin, random, loops, envelopes, release samples, groups/off_by): what the free libraries use
-- [ ] Library list (check each licence before adding): Salamander Grand Piano (CC-BY 3.0), VSCO-2 Community Edition orchestra (CC0), VCSL (CC0), Karoryfer/sfzinstruments basses and guitars (CC0 where stated), a real drum kit (licence to be found), Sonatina Symphonic Orchestra (CC Sampling Plus 1.0)
+- [x] Library list (licences checked): Salamander Grand Piano (CC BY 3.0), VSCO-2 Community Edition orchestra (CC0), VCSL (CC0)
+- [ ] More libraries: a free choir (none with a clean licence found yet), a real drum kit, Karoryfer/sfzinstruments basses and guitars (CC0 where stated), Sonatina (licence to check)
 - [x] Polysynth sounds more alive: analog-style drift, random start phases, uneven unison spread, mono bass, drive (anti-aliased), just intonation
 - [ ] The same for the other synths (wavetable, strings, FM …)
 - [x] Owner sends reference audio (Google Drive, also videos): measure spectrum, envelope, stereo width and detune and match the presets to it ("Raw stab")
@@ -177,7 +178,8 @@ Per genre a project template (File → New from template: tracks, instruments, e
 - [x] Trap / hip-hop, house, techno, hyperpop, hardstyle
 - [x] Genre environments (owner: "own Musiton sections"): per song, chosen in the transport bar; instrument menu and preset lists show only the genre's sounds, "Show all" lists everything
 - [x] Sound packs: genre one-shots rendered by Musiton's own synths into the data folder (browser → Sounds), genre presets on the instruments
-- [ ] Epic orchestral / choir: needs the sampled instruments of phase 18b (VSCO-2, Sonatina, a free choir library with a clean licence)
+- [x] Epic orchestral: strings, horns, timpani, harp from VSCO-2 when installed (built-in sounds otherwise)
+- [ ] Choir: waits for a free choir library with a clean licence
 - [ ] Free CC0 sample packs per genre through the sound library downloader (licence checked per pack)
 
 ## Phase 19 — Bigger features

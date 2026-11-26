@@ -36,7 +36,8 @@ musiton/
 │  ├─ musiton-plugin-host/  # VST3 + CLAP hosting (scanning, instances); the only crate allowed to use `unsafe`
 │  └─ musiton-app/          # the `musiton` binary: wires everything; settings, autosave, crash recovery,
 │                           # project → engine graph translation, export, demo song and genre templates
-│                           # (`templates.rs`, one builder for both), installer config;
+│                           # (`templates.rs`, one builder for both), genre sound packs, sound library
+│                           # downloads (`library.rs`: ureq + zip), installer config;
 │                           # `musiton --scan <file>` is the out-of-process plugin scanner
 ```
 
