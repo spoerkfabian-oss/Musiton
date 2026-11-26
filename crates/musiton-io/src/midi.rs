@@ -5,6 +5,7 @@ use std::path::Path;
 use midly::num::{u15, u24, u28, u4, u7};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 use musiton_core::PPQ;
+use musiton_engine::node::PITCH_BEND;
 
 /// Capacity of the MIDI input ring (messages).
 const MIDI_RING: usize = 1024;
@@ -96,7 +97,7 @@ pub struct SmfNote {
 pub struct SmfCc {
     /// Position.
     pub tick: i64,
-    /// Controller number 0..127.
+    /// Controller number 0..127, or [`PITCH_BEND`] (value 0..127, centre 64).
     pub controller: u8,
     /// Value 0..127.
     pub value: u8,
@@ -166,6 +167,15 @@ pub fn read_smf(path: &Path) -> Result<(Vec<SmfTrack>, Option<f64>), MidiFileErr
                             });
                             continue;
                         }
+                        MidiMessage::PitchBend { bend } => {
+                            t.cc.push(SmfCc {
+                                tick,
+                                controller: PITCH_BEND,
+                                value: (bend.0.as_int() >> 7) as u8,
+                                channel: ch,
+                            });
+                            continue;
+                        }
                         _ => continue,
                     };
                     if on_vel > 0 {
@@ -225,9 +235,20 @@ pub fn write_smf(path: &Path, bpm: f64, tracks: &[SmfTrack]) -> Result<(), MidiF
             evs.push((n.start.max(0) + n.length.max(1), 0, ch, off));
         }
         for c in &t.cc {
-            let message = MidiMessage::Controller {
-                controller: u7::new(c.controller.min(127)),
-                value: u7::new(c.value.min(127)),
+            let message = if c.controller == PITCH_BEND {
+                let v = u16::from(c.value.min(127));
+                // 64 → 8192 (centre); 127 → the top.
+                let bend = (v << 7 | (v.saturating_sub(64) * 127 / 63)).min(16_383);
+                MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::new(bend)),
+                }
+            } else if c.controller > 127 {
+                continue;
+            } else {
+                MidiMessage::Controller {
+                    controller: u7::new(c.controller),
+                    value: u7::new(c.value.min(127)),
+                }
             };
             evs.push((c.tick.max(0), 1, c.channel.min(15), message));
         }
@@ -304,6 +325,12 @@ mod tests {
                         tick: 480,
                         controller: 1,
                         value: 33,
+                        channel: 0,
+                    },
+                    SmfCc {
+                        tick: 600,
+                        controller: PITCH_BEND,
+                        value: 100,
                         channel: 0,
                     },
                 ],

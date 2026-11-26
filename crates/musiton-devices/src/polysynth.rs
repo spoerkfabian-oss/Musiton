@@ -63,13 +63,48 @@ const JUST_RATIOS: [f32; 12] = [
     15.0 / 8.0,
 ];
 
+/// Overtone tuning: each semitone becomes the nearest harmonic of the root (up to the
+/// 27th), so chords are slices of one overtone series (11:8, 13:8, 7:4 …).
+const OVERTONE_RATIOS: [f32; 12] = [
+    1.0,
+    17.0 / 16.0,
+    9.0 / 8.0,
+    19.0 / 16.0,
+    5.0 / 4.0,
+    21.0 / 16.0,
+    11.0 / 8.0,
+    3.0 / 2.0,
+    13.0 / 8.0,
+    27.0 / 16.0,
+    7.0 / 4.0,
+    15.0 / 8.0,
+];
+
 /// Correction (semitones) that turns the equal-tempered interval `semis` into its just
-/// version, e.g. +7 → +0.02 (a pure fifth is 2 cents wider).
-fn just_offset(semis: i32) -> f32 {
+/// version, e.g. +7 → +0.02 (a pure fifth is 2 cents wider); `overtone` uses the
+/// overtone-series table instead.
+fn just_offset(semis: i32, overtone: bool) -> f32 {
     let class = semis.rem_euclid(12);
-    let ratio = JUST_RATIOS.get(class as usize).copied().unwrap_or(1.0);
+    let table = if overtone {
+        &OVERTONE_RATIOS
+    } else {
+        &JUST_RATIOS
+    };
+    let ratio = table.get(class as usize).copied().unwrap_or(1.0);
     12.0 * ratio.log2() - class as f32
 }
+
+/// Seconds after a note-on during which a retune takes effect at once (the notes of one
+/// chord arrive in any order; only later changes slide).
+const CHORD_WINDOW: f32 = 0.005;
+/// Delay (seconds) of the stereo widener's high band.
+const WIDTH_DELAY: f32 = 0.0005;
+/// The widener works above this frequency (Hz), so the low end stays centred.
+const WIDTH_HZ: f32 = 1_500.0;
+/// Ring buffer for the widener's delay (enough for 0.5 ms at 192 kHz).
+const WIDTH_BUF: usize = 128;
+const ROOTS: &[&str] = &["Lowest note", "Most played"];
+const TUNINGS: &[&str] = &["Just", "Overtone series"];
 const MODES: &[&str] = &["Low-pass", "High-pass", "Band-pass"];
 
 /// Parameter ids.
@@ -107,10 +142,16 @@ pub mod id {
     pub const DRIVE_TYPE: u64 = 29;
     pub const DRIFT: u64 = 30;
     pub const JUST: u64 = 31;
+    pub const JUST_ROOT: u64 = 32;
+    pub const JUST_KEYS: u64 = 33;
+    pub const TUNING: u64 = 34;
+    pub const BEND_RANGE: u64 = 35;
+    pub const BEND_NOTE: u64 = 36;
+    pub const WIDTH: u64 = 37;
 }
 
 /// All parameters (index = id).
-pub const PARAMS: [ParamInfo; 32] = [
+pub const PARAMS: [ParamInfo; 38] = [
     ParamInfo::choice(id::OSC1_WAVE, "Osc 1", WAVES, 0),
     ParamInfo::new(id::OSC1_LEVEL, "Osc 1 level", 0.0, 1.0, 0.8),
     ParamInfo::choice(id::OSC2_WAVE, "Osc 2", WAVES, 1),
@@ -161,6 +202,12 @@ pub const PARAMS: [ParamInfo; 32] = [
     ParamInfo::choice(id::DRIVE_TYPE, "Drive type", CURVES, 0),
     ParamInfo::new(id::DRIFT, "Analog drift", 0.0, 1.0, 0.3),
     ParamInfo::toggle(id::JUST, "Just intonation", false),
+    ParamInfo::choice(id::JUST_ROOT, "Just root", ROOTS, 0),
+    ParamInfo::new(id::JUST_KEYS, "Retune from keys", 1.0, 8.0, 1.0).int(),
+    ParamInfo::choice(id::TUNING, "Tuning", TUNINGS, 0),
+    ParamInfo::new(id::BEND_RANGE, "Bend range", 0.0, 24.0, 2.0).unit("st"),
+    ParamInfo::new(id::BEND_NOTE, "Bend note (0 = all)", 0.0, 8.0, 0.0).int(),
+    ParamInfo::new(id::WIDTH, "High width", 0.0, 1.0, 0.0),
 ];
 
 #[derive(Debug, Clone)]
@@ -190,6 +237,8 @@ struct Voice {
     /// Just-intonation correction (semitones): wanted and current (it slides).
     just: f32,
     just_now: f32,
+    /// Samples left in which a retune applies at once (see [`CHORD_WINDOW`]).
+    fresh: u32,
 }
 
 impl Voice {
@@ -236,6 +285,7 @@ impl Default for Voice {
             scatter: [0.0; MAX_UNISON],
             just: 0.0,
             just_now: 0.0,
+            fresh: 0,
         }
     }
 }
@@ -290,6 +340,14 @@ pub struct Polysynth {
     shapers: [Shaper; 2],
     /// Low-passed side signal (removed to keep the bass mono).
     side_low: f32,
+    /// Widener: low-pass state (its high band is the input minus this) and the delay.
+    wide_low: [f32; 2],
+    wide_buf: [f32; WIDTH_BUF],
+    wide_pos: usize,
+    /// How often each pitch class was played recently (for "Most played" roots).
+    played: [f32; 12],
+    /// The root of the last chord with enough keys.
+    root: Option<u8>,
     controllers: Controllers,
     dirty: bool,
     /// Samples rendered so far (filter updates happen on fixed song-relative samples, so
@@ -325,6 +383,11 @@ impl Polysynth {
             drive: LinearRamp::new(0.0, 1),
             shapers: Default::default(),
             side_low: 0.0,
+            wide_low: [0.0; 2],
+            wide_buf: [0.0; WIDTH_BUF],
+            wide_pos: 0,
+            played: [0.0; 12],
+            root: None,
             controllers: Controllers::default(),
             dirty: true,
             counter: 0,
@@ -379,8 +442,16 @@ impl Polysynth {
             });
         let sens = self.v(id::VELOCITY);
         let glide = self.v(id::GLIDE) > 0.0;
+        let just = self.v(id::JUST) > 0.5;
+        let fresh = (CHORD_WINDOW * self.sample_rate) as u32;
         let from = self.last_pitch;
         let clock = self.clock;
+        for c in &mut self.played {
+            *c *= 0.85;
+        }
+        if let Some(c) = self.played.get_mut(usize::from(key % 12)) {
+            *c += 1.0;
+        }
         let Some(v) = idx.and_then(|i| self.voices.get_mut(i)) else {
             return;
         };
@@ -394,7 +465,15 @@ impl Polysynth {
         v.vel_gain = 1.0 - sens + sens * vel;
         v.age = clock;
         v.pedal_held = false;
-        if self.values.get(id::DRIFT as usize).copied().unwrap_or(0.0) > 0.0 {
+        v.fresh = fresh;
+        if just && v.amp.level() < 1e-4 {
+            // Just intonation locks the partials of a chord together; fixed start phases
+            // make every stab of it sound the same.
+            for (o1, o2) in v.osc1.iter_mut().zip(v.osc2.iter_mut()) {
+                *o1 = BlepOsc::with_phase(0.0);
+                *o2 = BlepOsc::with_phase(0.0);
+            }
+        } else if self.values.get(id::DRIFT as usize).copied().unwrap_or(0.0) > 0.0 {
             for k in 0..MAX_UNISON {
                 let r = v.random();
                 if let Some(s) = v.scatter.get_mut(k) {
@@ -419,18 +498,44 @@ impl Polysynth {
         self.retune(Some(key));
     }
 
-    /// Sets every held voice's just-intonation correction from the lowest held note. The
-    /// voice just started on `fresh` takes it at once; the others slide.
+    /// Sets every held voice's just-intonation correction from the chord's root: the
+    /// lowest held note or the most played one, recalculated only while at least "Retune
+    /// from keys" notes are held (fewer keep the last root, so melody notes over a chord
+    /// are tuned to it). Voices started within [`CHORD_WINDOW`] take the new tuning at
+    /// once; the others slide.
     fn retune(&mut self, fresh: Option<u8>) {
         let on = self.v(id::JUST) > 0.5;
-        let root = self.voices.iter().filter_map(|v| v.key).min();
+        let overtone = self.v(id::TUNING) > 0.5;
+        let held = self.voices.iter().filter(|v| v.key.is_some()).count();
+        let lowest = self.voices.iter().filter_map(|v| v.key).min();
+        // With no key held the last root stays (a melody after a chord is tuned to it).
+        if held > 0
+            && (held >= self.v(id::JUST_KEYS).round().max(1.0) as usize || self.root.is_none())
+        {
+            self.root = if self.v(id::JUST_ROOT) > 0.5 {
+                let weight = |k: u8| self.played.get(usize::from(k % 12)).copied().unwrap_or(0.0);
+                // Most played pitch class; the lowest such note on a tie.
+                self.voices
+                    .iter()
+                    .filter_map(|v| v.key)
+                    .fold(None, |best, k| match best {
+                        Some(b) if weight(b) > weight(k) || (weight(b) == weight(k) && b < k) => {
+                            Some(b)
+                        }
+                        _ => Some(k),
+                    })
+            } else {
+                lowest
+            };
+        }
+        let root = self.root;
         for v in &mut self.voices {
             let Some(key) = v.key else { continue };
             v.just = match (on, root) {
-                (true, Some(r)) => just_offset(i32::from(key) - i32::from(r)),
+                (true, Some(r)) => just_offset(i32::from(key) - i32::from(r), overtone),
                 _ => 0.0,
             };
-            if Some(key) == fresh {
+            if Some(key) == fresh || v.fresh > 0 {
                 v.just_now = v.just;
             }
         }
@@ -484,7 +589,7 @@ impl Polysynth {
         let w2 = Wave::from_index(self.v(id::OSC2_WAVE));
         let osc2_semi = self.v(id::OSC2_SEMI).round();
         let osc2_just = if self.v(id::JUST) > 0.5 {
-            just_offset(osc2_semi as i32)
+            just_offset(osc2_semi as i32, self.v(id::TUNING) > 0.5)
         } else {
             0.0
         };
@@ -521,6 +626,18 @@ impl Polysynth {
         let drift_amt = self.v(id::DRIFT);
         let drift_k = 1.0 / (DRIFT_TIME * sr);
         let mono_k = 1.0 - (-std::f32::consts::TAU * MONO_BASS_HZ / sr).exp();
+        // Pitch bend: the whole chord, or only its n-th note from the bottom.
+        let bend = self.controllers.pitch_bend * self.v(id::BEND_RANGE);
+        let bend_note = self.v(id::BEND_NOTE).round() as usize;
+        let bend_key = if bend_note == 0 {
+            None
+        } else {
+            let keys = || self.voices.iter().filter_map(|v| v.key);
+            keys().find(|&k| keys().filter(|&o| o < k).count() + 1 == bend_note)
+        };
+        let width = self.v(id::WIDTH);
+        let wide_k = 1.0 - (-std::f32::consts::TAU * WIDTH_HZ / sr).exp();
+        let wide_delay = ((WIDTH_DELAY * sr) as usize).clamp(1, WIDTH_BUF - 1);
 
         for i in from..to {
             let lfo = (self.lfo_phase * std::f32::consts::TAU).sin();
@@ -543,7 +660,17 @@ impl Polysynth {
                 }
                 v.drift += (v.drift_to - v.drift) * drift_k;
                 v.just_now += (v.just - v.just_now) * retune_k;
-                let p = v.pitch + v.just_now + lfo * lfo_pitch + v.drift * DRIFT_WANDER * drift_amt;
+                v.fresh = v.fresh.saturating_sub(1);
+                let bent = match bend_key {
+                    None => bend,
+                    Some(k) if v.key == Some(k) => bend,
+                    Some(_) => 0.0,
+                };
+                let p = v.pitch
+                    + v.just_now
+                    + bent
+                    + lfo * lfo_pitch
+                    + v.drift * DRIFT_WANDER * drift_amt;
                 let (mut sl, mut sr_) = (0.0, 0.0);
                 for (((o1, o2), c), sc) in v
                     .osc1
@@ -606,6 +733,22 @@ impl Polysynth {
             // Mono bass: take the low part out of the side signal.
             let mid = 0.5 * (out_l + out_r);
             let side = 0.5 * (out_l - out_r);
+            let mut side = side;
+            // Width without detuning: the delayed high band of the mid goes to the side
+            // (cancels in mono; the mono-bass stage below keeps the bass centred).
+            if width > 0.0 {
+                // Two one-pole high-passes in a row (12 dB/oct).
+                let [a, b] = &mut self.wide_low;
+                *a += (mid - *a) * wide_k;
+                let high = mid - *a;
+                *b += (high - *b) * wide_k;
+                if let Some(slot) = self.wide_buf.get_mut(self.wide_pos) {
+                    *slot = high - *b;
+                }
+                let read = (self.wide_pos + WIDTH_BUF - wide_delay) % WIDTH_BUF;
+                side += self.wide_buf.get(read).copied().unwrap_or(0.0) * width;
+                self.wide_pos = (self.wide_pos + 1) % WIDTH_BUF;
+            }
             self.side_low += (side - self.side_low) * mono_k;
             let side = side - self.side_low;
             let vol = vol / HEADROOM;
@@ -763,26 +906,26 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
         // chords of distorted saws): saw + saw an octave up, driven hard through the
         // asymmetric curve with just intonation on, so the difference tones of a played
         // chord land on the overtone series. Play root + fifth (+ octave): e.g. C#2 G#2 C#3.
+        // Measured from Aloboi's "Just Raw" videos: plain, unfiltered saws in just
+        // intonation, steady, barely saturated; play root + fifth + tenth (C2 G2 E3).
         "Raw stab",
         &[
             (id::OSC1_LEVEL, 0.9),
-            (id::OSC2_WAVE, 0.0),
-            (id::OSC2_LEVEL, 0.5),
-            (id::OSC2_SEMI, 12.0),
-            (id::OSC2_DETUNE, 0.0),
-            (id::CUTOFF, 2_500.0),
-            (id::RESONANCE, 0.7),
-            (id::FILTER_ENV, 0.35),
-            (id::FILT_D, 0.15),
-            (id::FILT_S, 0.3),
+            (id::OSC2_LEVEL, 0.0),
+            (id::FILTER_MODE, 1.0),
+            (id::CUTOFF, 40.0),
+            (id::RESONANCE, 0.0),
+            (id::FILTER_ENV, 0.0),
             (id::AMP_A, 0.002),
-            (id::AMP_D, 0.18),
-            (id::AMP_S, 0.35),
-            (id::AMP_R, 0.06),
-            (id::DRIVE, 0.85),
+            (id::AMP_D, 0.1),
+            (id::AMP_S, 1.0),
+            (id::AMP_R, 0.03),
+            (id::DRIVE, 0.1),
             (id::DRIVE_TYPE, 2.0),
-            (id::DRIFT, 0.2),
+            (id::DRIFT, 0.0),
             (id::JUST, 1.0),
+            (id::JUST_KEYS, 2.0),
+            (id::WIDTH, 0.4),
         ],
     ),
     (
@@ -1216,12 +1359,18 @@ mod tests {
 
     #[test]
     fn just_offsets_are_pure_intervals() {
-        assert!(just_offset(0).abs() < 1e-6);
-        assert!((just_offset(7) - 0.019_55).abs() < 1e-4, "fifth");
-        assert!((just_offset(4) + 0.136_86).abs() < 1e-4, "major third");
-        assert!((just_offset(19) - just_offset(7)).abs() < 1e-6, "octaves");
+        assert!(just_offset(0, false).abs() < 1e-6);
+        assert!((just_offset(7, false) - 0.019_55).abs() < 1e-4, "fifth");
         assert!(
-            (just_offset(-5) - just_offset(7)).abs() < 1e-6,
+            (just_offset(4, false) + 0.136_86).abs() < 1e-4,
+            "major third"
+        );
+        assert!(
+            (just_offset(19, false) - just_offset(7, false)).abs() < 1e-6,
+            "octaves"
+        );
+        assert!(
+            (just_offset(-5, false) - just_offset(7, false)).abs() < 1e-6,
             "below the root"
         );
     }
@@ -1248,6 +1397,142 @@ mod tests {
         assert!(m(&et, 659.26) > 4.0 * m(&et, 654.06));
         // The root stays where it is.
         assert!(m(&ji, 523.25) > 4.0 * m(&ji, 528.0));
+    }
+
+    /// A pure sine synth with just intonation and no drift or filter.
+    fn sine_just(extra: &[(u64, f32)]) -> Polysynth {
+        let mut settings = vec![
+            (id::OSC1_WAVE, 3.0),
+            (id::CUTOFF, 20_000.0),
+            (id::FILTER_ENV, 0.0),
+            (id::DRIFT, 0.0),
+            (id::JUST, 1.0),
+        ];
+        settings.extend_from_slice(extra);
+        synth(&settings)
+    }
+
+    fn just_of(s: &Polysynth, key: u8) -> (f32, f32) {
+        s.voices
+            .iter()
+            .find(|v| v.key == Some(key))
+            .map_or((f32::NAN, f32::NAN), |v| (v.just, v.just_now))
+    }
+
+    #[test]
+    fn a_chord_is_in_tune_at_once_whatever_order_its_notes_arrive() {
+        let mut s = sine_just(&[]);
+        // Third and fifth before the root, at the same moment.
+        render(&mut s, &[on(0, 64), on(0, 67), on(0, 60)], 64);
+        let (want, now) = just_of(&s, 64);
+        assert!((want + 0.136_86).abs() < 1e-4, "E over C: {want}");
+        assert!(
+            (now - want).abs() < 1e-4,
+            "no slide at the chord start: {now}"
+        );
+        // A later note slides into the new tuning instead of jumping.
+        render(&mut s, &[], 4_800);
+        render(&mut s, &[on(0, 57)], 1);
+        let (want, now) = just_of(&s, 64);
+        assert!((now - want).abs() > 1e-3, "slides after the chord started");
+    }
+
+    #[test]
+    fn the_root_can_stay_while_few_keys_are_held_or_follow_the_most_played_note() {
+        let note_off = |key| ev(0, EventKind::NoteOff { ch: 0, key });
+        // Retune only from 3 keys: a melody note after the chord keeps the chord's root.
+        let mut s = sine_just(&[(id::JUST_KEYS, 3.0)]);
+        render(&mut s, &[on(0, 48), on(0, 52), on(0, 55)], 64);
+        render(
+            &mut s,
+            &[note_off(48), note_off(52), note_off(55), on(1, 57)],
+            64,
+        );
+        let (a, _) = just_of(&s, 57);
+        assert!((a + 0.156_4).abs() < 1e-3, "A tuned as 5:3 over C: {a}");
+        // Most played: G played often is the root of a C–G dyad.
+        let mut s = sine_just(&[(id::JUST_ROOT, 1.0)]);
+        for _ in 0..3 {
+            render(&mut s, &[on(0, 55)], 64);
+            render(&mut s, &[note_off(55)], 64);
+        }
+        render(&mut s, &[on(0, 48), on(0, 55)], 64);
+        let (g, _) = just_of(&s, 55);
+        let (c, _) = just_of(&s, 48);
+        assert!(g.abs() < 1e-6, "G is the root: {g}");
+        assert!((c + 0.019_55).abs() < 1e-4, "C a pure fourth below: {c}");
+    }
+
+    #[test]
+    fn overtone_tuning_uses_the_harmonic_series() {
+        assert!((just_offset(10, true) + 0.311_7).abs() < 1e-3, "7:4");
+        assert!((just_offset(6, true) + 0.486_8).abs() < 1e-3, "11:8");
+        assert!((just_offset(8, true) - 0.405_2).abs() < 1e-3, "13:8");
+    }
+
+    #[test]
+    fn pitch_bend_moves_the_chord_or_one_note_of_it() {
+        let bend_up = cc(0, crate::controllers::cc::PITCH_BEND, 1.0);
+        // C4 + G4, the second note bent up a whole tone to A4.
+        let mut s = sine_just(&[(id::BEND_NOTE, 2.0), (id::BEND_RANGE, 2.0)]);
+        let x = render(&mut s, &[bend_up, on(0, 60), on(0, 67)], 24_000);
+        let m = |hz| magnitude(&x[4_800..], hz);
+        assert!(m(441.0) > 10.0 * m(392.4), "G bent to A");
+        assert!(m(261.6) > 10.0 * m(293.7), "C stays");
+        // Bend note 0: the whole chord moves.
+        let mut s = sine_just(&[(id::BEND_RANGE, 2.0)]);
+        let x = render(&mut s, &[bend_up, on(0, 60)], 24_000);
+        assert!(magnitude(&x[4_800..], 293.7) > 10.0 * magnitude(&x[4_800..], 261.6));
+    }
+
+    #[test]
+    fn high_width_is_mono_compatible_and_leaves_the_bass_centred() {
+        let play = |width: f32| {
+            render_stereo(
+                &mut synth(&[(id::CUTOFF, 20_000.0), (id::DRIFT, 0.0), (id::WIDTH, width)]),
+                &[on(0, 48)],
+                24_000,
+            )
+        };
+        let (narrow, wide) = (play(0.0), play(1.0));
+        let side =
+            |x: &[Vec<f32>]| -> Vec<f32> { x[0].iter().zip(&x[1]).map(|(l, r)| l - r).collect() };
+        let sum =
+            |x: &[Vec<f32>]| -> Vec<f32> { x[0].iter().zip(&x[1]).map(|(l, r)| l + r).collect() };
+        assert!(rms(&side(&narrow)) < 1e-6);
+        assert!(
+            rms(&side(&wide)[4_800..]) > 0.05 * rms(&sum(&wide)[4_800..]),
+            "wider"
+        );
+        let diff: Vec<f32> = sum(&wide)
+            .iter()
+            .zip(sum(&narrow))
+            .map(|(a, b)| a - b)
+            .collect();
+        assert!(rms(&diff) < 1e-5, "the mono sum is unchanged");
+        let s = side(&wide);
+        let mid_bass = magnitude(&sum(&wide)[4_800..], 130.8);
+        let side_bass = magnitude(&s[4_800..], 130.8);
+        assert!(
+            side_bass < 0.01 * mid_bass,
+            "bass centred: {}",
+            side_bass / mid_bass
+        );
+    }
+
+    #[test]
+    fn just_intonation_starts_every_stab_the_same() {
+        let note_off = |key| ev(0, EventKind::NoteOff { ch: 0, key });
+        let mut s = synth(&[(id::JUST, 1.0), (id::DRIFT, 0.0), (id::AMP_R, 0.01)]);
+        let first = render(&mut s, &[on(0, 48), on(0, 55)], 4_800);
+        render(&mut s, &[note_off(48), note_off(55)], 9_600);
+        let second = render(&mut s, &[on(0, 48), on(0, 55)], 4_800);
+        let diff = first
+            .iter()
+            .zip(&second)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(diff < 0.02, "{diff}");
     }
 
     #[test]

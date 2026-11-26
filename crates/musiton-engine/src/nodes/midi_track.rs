@@ -3,7 +3,7 @@
 use musiton_core::ids::ParamId;
 use musiton_core::Tick;
 
-use crate::node::{AudioIo, AudioNode, Event, EventKind, ParamInfo, ProcessContext};
+use crate::node::{AudioIo, AudioNode, Event, EventKind, ParamInfo, ProcessContext, PITCH_BEND};
 
 /// Parameter: 1 = this track receives live MIDI (keyboard, preview), 0 = not.
 pub const MIDI_TRACK_LIVE: ParamId = ParamId(100);
@@ -40,11 +40,15 @@ pub struct MidiCc {
     pub ch: u8,
 }
 
+/// Controller numbers a clip can use: the 128 MIDI controllers plus aftertouch (128) and
+/// pitch bend ([`PITCH_BEND`]).
+const CONTROLLERS: usize = PITCH_BEND as usize + 1;
+
 /// Value a controller returns to when a clip that moved it no longer sets it.
 fn cc_default(cc: u8) -> f32 {
     match cc {
-        7 | 11 => 1.0, // volume, expression
-        10 => 0.5,     // pan
+        7 | 11 => 1.0,          // volume, expression
+        10 | PITCH_BEND => 0.5, // pan, pitch bend (centre)
         _ => 0.0,
     }
 }
@@ -64,7 +68,7 @@ pub struct MidiTrack {
     notes: Vec<MidiNote>,
     ccs: Vec<MidiCc>,
     /// Controllers that clip playback has set (bit per controller number).
-    cc_touched: [u64; 2],
+    cc_touched: [u64; 3],
     instrument: Box<dyn AudioNode>,
     events: Vec<Event>,
     live: bool,
@@ -98,7 +102,7 @@ impl MidiTrack {
         Self {
             notes,
             ccs: Vec::new(),
-            cc_touched: [0; 2],
+            cc_touched: [0; 3],
             instrument,
             events: Vec::new(),
             live: false,
@@ -120,7 +124,7 @@ impl MidiTrack {
     /// has there. Controllers the clips moved earlier but do not set before `pos` return
     /// to their default.
     fn chase_controllers(&mut self, pos: u64, at: impl Fn(Tick) -> u64) {
-        let mut last = [(f32::NAN, 0u8); 128];
+        let mut last = [(f32::NAN, 0u8); CONTROLLERS];
         for c in &self.ccs {
             if at(c.tick) >= pos {
                 break;
@@ -129,7 +133,7 @@ impl MidiTrack {
                 *slot = (c.val, c.ch);
             }
         }
-        for cc in 0..128u8 {
+        for cc in 0..CONTROLLERS as u8 {
             let (val, ch) = last.get(usize::from(cc)).copied().unwrap_or((f32::NAN, 0));
             let touched = self
                 .cc_touched

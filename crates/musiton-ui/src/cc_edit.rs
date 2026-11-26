@@ -3,19 +3,23 @@
 use musiton_core::Tick;
 use musiton_project::CcEvent;
 
-/// Controllers offered by name in the piano roll: (number, name).
-pub const NAMED: [(u8, &str); 5] = [
+/// Controllers offered by name in the piano roll: (number, name). Pitch bend is carried as
+/// controller 129 (centre 64).
+pub const NAMED: [(u8, &str); 6] = [
     (1, "Mod wheel"),
     (7, "Volume"),
     (10, "Pan"),
     (11, "Expression"),
     (64, "Sustain pedal"),
+    // Same number as `musiton_engine::node::PITCH_BEND` (the UI does not depend on the engine).
+    (129, "Pitch bend"),
 ];
 
-/// Display name of a controller, e.g. "Mod wheel (CC 1)" or "CC 74".
+/// Display name of a controller, e.g. "Mod wheel (CC 1)", "Pitch bend" or "CC 74".
 pub fn name(controller: u8) -> String {
     match NAMED.iter().find(|(n, _)| *n == controller) {
-        Some((n, name)) => format!("{name} (CC {n})"),
+        Some((n, name)) if *n < 128 => format!("{name} (CC {n})"),
+        Some((_, name)) => (*name).to_owned(),
         None => format!("CC {controller}"),
     }
 }

@@ -60,7 +60,7 @@ pub struct Template {
 pub const TEMPLATES: &[Template] = &[
     Template {
         name: "Raw",
-        description: "Distorted saws in just-intonation chords, chopped at 170 BPM (C# minor)",
+        description: "Plain saws in pure-tuned chords (Aloboi style), gated sixteenths at 120 BPM",
         build: raw,
     },
     Template {
@@ -258,10 +258,41 @@ fn chord(root: u8, third: u8) -> Vec<u8> {
 // ---- templates -------------------------------------------------------------------------
 
 fn raw() -> Project {
-    assemble(Some("raw"), 170.0, 4, 1, || {
-        // C#, C#, A, B: power chords the synth tunes pure.
-        const ROOTS: [u8; 4] = [37, 37, 33, 35];
-        let root = |bar: i64| ROOTS[bar as usize % 4];
+    assemble(Some("raw"), 120.0, 4, 1, || {
+        // Voicings measured from Aloboi's "Just Raw" videos (the synth tunes them pure):
+        // C#maj7, F#m, F, F7 with its natural seventh.
+        const CHORDS: [&[u8]; 4] = [
+            &[37, 44, 49, 53, 60],
+            &[42, 49, 57],
+            &[41, 48, 57],
+            &[41, 48, 57, 63],
+        ];
+        let chord_of = |bar: i64| CHORDS.get(bar as usize % 4).copied().unwrap_or(&[]);
+        // Gated sixteenths: about 80 ms on, 40 ms off, some held over two steps.
+        let gate: [(i64, i64); 12] = [
+            (0, 1),
+            (1, 1),
+            (2, 2),
+            (4, 1),
+            (5, 1),
+            (6, 2),
+            (8, 1),
+            (9, 1),
+            (10, 2),
+            (12, 1),
+            (13, 1),
+            (14, 2),
+        ];
+        let stabs = (0..4)
+            .flat_map(|bar| {
+                gate.into_iter().flat_map(move |(s, len)| {
+                    let length = len * STEP - STEP / 3;
+                    chord_of(bar)
+                        .iter()
+                        .map(move |&p| note(p, 110, bar * BAR + s * STEP, length))
+                })
+            })
+            .collect();
         vec![
             Part {
                 name: "Raw stab",
@@ -269,17 +300,8 @@ fn raw() -> Project {
                 trim_db: -1.0,
                 instrument: musiton_devices::POLYSYNTH,
                 params: preset(musiton_devices::POLYSYNTH, "Raw stab"),
-                effects: vec![reverb_fx(0.12)],
-                notes: seq(4, |bar| {
-                    [(0, 2), (2, 2), (4, 4), (8, 2), (10, 2), (12, 1), (14, 2)]
-                        .into_iter()
-                        .flat_map(|(s, len)| {
-                            chord(root(bar), 0)
-                                .into_iter()
-                                .map(move |p| (s, p, len, 110))
-                        })
-                        .collect()
-                }),
+                effects: vec![reverb_fx(0.08)],
+                notes: stabs,
             },
             Part {
                 name: "Sub",
@@ -288,15 +310,18 @@ fn raw() -> Project {
                 instrument: musiton_devices::POLYSYNTH,
                 params: preset(musiton_devices::POLYSYNTH, "Dirty sub"),
                 effects: Vec::new(),
-                notes: seq(4, |bar| vec![(0, root(bar) - 12, 16, 100)]),
+                notes: seq(4, |bar| {
+                    let root = chord_of(bar).first().copied().unwrap_or(36);
+                    vec![(0, root - 12, 16, 100)]
+                }),
             },
             drums(
                 "Drums",
                 "Punchy",
                 [
-                    hits(4, key::KICK, 120, &[0, 6, 10], 1),
+                    hits(4, key::KICK, 120, &[0, 10], 1),
                     hits(4, key::SNARE, 110, &[8], 1),
-                    hits(4, key::HAT, 70, &[0, 2, 4, 6, 8, 10, 12, 14], 1),
+                    hits(4, key::HAT, 70, &[2, 6, 10, 14], 1),
                 ]
                 .concat(),
                 8.0,

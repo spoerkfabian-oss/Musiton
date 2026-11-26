@@ -349,6 +349,14 @@ impl Processor for ClapProcessor {
                     ));
                     self.push(&MidiEvent::new(t, 0, [0x80 | (ch & 15), key & 127, 0]));
                 }
+                EventKind::Cc { ch, cc, val } if cc == musiton_engine::node::PITCH_BEND => {
+                    let v = (val.clamp(0.0, 1.0) * 16_383.0).round() as u16;
+                    self.push(&MidiEvent::new(
+                        t,
+                        0,
+                        [0xE0 | (ch & 15), (v & 127) as u8, (v >> 7) as u8],
+                    ));
+                }
                 EventKind::Cc { ch, cc, val } => {
                     self.push(&MidiEvent::new(
                         t,

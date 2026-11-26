@@ -13,7 +13,7 @@ use crate::assets::AssetStore;
 use crate::templates::{assemble, note, preset, Part};
 
 /// Bump when the sounds change, so existing packs are made again.
-const PACK_VERSION: &str = "3";
+const PACK_VERSION: &str = "4";
 const SAMPLE_RATE: u32 = 48_000;
 /// Render tempo: one beat = 0.5 s.
 const BPM: f64 = 120.0;
@@ -113,7 +113,13 @@ fn sounds(id: &str) -> Vec<Sound> {
     match id {
         "raw" => [
             vec![
-                synth("Raw stab C#", "Raw stab", &[37, 44, 49], 0.3, 1.0),
+                synth(
+                    "Raw stab C#maj7",
+                    "Raw stab",
+                    &[37, 44, 49, 53, 60],
+                    0.3,
+                    1.0,
+                ),
                 synth("Raw reese F", "Raw reese", &[29], 1.5, 2.0),
                 synth("Dirty sub C#", "Dirty sub", &[25], 1.0, 1.5),
             ],

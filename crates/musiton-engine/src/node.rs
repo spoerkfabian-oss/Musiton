@@ -30,8 +30,12 @@ pub struct ProcessContext<'a> {
     pub live_midi: &'a [Event],
 }
 
+/// Controller number that carries pitch bend (0 … 1, centre 0.5) in [`EventKind::Cc`]: the
+/// number VST3 uses for it. Plugin hosts turn it back into a real pitch-bend message.
+pub const PITCH_BEND: u8 = 129;
+
 impl EventKind {
-    /// Parses a raw 3-byte MIDI channel message (note on/off, CC). Others → `None`.
+    /// Parses a raw 3-byte MIDI channel message (note on/off, CC, pitch bend). Others → `None`.
     pub fn from_midi(bytes: [u8; 3]) -> Option<Self> {
         let [status, d1, d2] = bytes;
         let ch = status & 0x0F;
@@ -48,6 +52,11 @@ impl EventKind {
                 ch,
                 cc: key,
                 val: f32::from(val) / 127.0,
+            }),
+            0xE0 => Some(EventKind::Cc {
+                ch,
+                cc: PITCH_BEND,
+                val: f32::from(u16::from(val) << 7 | u16::from(key)) / 16_383.0,
             }),
             _ => None,
         }
@@ -191,5 +200,33 @@ pub trait AudioNode: Send {
         data: Box<dyn std::any::Any + Send>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         Some(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn midi_bytes_become_events_and_pitch_bend_a_controller() {
+        assert_eq!(
+            EventKind::from_midi([0x91, 60, 127]),
+            Some(EventKind::NoteOn {
+                ch: 1,
+                key: 60,
+                vel: 1.0
+            })
+        );
+        assert_eq!(
+            EventKind::from_midi([0x90, 60, 0]),
+            Some(EventKind::NoteOff { ch: 0, key: 60 })
+        );
+        let bend = |lsb, msb| match EventKind::from_midi([0xE0, lsb, msb]) {
+            Some(EventKind::Cc { cc, val, .. }) if cc == PITCH_BEND => val,
+            _ => f32::NAN,
+        };
+        assert_eq!(bend(0, 0), 0.0);
+        assert!((bend(0, 64) - 0.5).abs() < 1e-3, "centre");
+        assert_eq!(bend(127, 127), 1.0);
     }
 }

@@ -10,6 +10,8 @@ pub mod cc {
     pub const EXPRESSION: u8 = 11;
     /// Sustain pedal (down from 0.5).
     pub const SUSTAIN: u8 = 64;
+    /// Pitch bend (0 … 1, centre 0.5), carried as a controller.
+    pub const PITCH_BEND: u8 = musiton_engine::node::PITCH_BEND;
 }
 
 /// What a controller change means for the instrument.
@@ -36,6 +38,8 @@ pub struct Controllers {
     pub expression: f32,
     /// Sustain pedal down.
     pub sustain: bool,
+    /// Pitch bend −1 … 1.
+    pub pitch_bend: f32,
 }
 
 impl Default for Controllers {
@@ -45,6 +49,7 @@ impl Default for Controllers {
             volume: 1.0,
             expression: 1.0,
             sustain: false,
+            pitch_bend: 0.0,
         }
     }
 }
@@ -57,6 +62,7 @@ impl Controllers {
             cc::MOD_WHEEL => self.mod_wheel = val,
             cc::VOLUME => self.volume = val,
             cc::EXPRESSION => self.expression = val,
+            cc::PITCH_BEND => self.pitch_bend = val * 2.0 - 1.0,
             cc::SUSTAIN => {
                 let down = val >= 0.5;
                 let was = std::mem::replace(&mut self.sustain, down);
