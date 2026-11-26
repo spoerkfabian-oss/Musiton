@@ -304,23 +304,20 @@ fn raw() -> Project {
         ];
         let stabs = (0..4)
             .flat_map(|bar| {
-                rhythm
-                    .into_iter()
-                    .enumerate()
-                    .flat_map(move |(n, (s, len))| {
-                        // Ends just before the next one: its voices are still sounding, so
-                        // every sixteenth glides out of the one before.
-                        let length = len * STEP - STEP / 8;
-                        let accent = if s % 4 == 0 { 0 } else { 12 };
-                        raw_wave(chord_of(bar), n).into_iter().map(move |p| {
-                            note(
-                                p,
-                                chord_velocity(p).saturating_sub(accent),
-                                bar * BAR + s * STEP,
-                                length,
-                            )
-                        })
+                rhythm.into_iter().flat_map(move |(s, len)| {
+                    // Ends just before the next one: its voices are still sounding, so
+                    // every sixteenth glides out of the one before.
+                    let length = len * STEP - STEP / 8;
+                    let accent = if s % 4 == 0 { 0 } else { 12 };
+                    chord_of(bar).iter().map(move |&p| {
+                        note(
+                            p,
+                            chord_velocity(p).saturating_sub(accent),
+                            bar * BAR + s * STEP,
+                            length,
+                        )
                     })
+                })
             })
             .collect();
         vec![
@@ -372,11 +369,22 @@ fn raw_chord_part(notes: Vec<Note>, glide: f32) -> Part {
         trim_db: -1.0,
         instrument: musiton_devices::POLYSYNTH,
         params,
-        // About 1.5 s of room, the only stereo in the reference.
-        effects: vec![(
-            "reverb",
-            vec![(reverb::id::MIX, 0.35), (reverb::id::DECAY, 1.5)],
-        )],
+        effects: vec![
+            // Fullness where the owner wants it: a wide bell around 250 Hz (100–500 Hz).
+            (
+                "eq",
+                vec![
+                    (2 * eq::PER_BAND + 1, 250.0),
+                    (2 * eq::PER_BAND + 2, 4.0),
+                    (2 * eq::PER_BAND + 3, 0.6),
+                ],
+            ),
+            // About 1.5 s of room, the only stereo in the reference.
+            (
+                "reverb",
+                vec![(reverb::id::MIX, 0.25), (reverb::id::DECAY, 1.5)],
+            ),
+        ],
         notes,
     }
 }
@@ -390,7 +398,7 @@ fn raw_sub_part(notes: Vec<Note>, glide: f32) -> Part {
     Part {
         name: "Sub",
         color: [90, 170, 230],
-        trim_db: -2.0,
+        trim_db: -5.0,
         instrument: musiton_devices::POLYSYNTH,
         params,
         effects: Vec::new(),
@@ -416,27 +424,6 @@ fn held_chords(chords: &[(&[u8], i64)]) -> (Vec<Note>, Vec<Note>) {
         at += len * STEP;
     }
     (keys, sub)
-}
-
-/// The `n`-th sixteenth of a Raw chord: the lower four notes stay, the upper three move
-/// like a wave through the chord's upper tones and their octaves (all still overtones of
-/// the root).
-fn raw_wave(voicing: &[u8], n: usize) -> Vec<u8> {
-    let (low, high) = voicing.split_at(voicing.len().min(4));
-    let mut pool: Vec<u8> = high
-        .iter()
-        .copied()
-        .chain(low.iter().skip(2).map(|&p| p + 12))
-        .chain(high.iter().map(|&p| p + 12))
-        .collect();
-    pool.sort_unstable();
-    pool.dedup();
-    const WAVE: [usize; 6] = [0, 1, 2, 3, 2, 1];
-    let start = WAVE[n % WAVE.len()].min(pool.len().saturating_sub(3));
-    low.iter()
-        .copied()
-        .chain(pool.iter().skip(start).take(3).copied())
-        .collect()
 }
 
 fn raw_slides() -> Project {
@@ -533,10 +520,13 @@ fn raw_ambient() -> Project {
     assemble(Some("raw"), 70.0, 8, 1, || {
         let (keys, sub) = held_chords(&[(RAW_B, 32), (RAW_CS, 32), (RAW_DS, 32), (RAW_AS, 32)]);
         let mut chords = raw_chord_part(keys, 0.4);
-        chords.effects = vec![(
-            "reverb",
-            vec![(reverb::id::MIX, 0.45), (reverb::id::DECAY, 3.0)],
-        )];
+        // A longer room (the EQ before it stays).
+        if let Some(room) = chords.effects.last_mut() {
+            *room = (
+                "reverb",
+                vec![(reverb::id::MIX, 0.45), (reverb::id::DECAY, 3.0)],
+            );
+        }
         vec![chords, raw_sub_part(sub, 0.4)]
     })
 }
