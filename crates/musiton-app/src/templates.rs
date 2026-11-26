@@ -64,6 +64,21 @@ pub const TEMPLATES: &[Template] = &[
         build: raw,
     },
     Template {
+        name: "Raw slides",
+        description: "The Raw sound with held chords sliding into each other, two beats each, 120 BPM",
+        build: raw_slides,
+    },
+    Template {
+        name: "Raw slowed",
+        description: "The Raw sound slowed: a chord per bar sliding into the next, half-time drums, 90 BPM",
+        build: raw_slowed,
+    },
+    Template {
+        name: "Raw ambient",
+        description: "The Raw sound without drums: two bars per chord, slow slides and a long room, 70 BPM",
+        build: raw_ambient,
+    },
+    Template {
         name: "Phonk",
         description: "2022/23 drift phonk: melodic 808 cowbell, distorted 808, Memphis hats (130 BPM, F# minor)",
         build: phonk,
@@ -265,16 +280,7 @@ fn chord_velocity(pitch: u8) -> u8 {
 
 fn raw() -> Project {
     assemble(Some("raw"), 120.0, 4, 1, || {
-        // Voicings measured from the owner's recording of Aloboi's "Want To Love (Just
-        // Raw)": overtone stacks from the second octave up to about 1 kHz (9/8, 5/4,
-        // 27/16, 7/4, 15/8 over the root), with a sine an octave below the root as loud
-        // as the chord. B – C# – D# – C#.
-        const CHORDS: [&[u8]; 4] = [
-            &[35, 42, 51, 58, 61, 63, 70],
-            &[37, 44, 51, 58, 63, 65, 71],
-            &[39, 46, 51, 55, 58, 63, 74],
-            &[37, 44, 51, 58, 63, 65, 71],
-        ];
+        const CHORDS: [&[u8]; 4] = [RAW_B, RAW_CS, RAW_DS, RAW_CS];
         let chord_of = |bar: i64| CHORDS.get(bar as usize % 4).copied().unwrap_or(&[]);
         // Gated sixteenths: about 80 ms on, 40 ms off, some held over two steps.
         let gate: [(i64, i64); 12] = [
@@ -302,31 +308,14 @@ fn raw() -> Project {
             })
             .collect();
         vec![
-            Part {
-                name: "Raw stab",
-                color: [120, 220, 90],
-                trim_db: -1.0,
-                instrument: musiton_devices::POLYSYNTH,
-                params: preset(musiton_devices::POLYSYNTH, "Raw stab"),
-                // About 1.5 s of room, the only stereo in the reference.
-                effects: vec![(
-                    "reverb",
-                    vec![(reverb::id::MIX, 0.35), (reverb::id::DECAY, 1.5)],
-                )],
-                notes: stabs,
-            },
-            Part {
-                name: "Sub",
-                color: [90, 170, 230],
-                trim_db: -4.0,
-                instrument: musiton_devices::POLYSYNTH,
-                params: preset(musiton_devices::POLYSYNTH, "Sine sub"),
-                effects: Vec::new(),
-                notes: seq(4, |bar| {
+            raw_chord_part(stabs, 0.0),
+            raw_sub_part(
+                seq(4, |bar| {
                     let root = chord_of(bar).first().copied().unwrap_or(36);
                     vec![(0, root - 12, 16, 100)]
                 }),
-            },
+                0.0,
+            ),
             drums(
                 "Drums",
                 "Punchy",
@@ -339,6 +328,149 @@ fn raw() -> Project {
                 8.0,
             ),
         ]
+    })
+}
+
+/// Raw voicings, measured from the owner's recording of Aloboi's "Want To Love (Just
+/// Raw)": overtone stacks from the second octave up to about 1 kHz (9/8, 5/4, 27/16, 7/4,
+/// 15/8 over the root). A sine an octave below the root goes under each (see NOTES.md,
+/// "Raw sound").
+const RAW_B: &[u8] = &[35, 42, 51, 58, 61, 63, 70];
+const RAW_CS: &[u8] = &[37, 44, 51, 58, 63, 65, 71];
+const RAW_DS: &[u8] = &[39, 46, 51, 55, 58, 63, 74];
+const RAW_AS: &[u8] = &[34, 41, 50, 53, 58, 60, 62];
+
+/// The Raw chord track: "Raw stab" (pure saws, octave-below saw, overtone tuning) with a
+/// 1.5 s room; `glide` (s) slides every voice into the next chord.
+fn raw_chord_part(notes: Vec<Note>, glide: f32) -> Part {
+    let mut params = preset(musiton_devices::POLYSYNTH, "Raw stab");
+    if glide > 0.0 {
+        params.extend([
+            (musiton_devices::polysynth::id::GLIDE, glide),
+            (musiton_devices::polysynth::id::GLIDE_MODE, 1.0),
+        ]);
+    }
+    Part {
+        name: "Raw chords",
+        color: [120, 220, 90],
+        trim_db: -1.0,
+        instrument: musiton_devices::POLYSYNTH,
+        params,
+        // About 1.5 s of room, the only stereo in the reference.
+        effects: vec![(
+            "reverb",
+            vec![(reverb::id::MIX, 0.35), (reverb::id::DECAY, 1.5)],
+        )],
+        notes,
+    }
+}
+
+/// The sine an octave below the chord root, about as loud as the chord.
+fn raw_sub_part(notes: Vec<Note>, glide: f32) -> Part {
+    let mut params = preset(musiton_devices::POLYSYNTH, "Sine sub");
+    if glide > 0.0 {
+        params.push((musiton_devices::polysynth::id::GLIDE, glide));
+    }
+    Part {
+        name: "Sub",
+        color: [90, 170, 230],
+        trim_db: -4.0,
+        instrument: musiton_devices::POLYSYNTH,
+        params,
+        effects: Vec::new(),
+        notes,
+    }
+}
+
+/// Held Raw chords, one after another: (voicing, length in sixteenths). Each ends a
+/// little early, so the next chord slides out of its released voices. Returns the chord
+/// and sub notes.
+fn held_chords(chords: &[(&[u8], i64)]) -> (Vec<Note>, Vec<Note>) {
+    let (mut keys, mut sub, mut at) = (Vec::new(), Vec::new(), 0);
+    for &(voicing, len) in chords {
+        let length = len * STEP - STEP / 4;
+        keys.extend(
+            voicing
+                .iter()
+                .map(|&p| note(p, chord_velocity(p), at, length)),
+        );
+        if let Some(&root) = voicing.first() {
+            sub.push(note(root - 12, 100, at, length));
+        }
+        at += len * STEP;
+    }
+    (keys, sub)
+}
+
+fn raw_slides() -> Project {
+    assemble(Some("raw"), 120.0, 4, 1, || {
+        let (keys, sub) = held_chords(&[
+            (RAW_B, 8),
+            (RAW_CS, 8),
+            (RAW_DS, 8),
+            (RAW_CS, 8),
+            (RAW_AS, 8),
+            (RAW_B, 8),
+            (RAW_CS, 8),
+            (RAW_DS, 8),
+        ]);
+        vec![
+            raw_chord_part(keys, 0.15),
+            raw_sub_part(sub, 0.15),
+            drums(
+                "Drums",
+                "Punchy",
+                [
+                    hits(4, key::KICK, 120, &[0, 10], 1),
+                    hits(4, key::SNARE, 110, &[8], 1),
+                    hits(4, key::HAT, 70, &[2, 6, 10, 14], 1),
+                ]
+                .concat(),
+                8.0,
+            ),
+        ]
+    })
+}
+
+fn raw_slowed() -> Project {
+    assemble(Some("raw"), 90.0, 8, 1, || {
+        let (keys, sub) = held_chords(&[
+            (RAW_B, 16),
+            (RAW_CS, 16),
+            (RAW_DS, 16),
+            (RAW_CS, 16),
+            (RAW_AS, 16),
+            (RAW_B, 16),
+            (RAW_CS, 16),
+            (RAW_DS, 16),
+        ]);
+        vec![
+            raw_chord_part(keys, 0.25),
+            raw_sub_part(sub, 0.25),
+            drums(
+                "Drums",
+                "Punchy",
+                [
+                    hits(8, key::KICK, 115, &[0, 6], 1),
+                    hits(8, key::SNARE, 105, &[8], 1),
+                    hits(8, key::HAT, 60, &[4, 12], 1),
+                ]
+                .concat(),
+                8.0,
+            ),
+        ]
+    })
+}
+
+fn raw_ambient() -> Project {
+    assemble(Some("raw"), 70.0, 8, 1, || {
+        let (keys, sub) = held_chords(&[(RAW_B, 32), (RAW_CS, 32), (RAW_DS, 32), (RAW_AS, 32)]);
+        let mut chords = raw_chord_part(keys, 0.4);
+        chords.effects = vec![(
+            "reverb",
+            vec![(reverb::id::MIX, 0.45), (reverb::id::DECAY, 3.0)],
+        )];
+        vec![chords, raw_sub_part(sub, 0.4)]
     })
 }
 

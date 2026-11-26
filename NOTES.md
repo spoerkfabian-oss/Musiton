@@ -577,6 +577,15 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - Owner: "deeper and fuller in the original, the rest fits very, very well". Octave-below saw at 0.8, a gentle 8 kHz low-pass instead of the open high-pass, velocity −3 per semitone: every band from 20 Hz to 8 kHz is now within 2.5 dB of the reference.
 - Fix: an audio file dropped from the browser onto an instrument track used to become an audio clip covering the MIDI notes; it now becomes the track's sample (sampler), and on a bus or folder it goes to a new audio track.
 
+## Raw sound (owner-approved recipe, 2026-11-26)
+The owner approved this sound ("genau so"). Keep it when building anything in the Raw style:
+- Synth: polysynth preset "Raw stab": saw, a second pure saw an octave below (level 0.8, no detune), no unison, no drift, overtone-series tuning (just intonation, retune from 2 keys), gentle 8 kHz low-pass, attack 2 ms, release 80 ms, full velocity response, mild asymmetric drive.
+- Voicings (`RAW_B`, `RAW_CS`, `RAW_DS`, `RAW_AS` in `templates.rs`): overtone stacks from the second octave to about 1 kHz; low notes loudest (velocity −3 per semitone above B1).
+- Under each chord a "Sine sub" an octave below the root, trim −4 dB.
+- Dry, centred synth; all stereo from a 1.5 s reverb (mix 0.35).
+- Owner: notes should be held, not short, except where they slide from one chord to the next: held chords end a sixteenth-quarter early and glide per voice (0.15–0.4 s) into the next.
+- Templates: Raw (gated sixteenths), Raw slides (two beats per chord, 120 BPM), Raw slowed (a bar per chord, half-time drums, 90 BPM), Raw ambient (two bars per chord, no drums, 3 s room, 70 BPM).
+
 ## Self-update (2026-11-26)
 - Owner decisions: check at every start (plus Help → Check for updates…), every push to `main` is an update, support both portable and installed copies.
 - `installer.yml` publishes each `main` build as GitHub release `build-<run number>` (assets `Musiton-portable.zip`, `Musiton-setup.exe`, latest five kept) and compiles the run number in as `MUSITON_BUILD`. The repository is public, so the app reads `releases/latest` without a token.
