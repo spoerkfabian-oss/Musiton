@@ -5,8 +5,19 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A newer push makes the running build obsolete; its release would be outdated anyway.
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+# Publishing the update release needs write access to the repository's releases.
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
+  # Build number compiled into Musiton; the self-updater compares it with the newest release.
+  MUSITON_BUILD: ${{ github.run_number }}
 
 jobs:
   installer:
@@ -138,3 +149,24 @@ jobs:
           name: Musiton-portable
           path: target/portable/
           if-no-files-found: error
+      - name: Publish update (GitHub release)
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          $n = $env:MUSITON_BUILD
+          Compress-Archive -Path target/portable/* -DestinationPath target/Musiton-portable.zip -Force
+          $setup = Get-ChildItem target/packages/*.exe | Select-Object -First 1
+          Copy-Item $setup.FullName target/Musiton-setup.exe
+          # The update window shows the commit's first line.
+          $notes = if ($env:NOTES) { ($env:NOTES -split "`n")[0] } else { "Build $n" }
+          # A re-run of the same run number replaces its release.
+          gh release delete "build-$n" --yes --cleanup-tag 2>$null
+          gh release create "build-$n" target/Musiton-portable.zip target/Musiton-setup.exe `
+            --title "Musiton build $n" --notes "$notes" --target $env:GITHUB_SHA --latest
+          # Keep the five newest builds.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' |
+            Where-Object { $_ -like 'build-*' } | Select-Object -Skip 5 |
+            ForEach-Object { gh release delete $_ --yes --cleanup-tag }

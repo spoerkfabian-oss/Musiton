@@ -26,6 +26,7 @@ mod settings_dialog;
 mod sound_packs;
 mod templates;
 mod transport;
+mod update;
 mod video_view;
 mod warp;
 
@@ -202,6 +203,8 @@ enum Pending {
     Template(usize),
     Open(Option<PathBuf>),
     Quit,
+    /// Close and install the downloaded update.
+    Update,
 }
 
 /// Top-level application state (UI thread).
@@ -227,6 +230,7 @@ struct App {
     user_presets: presets::PresetMap,
     bottom_tab: BottomTab,
     show_shortcuts: bool,
+    updater: update::Updater,
     library: library::Dialog,
     /// The Ctrl+K command search.
     command_search: command_search::CommandSearch,
@@ -395,6 +399,7 @@ impl App {
             user_presets: presets::load_all(),
             bottom_tab: BottomTab::default(),
             show_shortcuts: false,
+            updater: update::Updater::default(),
             library: library::Dialog::default(),
             command_search: command_search::CommandSearch::default(),
             assets: AssetStore::default(),
@@ -448,6 +453,7 @@ impl App {
         app.restart_audio();
         // New or updated plugins are found in the background at every start.
         app.plugins.scan(false);
+        app.updater.check(false);
         if let Some(path) = open {
             app.open_path(&path);
         }
@@ -1293,6 +1299,14 @@ impl App {
             Pending::Quit => {
                 self.allow_close = true;
             }
+            Pending::Update => {
+                if let Some(ready) = self.updater.ready.take() {
+                    match update::launch(&ready) {
+                        Ok(()) => self.allow_close = true,
+                        Err(e) => self.set_status(format!("Update failed: {e}")),
+                    }
+                }
+            }
         }
     }
 
@@ -1618,6 +1632,10 @@ impl App {
                 }
                 if ui.button("Keyboard shortcuts").clicked() {
                     self.show_shortcuts = true;
+                }
+                if ui.button("Check for updates…").clicked() {
+                    self.updater.check(true);
+                    ui.close();
                 }
             });
         });
@@ -2973,7 +2991,13 @@ impl App {
         self.update_automation_recording(&ctx);
         self.finish_sfz_loads();
         self.update_graph();
-        if self.importer.running() > 0 || self.sfz_loader.busy() {
+        if self.updater.show(&ctx) {
+            self.request(Pending::Update);
+            if self.allow_close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+        if self.importer.running() > 0 || self.sfz_loader.busy() || self.updater.busy() {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
         self.library.show(&ctx, Settings::data_dir().as_deref());

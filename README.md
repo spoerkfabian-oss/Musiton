@@ -31,11 +31,15 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 
 ## Install (Windows)
 
-Every push to `main` builds Windows downloads.
+Every push to `main` builds Windows downloads and publishes them as a GitHub release (`build-<n>`, the five newest are kept).
+
+**Updates:** once installed, Musiton looks for a newer build at every start (and on Help → Check for updates…). "Download update" fetches it; "Restart and update" closes Musiton (asking to save first), then replaces the portable folder's files and starts again, or runs the new setup for an installed copy. Copies built by hand do not update themselves.
+
+First download:
 
 1. On GitHub, open **Actions → Windows installer**.
 2. Open the latest green run.
-3. Download one of its two artifacts:
+3. Download one of its two artifacts (or take `Musiton-setup.exe` / `Musiton-portable.zip` from the newest release under **Releases**):
    - **Musiton-setup**: an installer. It adds a Start-menu entry and lets double-clicking a `.musiton` project open Musiton.
    - **Musiton-portable**: `Musiton.exe` with `ffmpeg.exe` (for video). Unzip it anywhere, keep both files together and double-click `Musiton.exe`; nothing is installed.
 

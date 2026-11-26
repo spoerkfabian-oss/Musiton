@@ -38,7 +38,8 @@ musiton/
 │                           # project → engine graph translation, export, demo song and genre templates
 │                           # (`templates.rs`, one builder for both), genre sound packs, sound library
 │                           # downloads (`library.rs`: ureq + zip), SFZ instruments read on worker
-│                           # threads (`assets.rs`: `SfzLoader`), installer config;
+│                           # threads (`assets.rs`: `SfzLoader`), self-update from GitHub
+│                           # releases (`update.rs`), installer config;
 │                           # `musiton --scan <file>` is the out-of-process plugin scanner
 ```
 

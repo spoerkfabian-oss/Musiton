@@ -133,7 +133,7 @@ pub struct Job {
 }
 
 impl Job {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             done: Arc::default(),
             total: Arc::default(),
@@ -149,7 +149,7 @@ impl Job {
             .map_or(Status::Failed("lost".into()), |s| s.clone())
     }
 
-    fn set(&self, s: Status) {
+    pub(crate) fn set(&self, s: Status) {
         if let Ok(mut st) = self.status.lock() {
             *st = s;
         }
@@ -208,7 +208,12 @@ fn install(agent: &ureq::Agent, url: &str, dir: &Path, id: &str, job: &Job) -> a
 }
 
 /// Downloads `url` to `part`, continuing a partial file when the server allows it.
-fn download(agent: &ureq::Agent, url: &str, part: &Path, job: &Job) -> anyhow::Result<()> {
+pub(crate) fn download(
+    agent: &ureq::Agent,
+    url: &str,
+    part: &Path,
+    job: &Job,
+) -> anyhow::Result<()> {
     let have = std::fs::metadata(part).map_or(0, |m| m.len());
     let mut req = agent.get(url);
     if have > 0 {
@@ -261,7 +266,7 @@ fn download(agent: &ureq::Agent, url: &str, part: &Path, job: &Job) -> anyhow::R
 }
 
 /// Unpacks the zip `archive` into `target` (CRC-checked per file).
-fn unpack(archive: &Path, target: &Path, job: &Job) -> anyhow::Result<()> {
+pub(crate) fn unpack(archive: &Path, target: &Path, job: &Job) -> anyhow::Result<()> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
     let n = zip.len();
     for i in 0..n {
