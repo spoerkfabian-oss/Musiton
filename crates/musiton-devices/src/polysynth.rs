@@ -103,7 +103,46 @@ const WIDTH_DELAY: f32 = 0.0005;
 const WIDTH_HZ: f32 = 1_500.0;
 /// Ring buffer for the widener's delay (enough for 0.5 ms at 192 kHz).
 const WIDTH_BUF: usize = 128;
-const ROOTS: &[&str] = &["Lowest note", "Most played"];
+const ROOTS: &[&str] = &["Lowest note", "Most played", "Fixed key"];
+const KEYS: &[&str] = &[
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+const BEND_FROM: &[&str] = &["Bottom", "Top"];
+/// Choosable ratios per interval above the root (index = semitones − 1); the first
+/// option, "Table", keeps the ratio of the "Tuning" table.
+const INTERVAL_NAMES: [&[&str]; 11] = [
+    &["Table", "16/15", "17/16", "15/14", "25/24", "256/243"],
+    &["Table", "9/8", "10/9", "8/7"],
+    &["Table", "6/5", "19/16", "7/6", "32/27"],
+    &["Table", "5/4", "81/64", "9/7", "14/11"],
+    &["Table", "4/3", "21/16", "27/20"],
+    &["Table", "45/32", "7/5", "11/8", "10/7", "64/45"],
+    &["Table", "3/2", "40/27"],
+    &["Table", "8/5", "13/8", "25/16", "14/9"],
+    &["Table", "5/3", "27/16", "12/7"],
+    &["Table", "9/5", "7/4", "16/9"],
+    &["Table", "15/8", "243/128", "17/9"],
+];
+/// The ratios behind [`INTERVAL_NAMES`] (without "Table").
+const INTERVAL_RATIOS: [&[f32]; 11] = [
+    &[
+        16.0 / 15.0,
+        17.0 / 16.0,
+        15.0 / 14.0,
+        25.0 / 24.0,
+        256.0 / 243.0,
+    ],
+    &[9.0 / 8.0, 10.0 / 9.0, 8.0 / 7.0],
+    &[6.0 / 5.0, 19.0 / 16.0, 7.0 / 6.0, 32.0 / 27.0],
+    &[5.0 / 4.0, 81.0 / 64.0, 9.0 / 7.0, 14.0 / 11.0],
+    &[4.0 / 3.0, 21.0 / 16.0, 27.0 / 20.0],
+    &[45.0 / 32.0, 7.0 / 5.0, 11.0 / 8.0, 10.0 / 7.0, 64.0 / 45.0],
+    &[3.0 / 2.0, 40.0 / 27.0],
+    &[8.0 / 5.0, 13.0 / 8.0, 25.0 / 16.0, 14.0 / 9.0],
+    &[5.0 / 3.0, 27.0 / 16.0, 12.0 / 7.0],
+    &[9.0 / 5.0, 7.0 / 4.0, 16.0 / 9.0],
+    &[15.0 / 8.0, 243.0 / 128.0, 17.0 / 9.0],
+];
 const SLOPES: &[&str] = &["12 dB", "24 dB"];
 const GLIDES: &[&str] = &["From last note", "Each voice"];
 const TUNINGS: &[&str] = &["Just", "Overtone series"];
@@ -157,10 +196,14 @@ pub mod id {
     pub const PITCH_ENV: u64 = 42;
     pub const PITCH_DECAY: u64 = 43;
     pub const GLIDE_MODE: u64 = 44;
+    pub const JUST_KEY: u64 = 45;
+    pub const BEND_FROM: u64 = 46;
+    /// First of eleven interval ratios (minor second … major seventh above the root).
+    pub const INTERVAL_M2: u64 = 47;
 }
 
 /// All parameters (index = id).
-pub const PARAMS: [ParamInfo; 45] = [
+pub const PARAMS: [ParamInfo; 58] = [
     ParamInfo::choice(id::OSC1_WAVE, "Osc 1", WAVES, 0),
     ParamInfo::new(id::OSC1_LEVEL, "Osc 1 level", 0.0, 1.0, 0.8),
     ParamInfo::choice(id::OSC2_WAVE, "Osc 2", WAVES, 1),
@@ -226,6 +269,24 @@ pub const PARAMS: [ParamInfo; 45] = [
         .log()
         .unit("s"),
     ParamInfo::choice(id::GLIDE_MODE, "Glide mode", GLIDES, 0),
+    ParamInfo::choice(id::JUST_KEY, "Fixed root key", KEYS, 0),
+    ParamInfo::choice(id::BEND_FROM, "Bend note counted from", BEND_FROM, 0),
+    ParamInfo::choice(id::INTERVAL_M2, "Ratio minor 2nd", INTERVAL_NAMES[0], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 1, "Ratio major 2nd", INTERVAL_NAMES[1], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 2, "Ratio minor 3rd", INTERVAL_NAMES[2], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 3, "Ratio major 3rd", INTERVAL_NAMES[3], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 4, "Ratio 4th", INTERVAL_NAMES[4], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 5, "Ratio tritone", INTERVAL_NAMES[5], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 6, "Ratio 5th", INTERVAL_NAMES[6], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 7, "Ratio minor 6th", INTERVAL_NAMES[7], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 8, "Ratio major 6th", INTERVAL_NAMES[8], 0),
+    ParamInfo::choice(id::INTERVAL_M2 + 9, "Ratio minor 7th", INTERVAL_NAMES[9], 0),
+    ParamInfo::choice(
+        id::INTERVAL_M2 + 10,
+        "Ratio major 7th",
+        INTERVAL_NAMES[10],
+        0,
+    ),
 ];
 
 #[derive(Debug, Clone)]
@@ -430,6 +491,23 @@ impl Polysynth {
         self.values.get(id as usize).copied().unwrap_or(0.0)
     }
 
+    /// Just correction (semitones) of `semis` above the root: the interval's chosen ratio,
+    /// or the "Tuning" table's.
+    fn just_for(&self, semis: i32) -> f32 {
+        let class = semis.rem_euclid(12) as usize;
+        let chosen = class
+            .checked_sub(1)
+            .and_then(|i| {
+                let pick = self.v(id::INTERVAL_M2 + i as u64).round() as usize;
+                INTERVAL_RATIOS.get(i)?.get(pick.checked_sub(1)?)
+            })
+            .copied();
+        match chosen {
+            Some(ratio) => 12.0 * ratio.log2() - class as f32,
+            None => just_offset(semis, self.v(id::TUNING) > 0.5),
+        }
+    }
+
     fn update_envelopes(&mut self) {
         let sr = self.sample_rate;
         let (a, d, s, r) = (
@@ -593,14 +671,17 @@ impl Polysynth {
     /// once; the others slide.
     fn retune(&mut self, fresh: Option<u8>) {
         let on = self.v(id::JUST) > 0.5;
-        let overtone = self.v(id::TUNING) > 0.5;
+        let mode = self.v(id::JUST_ROOT).round() as u8;
         let held = self.voices.iter().filter(|v| v.key.is_some()).count();
         let lowest = self.voices.iter().filter_map(|v| v.key).min();
         // With no key held the last root stays (a melody after a chord is tuned to it).
-        if held > 0
+        if mode == 2 {
+            // Fixed key: no dynamic retuning.
+            self.root = Some(self.v(id::JUST_KEY).round().clamp(0.0, 11.0) as u8);
+        } else if held > 0
             && (held >= self.v(id::JUST_KEYS).round().max(1.0) as usize || self.root.is_none())
         {
-            self.root = if self.v(id::JUST_ROOT) > 0.5 {
+            self.root = if mode == 1 {
                 let weight = |k: u8| self.played.get(usize::from(k % 12)).copied().unwrap_or(0.0);
                 // Most played pitch class; the lowest such note on a tie.
                 self.voices
@@ -617,12 +698,18 @@ impl Polysynth {
             };
         }
         let root = self.root;
-        for v in &mut self.voices {
-            let Some(key) = v.key else { continue };
-            v.just = match (on, root) {
-                (true, Some(r)) => just_offset(i32::from(key) - i32::from(r), overtone),
+        for i in 0..self.voices.len() {
+            let Some(key) = self.voices.get(i).and_then(|v| v.key) else {
+                continue;
+            };
+            let just = match (on, root) {
+                (true, Some(r)) => self.just_for(i32::from(key) - i32::from(r)),
                 _ => 0.0,
             };
+            let Some(v) = self.voices.get_mut(i) else {
+                continue;
+            };
+            v.just = just;
             if Some(key) == fresh || v.fresh > 0 {
                 v.just_now = v.just;
             }
@@ -677,7 +764,7 @@ impl Polysynth {
         let w2 = Wave::from_index(self.v(id::OSC2_WAVE));
         let osc2_semi = self.v(id::OSC2_SEMI).round();
         let osc2_just = if self.v(id::JUST) > 0.5 {
-            just_offset(osc2_semi as i32, self.v(id::TUNING) > 0.5)
+            self.just_for(osc2_semi as i32)
         } else {
             0.0
         };
@@ -685,7 +772,7 @@ impl Polysynth {
         let osc3_semi = self.v(id::OSC3_SEMI).round();
         let osc3_offset = osc3_semi
             + if self.v(id::JUST) > 0.5 {
-                just_offset(osc3_semi as i32, self.v(id::TUNING) > 0.5)
+                self.just_for(osc3_semi as i32)
             } else {
                 0.0
             };
@@ -726,14 +813,20 @@ impl Polysynth {
         let drift_amt = self.v(id::DRIFT);
         let drift_k = 1.0 / (DRIFT_TIME * sr);
         let mono_k = 1.0 - (-std::f32::consts::TAU * MONO_BASS_HZ / sr).exp();
-        // Pitch bend: the whole chord, or only its n-th note from the bottom.
+        // Pitch bend: the whole chord, or only its n-th note from the bottom or top.
         let bend = self.controllers.pitch_bend * self.v(id::BEND_RANGE);
         let bend_note = self.v(id::BEND_NOTE).round() as usize;
+        let from_top = self.v(id::BEND_FROM) > 0.5;
         let bend_key = if bend_note == 0 {
             None
         } else {
             let keys = || self.voices.iter().filter_map(|v| v.key);
-            keys().find(|&k| keys().filter(|&o| o < k).count() + 1 == bend_note)
+            let below = |k: u8| {
+                keys()
+                    .filter(|&o| if from_top { o > k } else { o < k })
+                    .count()
+            };
+            keys().find(|&k| below(k) + 1 == bend_note)
         };
         let width = self.v(id::WIDTH);
         let wide_k = 1.0 - (-std::f32::consts::TAU * WIDTH_HZ / sr).exp();
@@ -1757,6 +1850,49 @@ mod tests {
         let mut s = sine_just(&[(id::BEND_RANGE, 2.0)]);
         let x = render(&mut s, &[bend_up, on(0, 60)], 24_000);
         assert!(magnitude(&x[4_800..], 293.7) > 10.0 * magnitude(&x[4_800..], 261.6));
+    }
+
+    #[test]
+    fn the_bend_note_can_count_from_the_top() {
+        let bend_up = cc(0, crate::controllers::cc::PITCH_BEND, 1.0);
+        // C4 + E4 + G4, the top note bent up a whole tone to A4.
+        let mut s = sine_just(&[
+            (id::BEND_NOTE, 1.0),
+            (id::BEND_FROM, 1.0),
+            (id::BEND_RANGE, 2.0),
+        ]);
+        let x = render(&mut s, &[bend_up, on(0, 60), on(0, 64), on(0, 67)], 24_000);
+        let m = |hz| magnitude(&x[4_800..], hz);
+        assert!(m(441.0) > 10.0 * m(392.4), "G bent to A");
+        assert!(m(261.6) > 10.0 * m(293.7), "C stays");
+    }
+
+    #[test]
+    fn a_fixed_root_key_turns_dynamic_retuning_off() {
+        // Root D: C is a minor seventh above it (7/4), E a major second (9/8).
+        let mut s = sine_just(&[(id::JUST_ROOT, 2.0), (id::JUST_KEY, 2.0)]);
+        render(&mut s, &[on(0, 60), on(0, 64)], 64);
+        let cents = |r: f32, semis: f32| 12.0 * r.log2() - semis;
+        assert!((just_of(&s, 60).0 - cents(7.0 / 4.0, 10.0)).abs() < 1e-4);
+        assert!((just_of(&s, 64).0 - cents(9.0 / 8.0, 2.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn each_interval_can_take_its_own_ratio() {
+        // A3 + C4: the minor third as 19/16 instead of 6/5.
+        let mut s = sine_just(&[(id::INTERVAL_M2 + 2, 2.0)]);
+        render(&mut s, &[on(0, 57), on(0, 60)], 64);
+        let want = 12.0 * (19.0_f32 / 16.0).log2() - 3.0;
+        assert!((just_of(&s, 60).0 - want).abs() < 1e-4);
+        assert!(just_of(&s, 57).0.abs() < 1e-6, "the root stays");
+        // "Table" keeps the tuning table's ratio.
+        let mut s = sine_just(&[]);
+        render(&mut s, &[on(0, 57), on(0, 60)], 64);
+        assert!((just_of(&s, 60).0 - just_offset(3, false)).abs() < 1e-6);
+        assert_eq!(
+            INTERVAL_NAMES.map(|n| n.len()),
+            INTERVAL_RATIOS.map(|r| r.len() + 1)
+        );
     }
 
     #[test]
