@@ -89,7 +89,8 @@ jobs:
           # Cardinal: only the VST3 synth and effect (the CLAP builds and the main "Cardinal"
           # failed the Windows plugin check: no sound, no editor).
           Get-Plugin 'Cardinal' 'DISTRHO/Cardinal' '(?i)win64.*\.zip$' '' '^Cardinal (Synth|FX)\.vst3$' | Out-Null
-          Get-Plugin 'Dragonfly Reverb' 'michaelwillis/dragonfly-reverb' '(?i)win64.*\.zip$' | Out-Null
+          # Dragonfly: VST3 only (the CLAP builds' editors do not open in the check).
+          Get-Plugin 'Dragonfly Reverb' 'michaelwillis/dragonfly-reverb' '(?i)win64.*\.zip$' '' '\.vst3$' | Out-Null
           if (-not $surge) { throw 'Surge XT could not be fetched' }
           # Surge XT's factory patches and wavetables: the plugins-only zip has none, so take
           # them from the source of the same release ("portable" data folder next to the plugin).
