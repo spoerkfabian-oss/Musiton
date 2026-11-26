@@ -317,6 +317,7 @@ fn effect_types() -> Vec<musiton_ui::device_panel::DeviceType> {
             name: t.name,
             params: t.params,
             uses_samples: false,
+            listed: true,
             presets: Vec::new(),
             drum_param: None,
             root_param: None,
@@ -720,13 +721,20 @@ impl App {
     }
 
     /// Device types for the device panel (built-ins with factory + user presets).
+    /// With a genre set (and "Show all" off) only the genre's instruments are listed and
+    /// only its factory presets shown; user presets always are.
     fn device_types(&self) -> Vec<musiton_ui::device_panel::DeviceType> {
+        let genre = (!self.transport.show_all)
+            .then_some(self.doc.project.genre.as_deref())
+            .flatten()
+            .and_then(musiton_devices::genres::genre);
         musiton_devices::INSTRUMENTS
             .iter()
             .map(|t| {
                 let mut presets: Vec<(String, Vec<(u64, f32)>)> = t
                     .presets
                     .iter()
+                    .filter(|(n, _)| genre.is_none_or(|g| g.has_preset(n)))
                     .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                     .collect();
                 presets.extend(
@@ -741,6 +749,7 @@ impl App {
                     name: t.name,
                     params: t.params,
                     uses_samples: t.uses_samples,
+                    listed: genre.is_none_or(|g| g.has_instrument(t.type_id)),
                     presets,
                     drum_param: sampler.then_some(musiton_devices::sampler::id::DRUM),
                     root_param: sampler.then_some(musiton_devices::sampler::id::ROOT),

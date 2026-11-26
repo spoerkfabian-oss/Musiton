@@ -526,7 +526,8 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - `musiton-app/src/templates.rs`: `TEMPLATES` (name, tooltip, builder) and the shared `assemble()` the demo song now uses too. File → New from template and the command search (Ctrl+K, "template") open an untitled song. Each template is 4 bars, looped, built only from built-in instruments; Phonk and Tekk are separate templates.
 - New presets: polysynth "Phonk cowbell" (808 cowbell: two squares 540 : 800 Hz through a band-pass, played as a melody), "Phonk 808", "Tekk lead", "Hyper supersaw"; drum synth "Phonk", "Tekk", "House".
 - Levels balanced by measurement (no listening in the cloud): tracks −21 … −33 dB RMS, mixes about −18 dB RMS with peaks ≤ −3 dB. The owner should judge the sound; tweaks are cheap.
-- Still to do: sound packs (one-shots in the browser), orchestral/choir (after the sampled instruments), CC0 sample packs.
+- Owner clarification: "own environments" means separate Musiton sections, so a Raw song shows no orchestra. Decisions: per song; filtered with a "Show all" escape. `musiton-devices/src/genres.rs` lists per genre the fitting instruments and factory preset names (the sampler, "Init" and user presets always fit); the transport bar has the selector and "Show all"; `device_types()` filters. File format: new optional `genre` field on the project (absent = all sounds; older files load unchanged, no version bump).
+- Still to do: sound packs (one-shots in the browser, filtered by genre too), orchestral/choir (after the sampled instruments), CC0 sample packs.
 
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

@@ -91,6 +91,8 @@ pub struct Transport {
     pub overdub: bool,
     /// Start or stop playback on the next frame, like the Play button (remote control).
     pub toggle_play: bool,
+    /// List every instrument and preset, not only those of the song's genre.
+    pub show_all: bool,
 }
 
 impl Transport {
@@ -241,6 +243,9 @@ impl Transport {
             }
             ui.separator();
 
+            genre_ui(ui, project, &mut self.show_all, &mut out);
+            ui.separator();
+
             ui.toggle_value(&mut self.overdub, "Overdub")
                 .on_hover_text("MIDI recording: add to existing notes instead of replacing them");
             ui.toggle_value(&mut self.test_tone, "Test tone")
@@ -268,5 +273,35 @@ impl Transport {
             );
         }
         out
+    }
+}
+
+/// The song's genre environment and the "show all" switch.
+fn genre_ui(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    show_all: &mut bool,
+    out: &mut TransportOutput,
+) {
+    use musiton_devices::genres::{genre, GENRES};
+    let current = project.genre.as_deref().and_then(genre);
+    let mut chosen = current.map(|g| g.id);
+    egui::ComboBox::from_id_salt("genre")
+        .selected_text(current.map_or("All sounds", |g| g.name))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut chosen, None, "All sounds");
+            for g in GENRES {
+                ui.selectable_value(&mut chosen, Some(g.id), g.name);
+            }
+        })
+        .response
+        .on_hover_text("Environment: instrument and preset lists show only what fits this genre");
+    if chosen != current.map(|g| g.id) {
+        project.genre = chosen.map(str::to_owned);
+        out.settings_changed = true;
+    }
+    if current.is_some() {
+        ui.checkbox(show_all, "Show all")
+            .on_hover_text("List every instrument and preset, not only this genre's");
     }
 }

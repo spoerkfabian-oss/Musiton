@@ -133,10 +133,17 @@ pub fn preset(type_id: &str, name: &str) -> Vec<(u64, f32)> {
         .unwrap_or_default()
 }
 
-/// Builds a looping project from `parts` (`copies` > 1 repeats every part, for the
+/// Builds a looping project in genre environment `genre` from `parts` (`copies` > 1 repeats every part, for the
 /// performance test).
-pub fn assemble(bpm: f64, bars: i64, copies: usize, parts: impl Fn() -> Vec<Part>) -> Project {
+pub fn assemble(
+    genre: Option<&str>,
+    bpm: f64,
+    bars: i64,
+    copies: usize,
+    parts: impl Fn() -> Vec<Part>,
+) -> Project {
     let mut project = Project {
+        genre: genre.map(str::to_owned),
         tempo: TempoMap::constant(bpm),
         loop_range: Some((Tick(0), Tick(bars * BAR))),
         loop_enabled: true,
@@ -232,7 +239,7 @@ fn chord(root: u8, third: u8) -> Vec<u8> {
 // ---- templates -------------------------------------------------------------------------
 
 fn raw() -> Project {
-    assemble(170.0, 4, 1, || {
+    assemble(Some("raw"), 170.0, 4, 1, || {
         // C#, C#, A, B: power chords the synth tunes pure.
         const ROOTS: [u8; 4] = [37, 37, 33, 35];
         let root = |bar: i64| ROOTS[bar as usize % 4];
@@ -280,7 +287,7 @@ fn raw() -> Project {
 }
 
 fn phonk() -> Project {
-    assemble(130.0, 4, 1, || {
+    assemble(Some("phonk"), 130.0, 4, 1, || {
         // F#m – D – E – C#.
         const ROOTS: [u8; 4] = [30, 26, 28, 25];
         let root = |bar: i64| ROOTS[bar as usize % 4];
@@ -357,7 +364,7 @@ fn phonk() -> Project {
 }
 
 fn tekk() -> Project {
-    assemble(160.0, 4, 1, || {
+    assemble(Some("tekk"), 160.0, 4, 1, || {
         // Am – F – C – G.
         const ROOTS: [u8; 4] = [45, 41, 48, 43];
         let root = |bar: i64| ROOTS[bar as usize % 4];
@@ -424,7 +431,7 @@ fn tekk() -> Project {
 }
 
 fn trap() -> Project {
-    assemble(140.0, 4, 1, || {
+    assemble(Some("trap"), 140.0, 4, 1, || {
         // Cm – Ab – Eb – Bb.
         const ROOTS: [u8; 4] = [48, 44, 51, 46];
         let root = |bar: i64| ROOTS[bar as usize % 4];
@@ -511,7 +518,7 @@ fn trap() -> Project {
 }
 
 fn house() -> Project {
-    assemble(124.0, 4, 1, || {
+    assemble(Some("house"), 124.0, 4, 1, || {
         // Am7 – Fmaj7 – Cmaj7 – G (as seventh chords).
         const ROOTS: [u8; 4] = [57, 53, 48, 55];
         let root = |bar: i64| ROOTS[bar as usize % 4];
@@ -575,7 +582,7 @@ fn house() -> Project {
 }
 
 fn techno() -> Project {
-    assemble(132.0, 4, 1, || {
+    assemble(Some("techno"), 132.0, 4, 1, || {
         vec![
             Part {
                 name: "Acid",
@@ -643,7 +650,7 @@ fn techno() -> Project {
 }
 
 fn hyperpop() -> Project {
-    assemble(160.0, 4, 1, || {
+    assemble(Some("hyperpop"), 160.0, 4, 1, || {
         // E – B – C#m – A.
         const ROOTS: [u8; 4] = [52, 47, 49, 45];
         let root = |bar: i64| ROOTS[bar as usize % 4];
@@ -728,7 +735,7 @@ fn hyperpop() -> Project {
 }
 
 fn hardstyle() -> Project {
-    assemble(150.0, 4, 1, || {
+    assemble(Some("hardstyle"), 150.0, 4, 1, || {
         // Fm – Db – Ab – Eb.
         const ROOTS: [u8; 4] = [41, 37, 44, 39];
         let root = |bar: i64| ROOTS[bar as usize % 4];
@@ -834,6 +841,20 @@ mod tests {
                 let peak = out.iter().flatten().fold(0.0_f32, |m, s| m.max(s.abs()));
                 assert!(peak > 0.02, "{} / {}: silent ({peak})", t.name, track.name);
             }
+        }
+    }
+
+    #[test]
+    fn templates_set_a_known_genre() {
+        for t in TEMPLATES {
+            let g = (t.build)().genre;
+            assert!(
+                g.as_deref()
+                    .and_then(musiton_devices::genres::genre)
+                    .is_some(),
+                "{}: {g:?}",
+                t.name
+            );
         }
     }
 

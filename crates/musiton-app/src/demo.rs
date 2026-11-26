@@ -148,7 +148,7 @@ fn synth_preset(name: &str) -> Vec<(u64, f32)> {
 
 /// Builds a demo project with `copies` copies of each part (1 = the normal demo).
 fn build(copies: usize) -> Project {
-    assemble(112.0, BARS, copies, parts)
+    assemble(None, 112.0, BARS, copies, parts)
 }
 
 /// The demo song.

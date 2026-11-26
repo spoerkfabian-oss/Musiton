@@ -28,6 +28,8 @@ pub struct DeviceType {
     pub params: &'static [ParamInfo],
     /// Plays samples (shows the sample section).
     pub uses_samples: bool,
+    /// Offered in the instrument menu (false: outside the song's genre environment).
+    pub listed: bool,
     /// Presets: (name, values) — factory presets first, then the user's.
     pub presets: Vec<(String, Vec<(u64, f32)>)>,
     /// Id of the "drum mode" parameter, if any.
@@ -186,7 +188,7 @@ fn instrument_menu(
     egui::ComboBox::from_id_salt("instrument_type")
         .selected_text(selected)
         .show_ui(ui, |ui| {
-            for d in types {
+            for d in types.iter().filter(|d| d.listed || d.name == selected) {
                 if ui.selectable_label(d.name == selected, d.name).clicked() {
                     out = Some(DeviceSlot::builtin(slot_id, d.type_id));
                 }

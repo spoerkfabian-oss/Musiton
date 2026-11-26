@@ -25,6 +25,7 @@ A digital audio workstation (DAW) written in Rust. Windows 10/11 first; it also 
 - **Safety:** autosave, crash recovery, a dialog for relinking missing audio files, and error dialogs instead of crashes.
 - **Demo song:** Help → Open demo song.
 - **Genre templates:** File → New from template: Raw, Phonk, Tekk, Trap, House, Techno, Hyperpop, Hardstyle. Each opens a ready song with matching instruments, effects, tempo and a 4-bar example of beat and melody.
+- **Genre environments:** the selector in the transport bar sets the song's genre (templates do it for you); instrument and preset lists then show only what fits (a Raw song shows no orchestra). "Show all" lists everything again.
 
 ## Install (Windows)
 

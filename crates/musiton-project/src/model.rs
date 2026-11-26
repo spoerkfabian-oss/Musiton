@@ -41,6 +41,10 @@ pub struct Project {
     /// Video shown in sync with the song.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video: Option<Video>,
+    /// Genre environment id (see `musiton_devices::genres`): the app then lists only the
+    /// instruments and presets that fit. `None` = everything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
 }
 
 /// A video played in sync with the song (one per project).
@@ -72,6 +76,7 @@ impl Default for Project {
             punch_enabled: false,
             next_id: 1,
             video: None,
+            genre: None,
         }
     }
 }

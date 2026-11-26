@@ -6,6 +6,7 @@ pub mod drums;
 pub mod effects;
 pub mod epiano;
 pub mod fm;
+pub mod genres;
 pub mod organ;
 pub mod pluck;
 pub mod polysynth;
