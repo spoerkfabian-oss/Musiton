@@ -257,6 +257,12 @@ fn chord(root: u8, third: u8) -> Vec<u8> {
 
 // ---- templates -------------------------------------------------------------------------
 
+/// Raw chord velocity: the low notes loudest, as in the reference (root and fifth carry
+/// the sound, the upper overtones colour it).
+fn chord_velocity(pitch: u8) -> u8 {
+    (127 - (i32::from(pitch) - 35) * 2).clamp(50, 127) as u8
+}
+
 fn raw() -> Project {
     assemble(Some("raw"), 120.0, 4, 1, || {
         // Voicings measured from the owner's recording of Aloboi's "Want To Love (Just
@@ -291,7 +297,7 @@ fn raw() -> Project {
                     let length = len * STEP - STEP / 3;
                     chord_of(bar)
                         .iter()
-                        .map(move |&p| note(p, 110, bar * BAR + s * STEP, length))
+                        .map(move |&p| note(p, chord_velocity(p), bar * BAR + s * STEP, length))
                 })
             })
             .collect();

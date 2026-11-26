@@ -13,7 +13,7 @@ use crate::assets::AssetStore;
 use crate::templates::{assemble, note, preset, Part};
 
 /// Bump when the sounds change, so existing packs are made again.
-const PACK_VERSION: &str = "5";
+const PACK_VERSION: &str = "6";
 const SAMPLE_RATE: u32 = 48_000;
 /// Render tempo: one beat = 0.5 s.
 const BPM: f64 = 120.0;

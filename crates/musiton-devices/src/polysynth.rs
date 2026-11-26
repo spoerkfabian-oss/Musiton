@@ -1152,7 +1152,12 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
         "Raw stab",
         &[
             (id::OSC1_LEVEL, 0.9),
-            (id::OSC2_LEVEL, 0.0),
+            // A second saw an octave below: fuller and deeper, still in the overtone series.
+            (id::OSC2_WAVE, 0.0),
+            (id::OSC2_SEMI, -12.0),
+            (id::OSC2_DETUNE, 0.0),
+            (id::OSC2_LEVEL, 0.5),
+            (id::VELOCITY, 1.0),
             (id::FILTER_MODE, 1.0),
             (id::CUTOFF, 40.0),
             (id::RESONANCE, 0.0),
