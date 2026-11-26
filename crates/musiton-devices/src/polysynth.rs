@@ -1156,7 +1156,7 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
             (id::OSC2_WAVE, 0.0),
             (id::OSC2_SEMI, -12.0),
             (id::OSC2_DETUNE, 0.0),
-            (id::OSC2_LEVEL, 0.8),
+            (id::OSC2_LEVEL, 1.0),
             (id::VELOCITY, 1.0),
             // Gentle low-pass: the reference's highs fall off above a few kHz.
             (id::FILTER_MODE, 0.0),

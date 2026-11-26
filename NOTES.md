@@ -579,12 +579,12 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 
 ## Raw sound (owner-approved recipe, 2026-11-26)
 The owner approved this sound ("genau so"). Keep it when building anything in the Raw style:
-- Synth: polysynth preset "Raw stab": saw, a second pure saw an octave below (level 0.8, no detune), no unison, no drift, overtone-series tuning (just intonation, retune from 2 keys), gentle 8 kHz low-pass, attack 2 ms, release 80 ms, full velocity response, mild asymmetric drive.
+- Synth: polysynth preset "Raw stab": saw, a second pure saw an octave below (level 1.0, no detune), no unison, no drift, overtone-series tuning (just intonation, retune from 2 keys), gentle 8 kHz low-pass, attack 2 ms, release 80 ms, full velocity response, mild asymmetric drive.
 - Voicings (`RAW_B`, `RAW_CS`, `RAW_DS`, `RAW_AS` in `templates.rs`): overtone stacks from the second octave to about 1 kHz; low notes loudest (velocity −3 per semitone above B1).
-- Under each chord a "Sine sub" an octave below the root, trim −4 dB.
+- Under each chord a "Sine sub" an octave below the root, trim −2 dB. Owner wants a bit more low end than the reference ("more fullness/depth in the lows"): octave-below saw at 1.0, sub −2 dB; the 20–60 Hz band is now about 3 dB above the reference on purpose.
 - Dry, centred synth; all stereo from a 1.5 s reverb (mix 0.35).
 - Owner: notes should be held, not short, except where they slide from one chord to the next: held chords end a sixteenth-quarter early and glide per voice (0.15–0.4 s) into the next.
-- Templates: Raw (gated sixteenths, sliding 80 ms into each new chord), Raw flow (the owner's mix of slides and ambient: long 1.5-bar and short 2-beat chords in turn, 120 BPM), Raw slides (two beats per chord, 120 BPM), Raw slowed (a bar per chord, half-time drums, 90 BPM), Raw ambient (two bars per chord, no drums, 3 s room, 70 BPM).
+- Templates: Raw (sixteenths without gaps, accented by velocity; the lower four chord notes stay, the upper three move in a wave through the chord's upper tones and their octaves, every sixteenth gliding 60 ms into the next), Raw flow (the owner's mix of slides and ambient: long 1.5-bar and short 2-beat chords in turn, 120 BPM), Raw slides (two beats per chord, 120 BPM), Raw slowed (a bar per chord, half-time drums, 90 BPM), Raw ambient (two bars per chord, no drums, 3 s room, 70 BPM).
 
 ## Self-update (2026-11-26)
 - Owner decisions: check at every start (plus Help → Check for updates…), every push to `main` is an update, support both portable and installed copies.

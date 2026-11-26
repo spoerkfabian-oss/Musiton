@@ -287,8 +287,8 @@ fn raw() -> Project {
     assemble(Some("raw"), 120.0, 4, 1, || {
         const CHORDS: [&[u8]; 4] = [RAW_B, RAW_CS, RAW_DS, RAW_CS];
         let chord_of = |bar: i64| CHORDS.get(bar as usize % 4).copied().unwrap_or(&[]);
-        // Gated sixteenths: about 80 ms on, 40 ms off, some held over two steps.
-        let gate: [(i64, i64); 12] = [
+        // Sixteenths without gaps (some held over two steps), accented by velocity only.
+        let rhythm: [(i64, i64); 12] = [
             (0, 1),
             (1, 1),
             (2, 2),
@@ -304,23 +304,33 @@ fn raw() -> Project {
         ];
         let stabs = (0..4)
             .flat_map(|bar| {
-                gate.into_iter().flat_map(move |(s, len)| {
-                    let length = len * STEP - STEP / 3;
-                    chord_of(bar)
-                        .iter()
-                        .map(move |&p| note(p, chord_velocity(p), bar * BAR + s * STEP, length))
-                })
+                rhythm
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(move |(n, (s, len))| {
+                        // Ends just before the next one: its voices are still sounding, so
+                        // every sixteenth glides out of the one before.
+                        let length = len * STEP - STEP / 8;
+                        let accent = if s % 4 == 0 { 0 } else { 12 };
+                        raw_wave(chord_of(bar), n).into_iter().map(move |p| {
+                            note(
+                                p,
+                                chord_velocity(p).saturating_sub(accent),
+                                bar * BAR + s * STEP,
+                                length,
+                            )
+                        })
+                    })
             })
             .collect();
         vec![
-            // The sixteenths slide into the next chord too.
-            raw_chord_part(stabs, 0.08),
+            raw_chord_part(stabs, 0.06),
             raw_sub_part(
                 seq(4, |bar| {
                     let root = chord_of(bar).first().copied().unwrap_or(36);
                     vec![(0, root - 12, 16, 100)]
                 }),
-                0.08,
+                0.06,
             ),
             drums(
                 "Drums",
@@ -380,7 +390,7 @@ fn raw_sub_part(notes: Vec<Note>, glide: f32) -> Part {
     Part {
         name: "Sub",
         color: [90, 170, 230],
-        trim_db: -4.0,
+        trim_db: -2.0,
         instrument: musiton_devices::POLYSYNTH,
         params,
         effects: Vec::new(),
@@ -406,6 +416,27 @@ fn held_chords(chords: &[(&[u8], i64)]) -> (Vec<Note>, Vec<Note>) {
         at += len * STEP;
     }
     (keys, sub)
+}
+
+/// The `n`-th sixteenth of a Raw chord: the lower four notes stay, the upper three move
+/// like a wave through the chord's upper tones and their octaves (all still overtones of
+/// the root).
+fn raw_wave(voicing: &[u8], n: usize) -> Vec<u8> {
+    let (low, high) = voicing.split_at(voicing.len().min(4));
+    let mut pool: Vec<u8> = high
+        .iter()
+        .copied()
+        .chain(low.iter().skip(2).map(|&p| p + 12))
+        .chain(high.iter().map(|&p| p + 12))
+        .collect();
+    pool.sort_unstable();
+    pool.dedup();
+    const WAVE: [usize; 6] = [0, 1, 2, 3, 2, 1];
+    let start = WAVE[n % WAVE.len()].min(pool.len().saturating_sub(3));
+    low.iter()
+        .copied()
+        .chain(pool.iter().skip(start).take(3).copied())
+        .collect()
 }
 
 fn raw_slides() -> Project {
