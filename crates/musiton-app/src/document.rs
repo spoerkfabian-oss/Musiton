@@ -39,6 +39,12 @@ impl Document {
         }
     }
 
+    /// An unsaved song that starts as `project` (a template); it counts as unchanged
+    /// until edited.
+    pub fn untitled(project: Project) -> Self {
+        Self::new(project, None)
+    }
+
     /// An empty document that pretends to be saved at `path` (for path calculations).
     pub fn with_path(path: Option<PathBuf>) -> Self {
         Self::new(Project::default(), path)

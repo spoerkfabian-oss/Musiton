@@ -22,6 +22,7 @@ mod remote;
 mod session;
 mod settings;
 mod settings_dialog;
+mod templates;
 mod transport;
 mod video_view;
 mod warp;
@@ -195,6 +196,8 @@ fn init_logging() -> Option<PathBuf> {
 #[derive(Debug, Clone, PartialEq)]
 enum Pending {
     New,
+    /// New project from the genre template with this index.
+    Template(usize),
     Open(Option<PathBuf>),
     Quit,
 }
@@ -1195,6 +1198,14 @@ impl App {
                 self.doc = Document::default();
                 self.load_assets();
             }
+            Pending::Template(i) => {
+                if let Some(t) = templates::TEMPLATES.get(i) {
+                    self.stop_and_rewind();
+                    self.doc = Document::untitled((t.build)());
+                    self.load_assets();
+                    self.set_status(format!("New song from the {} template", t.name));
+                }
+            }
             Pending::Open(Some(path)) => self.open_path(&path),
             Pending::Open(None) => {
                 let mut dialog = rfd::FileDialog::new()
@@ -1385,6 +1396,7 @@ impl App {
                 self.save_settings();
             }
             C::Demo => self.open_demo(),
+            C::Template(i) => self.request(Pending::Template(i)),
             C::Shortcuts => self.show_shortcuts = true,
             C::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
@@ -1396,6 +1408,14 @@ impl App {
                 if ui.button("New            Ctrl+N").clicked() {
                     self.request(Pending::New);
                 }
+                ui.menu_button("New from template", |ui| {
+                    for (i, t) in templates::TEMPLATES.iter().enumerate() {
+                        if ui.button(t.name).on_hover_text(t.description).clicked() {
+                            self.request(Pending::Template(i));
+                            ui.close();
+                        }
+                    }
+                });
                 if ui.button("Open…          Ctrl+O").clicked() {
                     self.request(Pending::Open(None));
                 }

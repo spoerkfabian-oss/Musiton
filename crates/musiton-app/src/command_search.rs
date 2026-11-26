@@ -36,6 +36,8 @@ pub enum AppCommand {
     Plugins,
     Theme(Theme),
     Demo,
+    /// New project from the genre template with this index in `templates::TEMPLATES`.
+    Template(usize),
     Shortcuts,
     Quit,
 }
@@ -187,6 +189,54 @@ const ENTRIES: &[Entry] = &[
         AppCommand::Theme(Theme::System),
     ),
     app("Open demo song", "example", "", AppCommand::Demo),
+    app(
+        "New from template: Raw",
+        "genre just intonation distorted",
+        "",
+        AppCommand::Template(0),
+    ),
+    app(
+        "New from template: Phonk",
+        "genre cowbell 808 drift",
+        "",
+        AppCommand::Template(1),
+    ),
+    app(
+        "New from template: Tekk",
+        "genre hardtekk kick",
+        "",
+        AppCommand::Template(2),
+    ),
+    app(
+        "New from template: Trap",
+        "genre hip-hop 808 hi-hat",
+        "",
+        AppCommand::Template(3),
+    ),
+    app(
+        "New from template: House",
+        "genre four on the floor",
+        "",
+        AppCommand::Template(4),
+    ),
+    app(
+        "New from template: Techno",
+        "genre acid",
+        "",
+        AppCommand::Template(5),
+    ),
+    app(
+        "New from template: Hyperpop",
+        "genre supersaw",
+        "",
+        AppCommand::Template(6),
+    ),
+    app(
+        "New from template: Hardstyle",
+        "genre kick supersaw",
+        "",
+        AppCommand::Template(7),
+    ),
     app("Keyboard shortcuts", "help keys", "", AppCommand::Shortcuts),
     app("Quit", "exit close", "", AppCommand::Quit),
 ];

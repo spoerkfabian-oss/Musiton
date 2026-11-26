@@ -478,4 +478,43 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
             (id::VOLUME, 0.7),
         ],
     ),
+    (
+        "Phonk",
+        &[
+            (id::KICK_TUNE, 45.0),
+            (id::KICK_DECAY, 0.8),
+            (id::KICK_PUNCH, 0.5),
+            (id::KICK_CLICK, 0.2),
+            (id::SNARE_TUNE, 200.0),
+            (id::SNARE_TONE, 0.7),
+            (id::SNARE_DECAY, 0.18),
+            (id::CLAP_LEVEL, 0.9),
+            (id::HAT_TONE, 9_000.0),
+            (id::HAT_DECAY, 0.035),
+            (id::PERC_LEVEL, 0.8),
+        ],
+    ),
+    (
+        "Tekk",
+        &[
+            (id::KICK_TUNE, 55.0),
+            (id::KICK_DECAY, 0.35),
+            (id::KICK_PUNCH, 1.0),
+            (id::KICK_CLICK, 0.8),
+            (id::CLAP_LEVEL, 0.8),
+            (id::HAT_TONE, 11_000.0),
+            (id::OPEN_DECAY, 0.25),
+        ],
+    ),
+    (
+        "House",
+        &[
+            (id::KICK_TUNE, 50.0),
+            (id::KICK_DECAY, 0.4),
+            (id::KICK_PUNCH, 0.7),
+            (id::CLAP_DECAY, 0.3),
+            (id::OPEN_DECAY, 0.3),
+            (id::HAT_DECAY, 0.04),
+        ],
+    ),
 ];

@@ -521,5 +521,12 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - New presets: "Raw stab" (play root + fifth + octave, e.g. C#2 G#2 C#3), "Raw reese", "Dirty sub". Measured with a C#2+G#2 chord, its low partials are within a few dB of the reference; the reference is brighter above 1 kHz (its formant moves, automated in the video): use an EQ bell near 1 kHz or automate the cutoff.
 - Sound change: the default drift makes existing polysynth projects sound slightly different (intended; the old sound is drift 0). Goldens re-blessed.
 
+## Phase 18c — Genre templates (2026-11-26)
+- Owner request: own "environments" per genre. Decisions: both project templates and sound packs; sounds synthesized by Musiton plus clean-licence (CC0) samples; every template has an example; genres Raw, Phonk/Tekk, epic orchestral/choir, trap/hip-hop, house/techno, hyperpop/hardstyle.
+- `musiton-app/src/templates.rs`: `TEMPLATES` (name, tooltip, builder) and the shared `assemble()` the demo song now uses too. File → New from template and the command search (Ctrl+K, "template") open an untitled song. Each template is 4 bars, looped, built only from built-in instruments; Phonk and Tekk are separate templates.
+- New presets: polysynth "Phonk cowbell" (808 cowbell: two squares 540 : 800 Hz through a band-pass, played as a melody), "Phonk 808", "Tekk lead", "Hyper supersaw"; drum synth "Phonk", "Tekk", "House".
+- Levels balanced by measurement (no listening in the cloud): tracks −21 … −33 dB RMS, mixes about −18 dB RMS with peaks ≤ −3 dB. The owner should judge the sound; tweaks are cheap.
+- Still to do: sound packs (one-shots in the browser), orchestral/choir (after the sampled instruments), CC0 sample packs.
+
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

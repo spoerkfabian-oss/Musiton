@@ -3,39 +3,14 @@
 
 use std::path::{Path, PathBuf};
 
-use musiton_core::ids::{ClipId, DeviceId, TrackId};
-use musiton_core::{TempoMap, Tick, PPQ};
-use musiton_devices::effects::{compressor, delay, reverb, utility};
+use musiton_devices::effects::{compressor, delay, reverb};
 use musiton_devices::polysynth::id;
-use musiton_project::{
-    Clip, DeviceSlot, MidiClip, Note, Project, ProjectError, Track, TrackKind, EXTENSION,
-};
+use musiton_project::{Note, Project, ProjectError, EXTENSION};
+
+use crate::templates::{assemble, note, preset, Part, BAR, STEP};
 
 /// Length of the demo loop in bars (4/4).
 const BARS: i64 = 8;
-const BAR: i64 = 4 * PPQ;
-const STEP: i64 = PPQ / 4;
-
-/// One instrument part: name, colour, synth settings, effects and notes.
-struct Part {
-    name: &'static str,
-    color: [u8; 3],
-    /// Level correction (dB) by a utility device at the end of the chain.
-    trim_db: f32,
-    synth: &'static [(u64, f32)],
-    effects: Vec<(&'static str, Vec<(u64, f32)>)>,
-    notes: Vec<Note>,
-}
-
-fn note(pitch: u8, velocity: u8, start: i64, length: i64) -> Note {
-    Note {
-        pitch,
-        velocity,
-        start: Tick(start),
-        length: Tick(length),
-        channel: 0,
-    }
-}
 
 /// Notes on every bar for each step in `steps` (16 steps per bar).
 fn pattern(pitch: u8, velocity: u8, steps: &[i64], length: i64) -> Vec<Note> {
@@ -88,7 +63,8 @@ fn parts() -> Vec<Part> {
             name: "Kick",
             color: [220, 90, 80],
             trim_db: 11.0,
-            synth: &[
+            instrument: musiton_devices::POLYSYNTH,
+            params: vec![
                 (id::OSC1_WAVE, 3.0),
                 (id::OSC1_LEVEL, 1.0),
                 (id::CUTOFF, 300.0),
@@ -104,7 +80,8 @@ fn parts() -> Vec<Part> {
             name: "Snare",
             color: [230, 160, 70],
             trim_db: 15.0,
-            synth: &[
+            instrument: musiton_devices::POLYSYNTH,
+            params: vec![
                 (id::OSC1_WAVE, 2.0),
                 (id::OSC1_LEVEL, 0.5),
                 (id::NOISE, 1.0),
@@ -121,7 +98,8 @@ fn parts() -> Vec<Part> {
             name: "Hi-hat",
             color: [230, 210, 90],
             trim_db: 12.0,
-            synth: &[
+            instrument: musiton_devices::POLYSYNTH,
+            params: vec![
                 (id::OSC1_LEVEL, 0.0),
                 (id::NOISE, 1.0),
                 (id::FILTER_MODE, 1.0),
@@ -138,7 +116,8 @@ fn parts() -> Vec<Part> {
             name: "Bass",
             color: [90, 170, 230],
             trim_db: 2.0,
-            synth: preset("Bass"),
+            instrument: musiton_devices::POLYSYNTH,
+            params: synth_preset("Bass"),
             effects: vec![("eq", Vec::new())],
             notes: bass,
         },
@@ -146,7 +125,8 @@ fn parts() -> Vec<Part> {
             name: "Pad",
             color: [150, 110, 220],
             trim_db: -5.0,
-            synth: preset("Warm pad"),
+            instrument: musiton_devices::POLYSYNTH,
+            params: synth_preset("Warm pad"),
             effects: vec![("reverb", vec![(reverb::id::MIX, 0.35)])],
             notes: pad,
         },
@@ -154,72 +134,21 @@ fn parts() -> Vec<Part> {
             name: "Lead",
             color: [100, 200, 140],
             trim_db: 7.0,
-            synth: preset("Pluck"),
+            instrument: musiton_devices::POLYSYNTH,
+            params: synth_preset("Pluck"),
             effects: vec![("delay", vec![(delay::id::MIX, 0.25)])],
             notes: lead,
         },
     ]
 }
 
-fn preset(name: &str) -> &'static [(u64, f32)] {
-    musiton_devices::polysynth::PRESETS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map_or(&[], |(_, p)| p)
+fn synth_preset(name: &str) -> Vec<(u64, f32)> {
+    preset(musiton_devices::POLYSYNTH, name)
 }
 
 /// Builds a demo project with `copies` copies of each part (1 = the normal demo).
 fn build(copies: usize) -> Project {
-    let mut project = Project {
-        tempo: TempoMap::constant(112.0),
-        loop_range: Some((Tick(0), Tick(BARS * BAR))),
-        loop_enabled: true,
-        metronome: false,
-        ..Project::default()
-    };
-    for copy in 0..copies {
-        for part in parts() {
-            let track_id = TrackId(project.alloc_id());
-            let mut synth =
-                DeviceSlot::builtin(DeviceId(project.alloc_id()), musiton_devices::POLYSYNTH);
-            for &(p, v) in part.synth {
-                synth.set_param(p, Some(v));
-            }
-            let mut devices = vec![synth];
-            let mut trim = DeviceSlot::builtin(DeviceId(project.alloc_id()), "utility");
-            trim.set_param(utility::id::GAIN, Some(part.trim_db));
-            for (type_id, params) in &part.effects {
-                let mut fx = DeviceSlot::builtin(DeviceId(project.alloc_id()), type_id);
-                for &(p, v) in params {
-                    fx.set_param(p, Some(v));
-                }
-                devices.push(fx);
-            }
-            devices.push(trim);
-            let mut track = Track {
-                id: track_id,
-                name: if copies == 1 {
-                    part.name.to_owned()
-                } else {
-                    format!("{} {}", part.name, copy + 1)
-                },
-                color: part.color,
-                kind: TrackKind::Instrument,
-                devices,
-                clips: vec![Clip::Midi(MidiClip {
-                    id: ClipId(project.alloc_id()),
-                    start: Tick(0),
-                    length: Tick(BARS * BAR),
-                    notes: part.notes,
-                    cc: Vec::new(),
-                })],
-                ..Track::default()
-            };
-            track.strip.gain_db = -10.0 * (copies as f32).log10();
-            project.tracks.push(track);
-        }
-    }
-    project
+    assemble(112.0, BARS, copies, parts)
 }
 
 /// The demo song.

@@ -15,7 +15,8 @@ Each phase ends with something the owner can **run and test**. "Done when" = acc
 | 16 — Quick wins | done |
 | 17 — More instruments | done (bundled plugins to be confirmed on Windows) |
 | 18 — More effects | done |
-| 18b — Realistic sound | next |
+| 18b — Realistic sound | in progress (polysynth and reference sound done; samples next) |
+| 18c — Genre kits | in progress (owner request 2026-11-26) |
 | 19 | planned (owner decision 2026-11-25). |
 
 Work order from here: phases 18–19 in order; the owner's test of phase 12 (Vital, Valhalla, real sound) and phase 14's fresh-install check whenever the owner has time, with fixes from those tests first.
@@ -167,6 +168,16 @@ The owner finds the built-in instruments too alike and not real; unison/detune n
 - [x] Polysynth sounds more alive: analog-style drift, random start phases, uneven unison spread, mono bass, drive (anti-aliased), just intonation
 - [ ] The same for the other synths (wavetable, strings, FM …)
 - [x] Owner sends reference audio (Google Drive, also videos): measure spectrum, envelope, stereo width and detune and match the presets to it ("Raw stab")
+
+## Phase 18c — Genre kits (owner request 2026-11-26)
+Per genre a project template (File → New from template: tracks, instruments, effects, tempo and a short example of beat and melody) and a sound pack (presets plus one-shot sounds in the browser). Owner decisions: both templates and sound packs; sounds synthesized by Musiton itself, plus free (CC0) samples where the licence is clean; every template has an example.
+- [x] Templates infrastructure (shared with the demo song), File → New from template, command search
+- [x] Raw (just-intonation distorted saws, the owner's reference)
+- [x] Phonk (2022/23 drift phonk: melodic 808 cowbell, distorted 808, Memphis triplet hats) and Tekk (hardtekk: distorted 4/4 kick, offbeat bass, high lead)
+- [x] Trap / hip-hop, house, techno, hyperpop, hardstyle
+- [ ] Sound packs: genre one-shots rendered by Musiton's own synths into the data folder (browser → Sounds), genre presets on the instruments
+- [ ] Epic orchestral / choir: needs the sampled instruments of phase 18b (VSCO-2, Sonatina, a free choir library with a clean licence)
+- [ ] Free CC0 sample packs per genre through the sound library downloader (licence checked per pack)
 
 ## Phase 19 — Bigger features
 - [ ] Chord lane under the ruler; the piano roll can follow it
