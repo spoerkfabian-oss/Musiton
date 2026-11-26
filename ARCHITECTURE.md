@@ -22,7 +22,8 @@ musiton/
 │  ├─ musiton-core/         # time (ticks, samples, TempoMap, TimeSig), ID newtypes, units (dB, pan law),
 │  │                        # AudioData/Peaks, ParamInfo. No dependency on other Musiton crates.
 │  ├─ musiton-dsp/          # pure DSP: oscillators (PolyBLEP, noise), SVF + biquad filters, ADSR,
-│  │                        # delay line, smoothing, FFT, mipmap resampling, WSOLA time-stretch. No threads, no I/O.
+│  │                        # delay line, smoothing, FFT, mipmap resampling, WSOLA time-stretch, anti-aliased
+│  │                        # waveshaper (ADAA). No threads, no I/O.
 │  ├─ musiton-engine/       # real-time engine: AudioNode trait, compiled graph, transport, command ring,
 │  │                        # GC thread, automation, nodes (clip player, MIDI track, strip, FX slot, …)
 │  ├─ musiton-devices/      # built-in instruments (polysynth, sampler, FM, wavetable, acid bass, organ,

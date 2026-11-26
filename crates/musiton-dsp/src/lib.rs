@@ -7,6 +7,7 @@ pub mod fft;
 pub mod filter;
 pub mod osc;
 pub mod resample;
+pub mod shaper;
 pub mod smooth;
 pub mod stretch;
 
