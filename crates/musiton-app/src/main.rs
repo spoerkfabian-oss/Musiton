@@ -799,14 +799,26 @@ impl App {
         else {
             return;
         };
-        let imported =
-            match musiton_io::file::import_audio(&src, &dir, self.doc.project.sample_rate) {
-                Ok(i) => i,
-                Err(e) => {
-                    self.set_status(format!("Loading the sample failed: {e}"));
-                    return;
-                }
-            };
+        self.load_sample_file(track, key, &src, &dir);
+    }
+
+    /// Copies `src` into the project folder `dir` and makes it the sample of the track's
+    /// sampler (pad `key` in drum mode); another instrument is replaced by a sampler.
+    fn load_sample_file(
+        &mut self,
+        track: musiton_core::ids::TrackId,
+        key: Option<u8>,
+        src: &Path,
+        dir: &Path,
+    ) {
+        let imported = match musiton_io::file::import_audio(src, dir, self.doc.project.sample_rate)
+        {
+            Ok(i) => i,
+            Err(e) => {
+                self.set_status(format!("Loading the sample failed: {e}"));
+                return;
+            }
+        };
         let p = &mut self.doc.project;
         let Some(t) = p.track(track) else {
             return;
@@ -1991,10 +2003,23 @@ impl App {
         let Some(dir) = self.doc.dir().map(Path::to_path_buf) else {
             return;
         };
+        // Audio dropped on an instrument track becomes its sample; on a bus or folder it
+        // goes to a new audio track (a clip there would cover the track's notes).
+        let dropped_on = track;
+        let kind = track
+            .and_then(|t| self.doc.project.track(t))
+            .map(|t| t.kind);
+        let track = track.filter(|_| kind == Some(musiton_project::TrackKind::Audio));
         for (i, file) in files.into_iter().enumerate() {
             if !musiton_io::file::is_audio_file(&file) {
                 self.set_status(format!("Not an audio file: {}", file.display()));
                 continue;
+            }
+            if i == 0 && kind == Some(musiton_project::TrackKind::Instrument) {
+                if let Some(t) = dropped_on {
+                    self.load_sample_file(t, None, &file, &dir);
+                    continue;
+                }
             }
             let target = ImportTarget {
                 track: if i == 0 { track } else { None },
