@@ -517,4 +517,22 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
             (id::HAT_DECAY, 0.04),
         ],
     ),
+    (
+        // EDM drop kick: about 50 Hz, long and punchy (owner's reference songs).
+        "Big room",
+        &[
+            (id::KICK_TUNE, 50.0),
+            (id::KICK_DECAY, 0.35),
+            (id::KICK_PUNCH, 1.0),
+            (id::KICK_CLICK, 0.6),
+            (id::SNARE_TUNE, 210.0),
+            (id::SNARE_TONE, 0.5),
+            (id::SNARE_DECAY, 0.2),
+            (id::CLAP_LEVEL, 0.9),
+            (id::CLAP_DECAY, 0.3),
+            (id::HAT_TONE, 10_000.0),
+            (id::OPEN_DECAY, 0.25),
+            (id::CYMBAL_DECAY, 1.5),
+        ],
+    ),
 ];

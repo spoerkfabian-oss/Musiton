@@ -13,7 +13,7 @@ use crate::assets::AssetStore;
 use crate::templates::{assemble, note, preset, Part};
 
 /// Bump when the sounds change, so existing packs are made again.
-const PACK_VERSION: &str = "1";
+const PACK_VERSION: &str = "2";
 const SAMPLE_RATE: u32 = 48_000;
 /// Render tempo: one beat = 0.5 s.
 const BPM: f64 = 120.0;
@@ -219,6 +219,26 @@ fn sounds(id: &str) -> Vec<Sound> {
             ),
             synth("Reese F", "Raw reese", &[29], 1.0, 1.5),
         ],
+        "edm" => [
+            vec![
+                synth("Bass A", "EDM bass", &[33], 1.0, 1.5),
+                with_fx(
+                    synth("Big room lead A", "Big room lead", &[57, 69], 0.4, 1.5),
+                    &[space(0.2)],
+                ),
+                with_fx(
+                    synth("Pluck F#", "Melodic pluck", &[66], 0.2, 1.5),
+                    &[space(0.3)],
+                ),
+                with_fx(
+                    synth("Supersaw chord Am", "Supersaw", &[57, 60, 64], 1.0, 2.0),
+                    &[space(0.25)],
+                ),
+                with_fx(synth("Hard lead A", "Hard lead", &[57], 0.4, 1.0), &[]),
+            ],
+            kit("Big room", false),
+        ]
+        .concat(),
         "orchestral" => vec![
             with_fx(
                 Sound {

@@ -6,8 +6,11 @@
 use musiton_core::ids::{ClipId, DeviceId, TrackId};
 use musiton_core::{TempoMap, Tick, PPQ};
 use musiton_devices::drums::id as dr;
-use musiton_devices::effects::{compressor, delay, reverb, saturation, utility};
-use musiton_project::{Clip, DeviceSlot, MidiClip, Note, Project, Track, TrackKind};
+use musiton_devices::effects::{compressor, delay, limiter, reverb, saturation, utility};
+use musiton_project::{
+    AutoMode, AutoPoint, AutomationLane, Clip, DeviceSlot, MidiClip, Note, OutputRoute,
+    ParamTarget, Project, Track, TrackKind,
+};
 
 /// One bar of 4/4 in ticks.
 pub const BAR: i64 = 4 * PPQ;
@@ -99,6 +102,16 @@ pub const TEMPLATES: &[Template] = &[
         name: "Epic orchestral",
         description: "Strings, horns, timpani and harp (90 BPM, D minor). Uses the VSCO-2 orchestra from Options → Sound library when installed, built-in sounds otherwise",
         build: orchestral,
+    },
+    Template {
+        name: "EDM melodic",
+        description: "Full song (intro, build-up, drop, break, build-up, drop, outro) in the style of Avicii: piano, pluck lead, supersaw chords, pumping bass (128 BPM, F# minor)",
+        build: edm_melodic,
+    },
+    Template {
+        name: "EDM big room",
+        description: "Full song with snare-roll build-ups, noise riser, big room lead and pumping bass (140 BPM, A minor)",
+        build: edm_big_room,
     },
 ];
 
@@ -984,6 +997,534 @@ fn orchestral() -> Project {
     project
 }
 
+// ---- arranged EDM songs ---------------------------------------------------------------
+
+/// Song sections (bars), as measured in the owner's reference songs: intro 8, build-up 8,
+/// drop 16, break 16, build-up 8, drop 16, outro 8.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Intro,
+    Build,
+    Drop,
+    Break,
+    Outro,
+}
+
+/// Bars of an arranged song.
+const SONG_BARS: i64 = 80;
+
+fn section(bar: i64) -> Section {
+    match bar {
+        0..8 => Section::Intro,
+        8..16 | 48..56 => Section::Build,
+        16..32 | 56..72 => Section::Drop,
+        32..48 => Section::Break,
+        _ => Section::Outro,
+    }
+}
+
+/// First bars of the build-ups and drops.
+const BUILDS: [i64; 2] = [8, 48];
+const DROPS: [i64; 2] = [16, 56];
+
+/// Snare roll over a build-up: quarters, eighths, sixteenths, then 32nds, getting louder;
+/// the last beat before the drop stays empty.
+fn snare_roll(key: u8) -> Vec<Note> {
+    let mut out = Vec::new();
+    for start in BUILDS {
+        for b in 0..8 {
+            let per_beat: i64 = match b {
+                0..4 => 1,
+                4..6 => 2,
+                6 => 4,
+                _ => 8,
+            };
+            let beats = if b == 7 { 3 } else { 4 };
+            for beat in 0..beats {
+                for k in 0..per_beat {
+                    let len = PPQ / per_beat;
+                    let vel = (60 + b * 8 + beat * 2).min(127) as u8;
+                    let at = (start + b) * BAR + beat * PPQ + k * len;
+                    out.push(note(key, vel, at, len - 5));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Ids of the track called `name`.
+fn track_id(project: &Project, name: &str) -> Option<TrackId> {
+    project.tracks.iter().find(|t| t.name == name).map(|t| t.id)
+}
+
+/// Pumping: a compressor on each of `targets`, keyed by the track `from` (the kick).
+fn sidechain(project: &mut Project, from: &str, targets: &[&str]) {
+    let Some(kick) = track_id(project, from) else {
+        return;
+    };
+    for name in targets {
+        let id = DeviceId(project.alloc_id());
+        let Some(t) = project.tracks.iter_mut().find(|t| t.name == *name) else {
+            continue;
+        };
+        let mut c = DeviceSlot::builtin(id, "compressor");
+        for (p, v) in [
+            (compressor::id::THRESHOLD, -32.0),
+            (compressor::id::RATIO, 10.0),
+            (compressor::id::ATTACK, 0.0005),
+            (compressor::id::RELEASE, 0.16),
+            (compressor::id::SIDECHAIN, 1.0),
+        ] {
+            c.set_param(p, Some(v));
+        }
+        c.sidechain = Some(kick);
+        // Right after the instrument.
+        t.devices.insert(1.min(t.devices.len()), c);
+    }
+}
+
+/// Automation of parameter `param` of the device at `slot` on track `name`: (bar, value).
+fn automate(project: &mut Project, name: &str, slot: usize, param: u64, points: &[(f64, f32)]) {
+    let Some(t) = project.tracks.iter_mut().find(|t| t.name == name) else {
+        return;
+    };
+    let Some(d) = t.devices.get(slot) else {
+        return;
+    };
+    let info = musiton_devices::instrument_type(d.type_id())
+        .map(|i| i.params)
+        .or_else(|| musiton_devices::effect_type(d.type_id()).map(|e| e.params))
+        .and_then(|ps| ps.get(param as usize).copied());
+    let Some(info) = info else {
+        return;
+    };
+    let target = ParamTarget::Device {
+        device: d.id,
+        param,
+    };
+    add_lane(t, target, points, |v| info.to_normalized(v));
+}
+
+/// Track volume automation on track `name`: (bar, dB).
+fn automate_volume(project: &mut Project, name: &str, points: &[(f64, f32)]) {
+    if let Some(t) = project.tracks.iter_mut().find(|t| t.name == name) {
+        add_lane(t, ParamTarget::Volume, points, |v| {
+            musiton_project::VOLUME_PARAM.to_normalized(v)
+        });
+    }
+}
+
+fn add_lane(t: &mut Track, target: ParamTarget, points: &[(f64, f32)], norm: impl Fn(f32) -> f32) {
+    t.automation.push(AutomationLane {
+        target,
+        points: points
+            .iter()
+            .map(|&(bar, v)| AutoPoint {
+                tick: Tick((bar * BAR as f64) as i64),
+                value: norm(v),
+                curve: 0.0,
+            })
+            .collect(),
+        mode: AutoMode::Read,
+    });
+}
+
+/// Riser over both build-ups: cutoff 300 Hz → 12 kHz, volume −30 → 0 dB, silent elsewhere.
+fn riser_part() -> Part {
+    Part {
+        name: "Riser",
+        color: [200, 200, 200],
+        trim_db: -14.0,
+        instrument: musiton_devices::POLYSYNTH,
+        params: preset(musiton_devices::POLYSYNTH, "Riser"),
+        effects: vec![reverb_fx(0.3)],
+        notes: BUILDS
+            .iter()
+            .map(|&b| note(60, 100, b * BAR, 8 * BAR - 10))
+            .collect(),
+    }
+}
+
+fn riser_automation(project: &mut Project) {
+    let mut cut = Vec::new();
+    let mut vol = Vec::new();
+    for b in BUILDS {
+        let b = b as f64;
+        cut.extend([(b, 300.0), (b + 8.0, 12_000.0)]);
+        vol.extend([(b, -30.0), (b + 7.9, 0.0), (b + 8.0, -60.0)]);
+    }
+    automate(
+        project,
+        "Riser",
+        0,
+        musiton_devices::polysynth::id::CUTOFF,
+        &cut,
+    );
+    automate_volume(project, "Riser", &vol);
+}
+
+/// Drum parts of an arranged song: kick (own track, sidechain source), claps, hats,
+/// crash and the snare roll.
+fn edm_drums(kit: &str) -> Vec<Part> {
+    let kick = seq(SONG_BARS, |bar| match section(bar) {
+        Section::Drop | Section::Outro => vec![
+            (0, key::KICK, 1, 120),
+            (4, key::KICK, 1, 120),
+            (8, key::KICK, 1, 120),
+            (12, key::KICK, 1, 120),
+        ],
+        Section::Intro if bar >= 4 => vec![
+            (0, key::KICK, 1, 110),
+            (4, key::KICK, 1, 110),
+            (8, key::KICK, 1, 110),
+            (12, key::KICK, 1, 110),
+        ],
+        Section::Build if bar % 40 < 14 => vec![
+            (0, key::KICK, 1, 110),
+            (4, key::KICK, 1, 110),
+            (8, key::KICK, 1, 110),
+            (12, key::KICK, 1, 110),
+        ],
+        _ => Vec::new(),
+    });
+    let mut top = seq(SONG_BARS, |bar| match section(bar) {
+        Section::Drop => {
+            let mut v = vec![
+                (4, key::CLAP, 1, 115),
+                (12, key::CLAP, 1, 115),
+                (2, key::OPEN_HAT, 1, 105),
+                (6, key::OPEN_HAT, 1, 105),
+                (10, key::OPEN_HAT, 1, 105),
+                (14, key::OPEN_HAT, 1, 105),
+            ];
+            v.extend([1, 3, 5, 7, 9, 11, 13, 15].map(|s| (s, key::HAT, 1, 70)));
+            v
+        }
+        Section::Outro => (0..16).step_by(2).map(|s| (s, key::HAT, 1, 70)).collect(),
+        _ => Vec::new(),
+    });
+    for b in DROPS.into_iter().chain([32]) {
+        top.push(note(key::CRASH, 110, b * BAR, BAR));
+    }
+    top.extend(snare_roll(key::SNARE));
+    vec![
+        Part {
+            name: "Kick",
+            color: [220, 90, 80],
+            trim_db: 0.0,
+            instrument: "drums",
+            params: preset("drums", kit),
+            effects: vec![drive_fx(6.0, 0.0)],
+            notes: kick,
+        },
+        Part {
+            effects: vec![
+                ("compressor", vec![(compressor::id::THRESHOLD, -14.0)]),
+                reverb_fx(0.15),
+            ],
+            ..drums("Drums", kit, top, 6.0)
+        },
+    ]
+}
+
+/// Whole-bar chords for every bar where `play(section)`.
+fn chords_in(
+    roots: [u8; 4],
+    minor: impl Fn(i64) -> bool,
+    octave: u8,
+    play: impl Fn(Section) -> bool,
+) -> Vec<Note> {
+    seq(SONG_BARS, |bar| {
+        if !play(section(bar)) {
+            return Vec::new();
+        }
+        let r = roots[bar as usize % 4] + octave;
+        let third = if minor(bar) { 3 } else { 4 };
+        [r, r + third, r + 7]
+            .into_iter()
+            .map(|p| (0, p, 16, 80))
+            .collect()
+    })
+}
+
+fn edm_melodic() -> Project {
+    // F#m – D – A – E.
+    const ROOTS: [u8; 4] = [42, 38, 45, 40];
+    let minor = |bar: i64| bar % 4 == 0;
+    let piano_sfz = library_sfz("salamander", "Salamander Grand Piano V3.sfz");
+    let has_piano = piano_sfz.is_some();
+    let mut project = assemble(Some("edm"), 128.0, SONG_BARS, 1, move || {
+        let root = |bar: i64| ROOTS[bar as usize % 4];
+        // Pluck hook (two bars, sixteenths), an original line on the chord tones.
+        let hook = |bar: i64| -> Vec<(i64, u8, i64, u8)> {
+            let r = root(bar) + 24;
+            let third = if minor(bar) { 3 } else { 4 };
+            let line: Vec<(i64, u8)> = if bar % 2 == 0 {
+                vec![
+                    (0, r + 7),
+                    (3, r + 12),
+                    (6, r + 7),
+                    (8, r + third + 12),
+                    (10, r + 12),
+                    (12, r + 7),
+                    (14, r + third),
+                ]
+            } else {
+                vec![
+                    (0, r + 12),
+                    (3, r + 7),
+                    (6, r + third),
+                    (8, r + 7),
+                    (11, r + 12),
+                    (14, r + 14),
+                ]
+            };
+            line.into_iter().map(|(s, p)| (s, p, 2, 100)).collect()
+        };
+        let piano = Part {
+            name: "Piano",
+            color: [240, 240, 240],
+            trim_db: 0.0,
+            instrument: "epiano",
+            params: preset("epiano", "Bright"),
+            effects: vec![reverb_fx(0.3)],
+            notes: seq(SONG_BARS, |bar| {
+                if !matches!(section(bar), Section::Intro | Section::Break) {
+                    return Vec::new();
+                }
+                let r = root(bar) + 12;
+                let third = if minor(bar) { 3 } else { 4 };
+                // Offbeat piano stabs.
+                [0, 3, 6, 10, 12]
+                    .into_iter()
+                    .flat_map(|s| {
+                        [r, r + third, r + 7, r + 12]
+                            .into_iter()
+                            .map(move |p| (s, p, 2, 85))
+                    })
+                    .collect()
+            }),
+        };
+        let mut parts = edm_drums("Big room");
+        parts.extend([
+            sampled(piano_sfz.as_ref(), piano),
+            Part {
+                name: "Pluck",
+                color: [120, 220, 240],
+                trim_db: 6.0,
+                instrument: musiton_devices::POLYSYNTH,
+                params: preset(musiton_devices::POLYSYNTH, "Melodic pluck"),
+                effects: vec![delay_fx(0.25), reverb_fx(0.25)],
+                notes: seq(SONG_BARS, |bar| match section(bar) {
+                    Section::Build | Section::Drop => hook(bar),
+                    Section::Break if bar >= 40 => hook(bar),
+                    _ => Vec::new(),
+                }),
+            },
+            Part {
+                name: "Chords",
+                color: [240, 120, 220],
+                trim_db: 5.0,
+                instrument: musiton_devices::POLYSYNTH,
+                params: preset(musiton_devices::POLYSYNTH, "Supersaw"),
+                effects: vec![reverb_fx(0.25)],
+                notes: chords_in(ROOTS, minor, 12, |s| {
+                    matches!(s, Section::Drop | Section::Break)
+                }),
+            },
+            Part {
+                name: "Bass",
+                color: [90, 170, 230],
+                trim_db: -3.0,
+                instrument: musiton_devices::POLYSYNTH,
+                params: preset(musiton_devices::POLYSYNTH, "EDM bass"),
+                effects: Vec::new(),
+                notes: seq(SONG_BARS, |bar| match section(bar) {
+                    Section::Drop | Section::Build => vec![(0, root(bar) - 12, 16, 105)],
+                    _ => Vec::new(),
+                }),
+            },
+            riser_part(),
+        ]);
+        parts
+    });
+    if has_piano {
+        if let Some(path) = library_sfz("salamander", "Salamander Grand Piano V3.sfz") {
+            set_sfz(&mut project, "Piano", path);
+        }
+    }
+    sidechain(&mut project, "Kick", &["Bass", "Chords"]);
+    riser_automation(&mut project);
+    // The pluck opens up through each build-up.
+    let mut cut = Vec::new();
+    for b in BUILDS {
+        let b = b as f64;
+        cut.extend([(b, 400.0), (b + 8.0, 2_500.0), (b + 8.01, 900.0)]);
+    }
+    automate(
+        &mut project,
+        "Pluck",
+        0,
+        musiton_devices::polysynth::id::CUTOFF,
+        &cut,
+    );
+    master_bus(&mut project, 18.0);
+    project
+}
+
+fn edm_big_room() -> Project {
+    // Am – F – C – G.
+    const ROOTS: [u8; 4] = [45, 41, 48, 43];
+    let minor = |bar: i64| bar % 4 == 0;
+    let mut project = assemble(Some("edm"), 140.0, SONG_BARS, 1, move || {
+        let root = |bar: i64| ROOTS[bar as usize % 4];
+        let hook = |bar: i64| -> Vec<(i64, u8, i64, u8)> {
+            let r = root(bar) + 12;
+            let third = if minor(bar) { 3 } else { 4 };
+            let line: Vec<(i64, u8, i64)> = if bar % 2 == 0 {
+                vec![
+                    (0, r, 2),
+                    (2, r, 1),
+                    (3, r + third, 2),
+                    (6, r, 1),
+                    (8, r + 7, 3),
+                    (11, r + 5, 2),
+                    (14, r + third, 2),
+                ]
+            } else {
+                vec![
+                    (0, r + third, 2),
+                    (2, r + third, 1),
+                    (3, r + 5, 2),
+                    (6, r + third, 1),
+                    (8, r, 4),
+                    (12, r - 2, 2),
+                    (14, r, 2),
+                ]
+            };
+            // Big room leads play the hook with its octave.
+            line.into_iter()
+                .flat_map(|(s, p, l)| [(s, p, l, 110), (s, p + 12, l, 100)])
+                .collect()
+        };
+        let mut parts = edm_drums("Big room");
+        parts.extend([
+            Part {
+                name: "Lead",
+                color: [240, 120, 220],
+                trim_db: 0.0,
+                instrument: musiton_devices::POLYSYNTH,
+                params: preset(musiton_devices::POLYSYNTH, "Big room lead"),
+                effects: vec![reverb_fx(0.2)],
+                notes: seq(SONG_BARS, |bar| match section(bar) {
+                    Section::Drop => hook(bar),
+                    // Chord stabs on the beat while the filter opens.
+                    Section::Build => [0, 4, 8, 12]
+                        .into_iter()
+                        .flat_map(|s| {
+                            let r = root(bar) + 12;
+                            let third = if minor(bar) { 3 } else { 4 };
+                            [r, r + third, r + 7]
+                                .into_iter()
+                                .map(move |p| (s, p, 2, 95))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                }),
+            },
+            Part {
+                name: "Pad",
+                color: [150, 110, 220],
+                trim_db: 0.0,
+                instrument: "strings",
+                params: preset("strings", "Lush strings"),
+                effects: vec![reverb_fx(0.3)],
+                notes: chords_in(ROOTS, minor, 0, |s| {
+                    matches!(s, Section::Intro | Section::Break | Section::Outro)
+                }),
+            },
+            Part {
+                name: "Bass",
+                color: [90, 170, 230],
+                trim_db: -2.0,
+                instrument: musiton_devices::POLYSYNTH,
+                params: preset(musiton_devices::POLYSYNTH, "EDM bass"),
+                effects: Vec::new(),
+                notes: seq(SONG_BARS, |bar| match section(bar) {
+                    Section::Drop => vec![(0, root(bar) - 12, 16, 110)],
+                    _ => Vec::new(),
+                }),
+            },
+            riser_part(),
+        ]);
+        parts
+    });
+    sidechain(&mut project, "Kick", &["Bass", "Lead", "Pad"]);
+    riser_automation(&mut project);
+    let mut cut = Vec::new();
+    for (b, d) in BUILDS.into_iter().zip(DROPS) {
+        cut.extend([
+            (b as f64, 500.0),
+            (d as f64 - 0.01, 9_000.0),
+            (d as f64, 8_000.0),
+        ]);
+    }
+    automate(
+        &mut project,
+        "Lead",
+        0,
+        musiton_devices::polysynth::id::CUTOFF,
+        &cut,
+    );
+    master_bus(&mut project, 18.0);
+    project
+}
+
+/// Mastering like the reference songs (loud and dense): every track goes through a "Master
+/// bus" with a gentle glue compressor and a limiter driven by `drive_db`.
+fn master_bus(project: &mut Project, drive_db: f32) {
+    let id = TrackId(project.alloc_id());
+    let mut glue = DeviceSlot::builtin(DeviceId(project.alloc_id()), "compressor");
+    for (p, v) in [
+        (compressor::id::THRESHOLD, -14.0),
+        (compressor::id::RATIO, 2.0),
+        (compressor::id::ATTACK, 0.01),
+        (compressor::id::RELEASE, 0.2),
+    ] {
+        glue.set_param(p, Some(v));
+    }
+    let mut lim = DeviceSlot::builtin(DeviceId(project.alloc_id()), "limiter");
+    lim.set_param(limiter::id::INPUT, Some(drive_db));
+    lim.set_param(limiter::id::CEILING, Some(-0.3));
+    for t in &mut project.tracks {
+        t.output = OutputRoute::Bus(id);
+    }
+    project.tracks.push(Track {
+        id,
+        name: "Master bus".to_owned(),
+        color: [120, 120, 120],
+        kind: TrackKind::Bus,
+        devices: vec![glue, lim],
+        ..Track::default()
+    });
+}
+
+/// Makes track `name` play the SFZ instrument at `path`.
+fn set_sfz(project: &mut Project, name: &str, path: String) {
+    if let Some(DeviceSlot {
+        kind: musiton_project::DeviceKind::Builtin { sfz, .. },
+        ..
+    }) = project
+        .tracks
+        .iter_mut()
+        .find(|t| t.name == name)
+        .and_then(|t| t.devices.first_mut())
+    {
+        *sfz = Some(path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1008,22 +1549,37 @@ mod tests {
             let peak = mix.iter().flatten().fold(0.0_f32, |m, s| m.max(s.abs()));
             assert!(peak > 0.1 && peak < 1.0, "{}: peak {peak}", t.name);
             for (i, track) in project.tracks.iter().enumerate() {
+                // Each track from its first note (arranged songs start parts later);
+                // soloed, so a master bus it feeds stays audible.
+                let Some(first) = track.clips.iter().find_map(|c| match c {
+                    Clip::Midi(m) => m.notes.iter().map(|n| n.start.0).min(),
+                    _ => None,
+                }) else {
+                    continue;
+                };
                 let mut solo = project.clone();
-                for (k, tr) in solo.tracks.iter_mut().enumerate() {
-                    tr.strip.mute = k != i;
+                if let Some(tr) = solo.tracks.get_mut(i) {
+                    tr.strip.solo = true;
                 }
+                let start = project.tempo.tick_to_sample(first as f64, 48_000.0) as u64;
                 let out = crate::export::render_project(
                     &solo,
                     &AssetStore::default(),
                     &crate::engine_graph::PluginNodes::default(),
-                    0,
+                    start,
                     frames,
                     &|_| {},
                     &AtomicBool::new(false),
                 )
                 .unwrap();
                 let peak = out.iter().flatten().fold(0.0_f32, |m, s| m.max(s.abs()));
-                assert!(peak > 0.02, "{} / {}: silent ({peak})", t.name, track.name);
+                // A riser starts quiet on purpose (its volume is automated upwards).
+                let min = if track.automation.is_empty() {
+                    0.02
+                } else {
+                    0.001
+                };
+                assert!(peak > min, "{} / {}: silent ({peak})", t.name, track.name);
             }
         }
     }

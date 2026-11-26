@@ -243,6 +243,18 @@ const ENTRIES: &[Entry] = &[
         "",
         AppCommand::Template(8),
     ),
+    app(
+        "New from template: EDM melodic",
+        "genre avicii piano pluck dance",
+        "",
+        AppCommand::Template(9),
+    ),
+    app(
+        "New from template: EDM big room",
+        "genre dance festival drop",
+        "",
+        AppCommand::Template(10),
+    ),
     app("Keyboard shortcuts", "help keys", "", AppCommand::Shortcuts),
     app("Quit", "exit close", "", AppCommand::Quit),
 ];

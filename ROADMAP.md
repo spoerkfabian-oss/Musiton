@@ -180,6 +180,8 @@ Per genre a project template (File → New from template: tracks, instruments, e
 - [x] Sound packs: genre one-shots rendered by Musiton's own synths into the data folder (browser → Sounds), genre presets on the instruments
 - [x] Epic orchestral: strings, horns, timpani, harp from VSCO-2 when installed (built-in sounds otherwise)
 - [ ] Choir: waits for a free choir library with a clean licence
+- [x] EDM (owner's 11 reference songs): genre environment, presets (EDM bass, Big room lead, Melodic pluck, Hard lead, Riser, Big room kit), two arranged full-song templates, sound pack
+- [ ] EDM: reach the references' loudness (drops −8 dBFS RMS; templates now −15) and top end (more 2–11 kHz, wider highs)
 - [ ] Free CC0 sample packs per genre through the sound library downloader (licence checked per pack)
 
 ## Phase 19 — Bigger features
