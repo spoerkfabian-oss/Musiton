@@ -171,8 +171,15 @@ fn stop_and_jumps_release_notes_and_live_input_reaches_the_instrument() {
                 key: 72,
                 vel: 1.0
             },
+            // Playing again inside the held note starts it again (chased).
+            EventKind::NoteOn {
+                ch: 0,
+                key: 60,
+                vel: 0.8
+            },
         ]
     );
+    assert_eq!(log.last().map(|e| e.0), Some(50_000), "at the new position");
 }
 
 #[test]

@@ -248,9 +248,11 @@ impl AudioNode for MidiTrack {
                     );
                 }
                 let bit = 1u16 << (note.ch & 15);
-                if (pos..pos + n).contains(&s) {
+                // Started from (or jumped to) the middle of a note: play it from here.
+                let chased = !continuous && s < pos && e > pos;
+                if chased || (pos..pos + n).contains(&s) {
                     self.push(
-                        (s - pos) as usize,
+                        s.saturating_sub(pos) as usize,
                         EventKind::NoteOn {
                             ch: note.ch,
                             key: note.key,
