@@ -140,7 +140,7 @@ pub struct EffectType {
 }
 
 /// All built-in effects.
-pub const EFFECTS: [EffectType; 13] = [
+pub const EFFECTS: [EffectType; 14] = [
     EffectType {
         type_id: "eq",
         name: "EQ",
@@ -219,6 +219,12 @@ pub const EFFECTS: [EffectType; 13] = [
         params: &effects::transient::PARAMS,
         sidechain_param: None,
     },
+    EffectType {
+        type_id: "ducker",
+        name: "Ducker (pumping)",
+        params: &effects::ducker::PARAMS,
+        sidechain_param: None,
+    },
 ];
 
 /// Looks up an effect type.
@@ -254,6 +260,7 @@ pub fn create_effect(
         "autofilter" => Box::<autofilter::AutoFilter>::default(),
         "gate" => Box::<gate::Gate>::default(),
         "transient" => Box::<transient::Transient>::default(),
+        "ducker" => Box::<ducker::Ducker>::default(),
         _ => Box::<utility::Utility>::default(),
     };
     for &(id, value) in params {

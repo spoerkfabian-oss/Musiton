@@ -28,7 +28,7 @@ const HEADROOM: f32 = 0.25;
 /// Vibrato depth (semitones) at full mod wheel.
 const MOD_WHEEL_VIBRATO: f32 = 0.5;
 /// Most unison oscillators per voice and oscillator.
-pub const MAX_UNISON: usize = 7;
+pub const MAX_UNISON: usize = 9;
 
 /// Below this frequency (Hz) the output is mono (side signal high-passed).
 const MONO_BASS_HZ: f32 = 150.0;
@@ -104,6 +104,8 @@ const WIDTH_HZ: f32 = 1_500.0;
 /// Ring buffer for the widener's delay (enough for 0.5 ms at 192 kHz).
 const WIDTH_BUF: usize = 128;
 const ROOTS: &[&str] = &["Lowest note", "Most played"];
+const SLOPES: &[&str] = &["12 dB", "24 dB"];
+const GLIDES: &[&str] = &["From last note", "Each voice"];
 const TUNINGS: &[&str] = &["Just", "Overtone series"];
 const MODES: &[&str] = &["Low-pass", "High-pass", "Band-pass"];
 
@@ -148,10 +150,17 @@ pub mod id {
     pub const BEND_RANGE: u64 = 35;
     pub const BEND_NOTE: u64 = 36;
     pub const WIDTH: u64 = 37;
+    pub const OSC3_LEVEL: u64 = 38;
+    pub const OSC3_SEMI: u64 = 39;
+    pub const SUB: u64 = 40;
+    pub const FILTER_SLOPE: u64 = 41;
+    pub const PITCH_ENV: u64 = 42;
+    pub const PITCH_DECAY: u64 = 43;
+    pub const GLIDE_MODE: u64 = 44;
 }
 
 /// All parameters (index = id).
-pub const PARAMS: [ParamInfo; 38] = [
+pub const PARAMS: [ParamInfo; 45] = [
     ParamInfo::choice(id::OSC1_WAVE, "Osc 1", WAVES, 0),
     ParamInfo::new(id::OSC1_LEVEL, "Osc 1 level", 0.0, 1.0, 0.8),
     ParamInfo::choice(id::OSC2_WAVE, "Osc 2", WAVES, 1),
@@ -208,6 +217,15 @@ pub const PARAMS: [ParamInfo; 38] = [
     ParamInfo::new(id::BEND_RANGE, "Bend range", 0.0, 24.0, 2.0).unit("st"),
     ParamInfo::new(id::BEND_NOTE, "Bend note (0 = all)", 0.0, 8.0, 0.0).int(),
     ParamInfo::new(id::WIDTH, "High width", 0.0, 1.0, 0.0),
+    ParamInfo::new(id::OSC3_LEVEL, "Osc 3 level", 0.0, 1.0, 0.0),
+    ParamInfo::new(id::OSC3_SEMI, "Osc 3 semitones", -24.0, 24.0, 19.0).int(),
+    ParamInfo::new(id::SUB, "Sub (sine −1 oct)", 0.0, 1.0, 0.0),
+    ParamInfo::choice(id::FILTER_SLOPE, "Filter slope", SLOPES, 0),
+    ParamInfo::new(id::PITCH_ENV, "Pitch env", -48.0, 48.0, 0.0).unit("st"),
+    ParamInfo::new(id::PITCH_DECAY, "Pitch decay", 0.001, 2.0, 0.05)
+        .log()
+        .unit("s"),
+    ParamInfo::choice(id::GLIDE_MODE, "Glide mode", GLIDES, 0),
 ];
 
 #[derive(Debug, Clone)]
@@ -215,6 +233,15 @@ struct Voice {
     key: Option<u8>,
     osc1: [BlepOsc; MAX_UNISON],
     osc2: [BlepOsc; MAX_UNISON],
+    /// Third oscillator (osc 1's wave at its own interval).
+    osc3: [BlepOsc; MAX_UNISON],
+    /// Sub oscillator phase (turns).
+    sub: f32,
+    /// Pitch envelope level (1 at note-on, decays to 0).
+    penv: f32,
+    /// Second filter stages for the 24 dB slope.
+    filter2: Svf,
+    filter2_r: Svf,
     /// Left (or mono) filter.
     filter: Svf,
     /// Right filter, used while unison is spread across the stereo field.
@@ -269,9 +296,14 @@ impl Default for Voice {
         Self {
             key: None,
             osc1: phases.clone(),
-            osc2: phases,
+            osc2: phases.clone(),
+            osc3: phases,
+            sub: 0.0,
+            penv: 0.0,
             filter: Svf::default(),
             filter_r: Svf::default(),
+            filter2: Svf::default(),
+            filter2_r: Svf::default(),
             amp: Adsr::default(),
             fenv: Adsr::default(),
             pitch: 0.0,
@@ -444,7 +476,28 @@ impl Polysynth {
         let glide = self.v(id::GLIDE) > 0.0;
         let just = self.v(id::JUST) > 0.5;
         let fresh = (CHORD_WINDOW * self.sample_rate) as u32;
-        let from = self.last_pitch;
+        let mut from = self.last_pitch;
+        // "Each voice" glide: a new note takes over the released voice nearest to it and
+        // slides from there, so a whole chord glides into the next one.
+        let mut idx = idx;
+        if glide && self.v(id::GLIDE_MODE) > 0.5 {
+            let target = f32::from(key);
+            let nearest = self
+                .voices
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.key.is_none() && v.amp.is_active())
+                .min_by(|(_, a), (_, b)| {
+                    (a.pitch - target)
+                        .abs()
+                        .total_cmp(&(b.pitch - target).abs())
+                })
+                .map(|(i, v)| (i, v.pitch));
+            if let Some((i, p)) = nearest {
+                idx = Some(i);
+                from = Some(p);
+            }
+        }
         let clock = self.clock;
         for c in &mut self.played {
             *c *= 0.85;
@@ -463,6 +516,7 @@ impl Polysynth {
             _ => p,
         };
         v.vel_gain = 1.0 - sens + sens * vel;
+        v.penv = 1.0;
         v.age = clock;
         v.pedal_held = false;
         v.fresh = fresh;
@@ -495,7 +549,41 @@ impl Polysynth {
         v.amp.gate_on();
         v.fenv.gate_on();
         self.last_pitch = Some(p);
+        if glide && self.v(id::GLIDE_MODE) > 0.5 {
+            self.order_glides();
+        }
         self.retune(Some(key));
+    }
+
+    /// "Each voice" glide: the notes of a chord arrive one by one, so the nearest-voice
+    /// choice can cross. Reassign the starting pitches of the voices started within
+    /// [`CHORD_WINDOW`] in order: the lowest new note slides from the lowest old one.
+    fn order_glides(&mut self) {
+        let mut idx = [0_usize; VOICES];
+        let mut from = [0.0_f32; VOICES];
+        let mut n = 0;
+        for (i, v) in self.voices.iter().enumerate() {
+            if v.key.is_some() && v.fresh > 0 {
+                if let (Some(a), Some(b)) = (idx.get_mut(n), from.get_mut(n)) {
+                    *a = i;
+                    *b = v.pitch;
+                    n += 1;
+                }
+            }
+        }
+        let (Some(idx), Some(from)) = (idx.get_mut(..n), from.get_mut(..n)) else {
+            return;
+        };
+        from.sort_unstable_by(f32::total_cmp);
+        idx.sort_unstable_by(|&a, &b| {
+            let t = |i: usize| self.voices.get(i).map_or(0.0, |v| v.target);
+            t(a).total_cmp(&t(b))
+        });
+        for (&i, &f) in idx.iter().zip(from.iter()) {
+            if let Some(v) = self.voices.get_mut(i) {
+                v.pitch = f;
+            }
+        }
     }
 
     /// Sets every held voice's just-intonation correction from the chord's root: the
@@ -594,6 +682,18 @@ impl Polysynth {
             0.0
         };
         let osc2_offset = osc2_semi + osc2_just + self.v(id::OSC2_DETUNE) / 100.0;
+        let osc3_semi = self.v(id::OSC3_SEMI).round();
+        let osc3_offset = osc3_semi
+            + if self.v(id::JUST) > 0.5 {
+                just_offset(osc3_semi as i32, self.v(id::TUNING) > 0.5)
+            } else {
+                0.0
+            };
+        let l3 = self.v(id::OSC3_LEVEL);
+        let sub_level = self.v(id::SUB);
+        let steep = self.v(id::FILTER_SLOPE) > 0.5;
+        let pitch_env = self.v(id::PITCH_ENV);
+        let penv_coef = (-1.0 / (self.v(id::PITCH_DECAY).max(0.001) * sr)).exp();
         let retune_k = 1.0 - (-1.0 / (RETUNE_TIME * sr)).exp();
         let mode = FilterMode::from_index(self.v(id::FILTER_MODE));
         let env_amt = self.v(id::FILTER_ENV) * 6.0;
@@ -669,13 +769,16 @@ impl Polysynth {
                 let p = v.pitch
                     + v.just_now
                     + bent
+                    + v.penv * pitch_env
                     + lfo * lfo_pitch
                     + v.drift * DRIFT_WANDER * drift_amt;
+                v.penv *= penv_coef;
                 let (mut sl, mut sr_) = (0.0, 0.0);
-                for (((o1, o2), c), sc) in v
+                for ((((o1, o2), o3), c), sc) in v
                     .osc1
                     .iter_mut()
                     .zip(v.osc2.iter_mut())
+                    .zip(v.osc3.iter_mut())
                     .zip(copies.iter())
                     .zip(v.scatter.iter())
                     .take(unison)
@@ -687,6 +790,10 @@ impl Polysynth {
                         let hz2 = 440.0 * ((p + off + osc2_offset - 69.0) / 12.0).exp2();
                         s += o2.next_sample(w2, hz2 / sr) * l2;
                     }
+                    if l3 > 0.0 {
+                        let hz3 = 440.0 * ((p + off + osc3_offset - 69.0) / 12.0).exp2();
+                        s += o3.next_sample(w1, hz3 / sr) * l3;
+                    }
                     sl += s * c.left;
                     if stereo {
                         sr_ += s * c.right;
@@ -697,23 +804,42 @@ impl Polysynth {
                     sl += n;
                     sr_ += n;
                 }
+                if sub_level > 0.0 {
+                    // A sine an octave down, centred (one per voice, not per unison copy).
+                    v.sub = (v.sub + 440.0 * ((p - 81.0) / 12.0).exp2() / sr).fract();
+                    let x = (v.sub * std::f32::consts::TAU).sin() * sub_level;
+                    sl += x;
+                    sr_ += x;
+                }
                 let fe = v.fenv.next_value();
                 if update {
                     let cut = base_cut * (fe * env_amt + lfo * lfo_cut).exp2();
                     v.filter.set(cut, reso, sr);
-                    if stereo {
-                        v.filter_r.set(cut, reso, sr);
+                    v.filter_r.set(cut, reso, sr);
+                    if steep {
+                        // The second stage is not resonant (a 24 dB slope, one peak).
+                        v.filter2.set(cut, 0.0, sr);
+                        v.filter2_r.set(cut, 0.0, sr);
                     }
                 }
                 let a = v.amp.next_value();
-                let yl = v.filter.process(sl, mode) * a * v.vel_gain;
+                let mut yl = v.filter.process(sl, mode);
+                if steep {
+                    yl = v.filter2.process(yl, mode);
+                }
+                let yl = yl * a * v.vel_gain;
                 if stereo {
+                    let mut yr = v.filter_r.process(sr_, mode);
+                    if steep {
+                        yr = v.filter2_r.process(yr, mode);
+                    }
                     out_l += yl;
-                    out_r += v.filter_r.process(sr_, mode) * a * v.vel_gain;
+                    out_r += yr * a * v.vel_gain;
                 } else {
-                    // Keep the right filter in step so turning the width up mid-note
+                    // Keep the right filters in step so turning the width up mid-note
                     // does not click.
                     v.filter_r = v.filter.clone();
+                    v.filter2_r = v.filter2.clone();
                     out_l += yl;
                     out_r += yl;
                 }
@@ -1081,6 +1207,105 @@ pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
             (id::AMP_S, 0.8),
             (id::AMP_R, 0.25),
             (id::DRIVE, 0.3),
+        ],
+    ),
+    // Measured from the owner's EDM songs (2026-11-26).
+    (
+        // "Turn Up The Bass" intro riff: saws stacked at 0 / +12 / +19, no detune, gated.
+        "Big room riff",
+        &[
+            (id::OSC2_WAVE, 0.0),
+            (id::OSC2_LEVEL, 0.7),
+            (id::OSC2_SEMI, 12.0),
+            (id::OSC2_DETUNE, 0.0),
+            (id::OSC3_LEVEL, 0.45),
+            (id::OSC3_SEMI, 19.0),
+            (id::CUTOFF, 5_000.0),
+            (id::RESONANCE, 0.1),
+            (id::FILTER_ENV, 0.0),
+            (id::AMP_A, 0.015),
+            (id::AMP_D, 0.1),
+            (id::AMP_S, 1.0),
+            (id::AMP_R, 0.02),
+            (id::GLIDE, 0.05),
+            (id::DRIFT, 0.0),
+        ],
+    ),
+    (
+        // "Fly High": 9 saws spread about 65 cents, full width, no filter.
+        "Euphoric supersaw",
+        &[
+            (id::OSC2_WAVE, 0.0),
+            (id::OSC2_LEVEL, 0.4),
+            (id::OSC2_SEMI, 12.0),
+            (id::OSC2_DETUNE, 0.0),
+            (id::UNISON, 9.0),
+            (id::UNISON_DETUNE, 65.0),
+            (id::UNISON_SPREAD, 1.0),
+            (id::CUTOFF, 20_000.0),
+            (id::FILTER_ENV, 0.0),
+            (id::AMP_A, 0.01),
+            (id::AMP_D, 0.3),
+            (id::AMP_S, 0.9),
+            (id::AMP_R, 0.3),
+            (id::DRIFT, 0.2),
+        ],
+    ),
+    (
+        // "Dramma": rolling 16th bass, one saw through a 24 dB low-pass near 350 Hz.
+        "Rolling bass",
+        &[
+            (id::OSC2_LEVEL, 0.0),
+            (id::CUTOFF, 350.0),
+            (id::FILTER_SLOPE, 1.0),
+            (id::RESONANCE, 0.1),
+            (id::FILTER_ENV, 0.3),
+            (id::FILT_A, 0.001),
+            (id::FILT_D, 0.08),
+            (id::FILT_S, 0.2),
+            (id::AMP_A, 0.003),
+            (id::AMP_D, 0.1),
+            (id::AMP_S, 0.7),
+            (id::AMP_R, 0.03),
+            (id::DRIFT, 0.0),
+        ],
+    ),
+    (
+        // "HEADSHOT" intro: dark pad whose whole chord glides into the next, light vibrato.
+        "Gliding pad",
+        &[
+            (id::OSC2_LEVEL, 0.0),
+            (id::CUTOFF, 500.0),
+            (id::FILTER_SLOPE, 1.0),
+            (id::RESONANCE, 0.1),
+            (id::FILTER_ENV, 0.0),
+            (id::GLIDE, 0.4),
+            (id::GLIDE_MODE, 1.0),
+            (id::LFO_RATE, 3.7),
+            (id::LFO_PITCH, 0.05),
+            (id::AMP_A, 0.05),
+            (id::AMP_D, 0.5),
+            (id::AMP_S, 1.0),
+            (id::AMP_R, 0.6),
+            (id::DRIFT, 0.0),
+        ],
+    ),
+    (
+        // "Friday I'm In Luv" / "HEADSHOT" sub: a sine with a little saturation.
+        "Sine sub",
+        &[
+            (id::OSC1_WAVE, 3.0),
+            (id::OSC2_LEVEL, 0.0),
+            (id::CUTOFF, 20_000.0),
+            (id::FILTER_ENV, 0.0),
+            (id::AMP_A, 0.005),
+            (id::AMP_D, 0.3),
+            (id::AMP_S, 1.0),
+            (id::AMP_R, 0.05),
+            (id::DRIVE, 0.25),
+            (id::DRIVE_TYPE, 0.0),
+            (id::VELOCITY, 0.3),
+            (id::DRIFT, 0.0),
         ],
     ),
     (
@@ -1533,6 +1758,105 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0, f32::max);
         assert!(diff < 0.02, "{diff}");
+    }
+
+    #[test]
+    fn osc_3_sub_and_the_24_db_slope() {
+        let sine = |extra: &[(u64, f32)]| {
+            let mut settings = vec![
+                (id::OSC1_WAVE, 3.0),
+                (id::CUTOFF, 20_000.0),
+                (id::FILTER_ENV, 0.0),
+                (id::DRIFT, 0.0),
+            ];
+            settings.extend_from_slice(extra);
+            render(&mut synth(&settings), &[on(0, 57)], 24_000)
+        };
+        // A3 = 220 Hz; osc 3 at +19 st = 659.3 Hz; the sub at 110 Hz.
+        let x = sine(&[(id::OSC3_LEVEL, 1.0), (id::SUB, 1.0)]);
+        let m = |hz| magnitude(&x[4_800..], hz);
+        assert!(m(659.3) > 0.5 * m(220.0), "osc 3");
+        assert!(m(110.0) > 0.5 * m(220.0), "sub");
+        let plain = sine(&[]);
+        assert!(magnitude(&plain[4_800..], 110.0) < 0.01 * magnitude(&plain[4_800..], 220.0));
+        // A saw through a low-pass at 500 Hz: the 24 dB slope takes 2 kHz much further down.
+        let saw = |slope: f32| {
+            render(
+                &mut synth(&[
+                    (id::CUTOFF, 500.0),
+                    (id::RESONANCE, 0.0),
+                    (id::FILTER_ENV, 0.0),
+                    (id::DRIFT, 0.0),
+                    (id::FILTER_SLOPE, slope),
+                ]),
+                &[on(0, 45)],
+                24_000,
+            )
+        };
+        let ratio = |x: &[f32]| magnitude(&x[4_800..], 1_980.0) / magnitude(&x[4_800..], 110.0);
+        let (gentle, steep) = (ratio(&saw(0.0)), ratio(&saw(1.0)));
+        assert!(steep < 0.3 * gentle, "24 dB: {steep} vs 12 dB: {gentle}");
+    }
+
+    #[test]
+    fn pitch_envelope_starts_high_and_falls() {
+        let x = render(
+            &mut synth(&[
+                (id::OSC1_WAVE, 3.0),
+                (id::CUTOFF, 20_000.0),
+                (id::DRIFT, 0.0),
+                (id::PITCH_ENV, 12.0),
+                (id::PITCH_DECAY, 0.02),
+            ]),
+            &[on(0, 57)],
+            24_000,
+        );
+        // Zero crossings per 10 ms: about twice as many at the start as later.
+        let crossings = |a: usize| {
+            x[a..a + 480]
+                .windows(2)
+                .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+                .count()
+        };
+        assert!(crossings(48) >= 3, "starts an octave up: {}", crossings(48));
+        assert!(
+            (2..=3).contains(&crossings(12_000)),
+            "ends at 220 Hz: {}",
+            crossings(12_000)
+        );
+    }
+
+    #[test]
+    fn each_voice_glide_slides_the_chord_into_the_next() {
+        let off = |key| ev(0, EventKind::NoteOff { ch: 0, key });
+        let mut s = synth(&[
+            (id::OSC1_WAVE, 3.0),
+            (id::DRIFT, 0.0),
+            (id::GLIDE, 0.3),
+            (id::GLIDE_MODE, 1.0),
+            (id::AMP_R, 1.0),
+        ]);
+        render(&mut s, &[on(0, 60), on(0, 64)], 9_600);
+        // C+E → D+G: the lower voice slides from C, the upper from E (not both from E).
+        render(&mut s, &[off(60), off(64), on(0, 62), on(0, 67)], 480);
+        let mut pitches: Vec<f32> = s
+            .voices
+            .iter()
+            .filter(|v| v.key.is_some())
+            .map(|v| v.pitch)
+            .collect();
+        pitches.sort_by(f32::total_cmp);
+        assert_eq!(pitches.len(), 2);
+        assert!(
+            pitches[0] < 61.5 && pitches[0] > 60.0,
+            "from C: {}",
+            pitches[0]
+        );
+        assert!(
+            pitches[1] < 66.5 && pitches[1] > 64.0,
+            "from E: {}",
+            pitches[1]
+        );
     }
 
     #[test]

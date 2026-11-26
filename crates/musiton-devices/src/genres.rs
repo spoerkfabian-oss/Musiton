@@ -136,6 +136,8 @@ pub const GENRES: &[Genre] = &[
         instruments: &["polysynth", "drums", "acid", "wavetable", "strings", "fm"],
         presets: &[
             "Bass",
+            "Rolling bass",
+            "Sine sub",
             "Warm pad",
             "Supersaw",
             "Squelch",
@@ -155,6 +157,8 @@ pub const GENRES: &[Genre] = &[
         instruments: &["polysynth", "drums", "pluck", "wavetable", "fm"],
         presets: &[
             "Hyper supersaw",
+            "Euphoric supersaw",
+            "Gliding pad",
             "Supersaw",
             "Phonk 808",
             "Dirty sub",
@@ -196,6 +200,11 @@ pub const GENRES: &[Genre] = &[
         presets: &[
             "EDM bass",
             "Big room lead",
+            "Big room riff",
+            "Euphoric supersaw",
+            "Rolling bass",
+            "Gliding pad",
+            "Sine sub",
             "Melodic pluck",
             "Hard lead",
             "Riser",

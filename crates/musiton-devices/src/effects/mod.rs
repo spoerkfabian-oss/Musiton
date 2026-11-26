@@ -6,6 +6,7 @@
 pub mod autofilter;
 pub mod compressor;
 pub mod delay;
+pub mod ducker;
 pub mod eq;
 pub mod gate;
 pub mod limiter;

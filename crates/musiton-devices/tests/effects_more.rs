@@ -26,6 +26,7 @@ fn golden_renders() {
         "autofilter",
         "gate",
         "transient",
+        "ducker",
     ] {
         let out = render(name, &[], &input);
         assert!(out.iter().flatten().all(|s| s.is_finite()), "{name}");

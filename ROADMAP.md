@@ -168,6 +168,7 @@ The owner finds the built-in instruments too alike and not real; unison/detune n
 - [x] More libraries: real drum kits (Virtuosity, Big Rusty), basses (Black and Blue, Meatbass), guitars (Black and Green), all CC0; the sample instrument reads their controller modulation, crossfades, velocity curves, hold and release decay
 - [ ] Still missing: a free choir (none with a clean licence found yet), Sonatina (licence to check)
 - [x] Polysynth sounds more alive: analog-style drift, random start phases, uneven unison spread, mono bass, drive (anti-aliased), just intonation
+- [x] Polysynth for the owner's EDM songs: 9-voice unison, osc 3, sine sub, 24 dB slope, pitch envelope, per-voice chord glide; Ducker effect; presets Big room riff, Euphoric supersaw, Rolling bass, Gliding pad, Sine sub
 - [x] Aloboi sound re-measured and rebuilt (clean just-intonation saws); Alobend-like root detection, retune threshold, overtone tuning, single-note pitch bend, high-band width; pitch bend through the whole app
 - [x] The same for the wavetable synth and the string ensemble: "Analog drift" knob (pitch wander, uneven unison/detune, random start phases), shared `Drift` in `voices.rs`
 - [ ] FM, electric piano, organ, pluck: check by ear whether drift helps (they model instruments that stay in tune)
