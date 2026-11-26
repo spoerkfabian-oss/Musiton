@@ -18,6 +18,8 @@ pub const BAR: i64 = 4 * PPQ;
 pub const STEP: i64 = PPQ / 4;
 
 /// General MIDI drum keys of the built-in drum synth.
+mod raw_song;
+
 mod key {
     pub const KICK: u8 = 36;
     pub const SNARE: u8 = 38;
@@ -82,6 +84,11 @@ pub const TEMPLATES: &[Template] = &[
         name: "Raw flow",
         description: "The Raw sound with long and short chords in turn (1.5 bars, 2 beats), all sliding, 120 BPM",
         build: raw_flow,
+    },
+    Template {
+        name: "Raw song",
+        description: "A whole original song in the Raw sound: D major with dark borrowed chords, lead melody with slides, 80 bars at 120 BPM",
+        build: raw_song::raw_song,
     },
     Template {
         name: "Phonk",
@@ -1596,7 +1603,7 @@ fn edm_melodic() -> Project {
         musiton_devices::polysynth::id::CUTOFF,
         &cut,
     );
-    master_bus(&mut project, 20.0);
+    master_bus(&mut project, 20.0, true);
     project
 }
 
@@ -1704,13 +1711,15 @@ fn edm_big_room() -> Project {
         musiton_devices::polysynth::id::CUTOFF,
         &cut,
     );
-    master_bus(&mut project, 20.0);
+    master_bus(&mut project, 20.0, true);
     project
 }
 
 /// Mastering like the reference songs (loud and dense): every track goes through a "Master
 /// bus" with a gentle glue compressor and a limiter driven by `drive_db`.
-fn master_bus(project: &mut Project, drive_db: f32) {
+/// Master chain: glue compressor, soft clipper and limiter (input `drive_db`); `colour`
+/// adds the EDM references' brighter, wider top end.
+fn master_bus(project: &mut Project, drive_db: f32, colour: bool) {
     let id = TrackId(project.alloc_id());
     let mut glue = DeviceSlot::builtin(DeviceId(project.alloc_id()), "compressor");
     for (p, v) in [
@@ -1750,7 +1759,11 @@ fn master_bus(project: &mut Project, drive_db: f32) {
         name: "Master bus".to_owned(),
         color: [120, 120, 120],
         kind: TrackKind::Bus,
-        devices: vec![tone, width, glue, clip, lim],
+        devices: if colour {
+            vec![tone, width, glue, clip, lim]
+        } else {
+            vec![glue, clip, lim]
+        },
         // Makes up the −3 dB centre pan law of this strip and the master strip, so the
         // limiter's ceiling is the song's peak.
         strip: ChannelStrip {

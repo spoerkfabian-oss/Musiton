@@ -36,7 +36,7 @@ musiton/
 │  ├─ musiton-plugin-host/  # VST3 + CLAP hosting (scanning, instances); the only crate allowed to use `unsafe`
 │  └─ musiton-app/          # the `musiton` binary: wires everything; settings, autosave, crash recovery,
 │                           # project → engine graph translation, export, demo song and genre templates
-│                           # (`templates.rs`, one builder for both), genre sound packs, sound library
+│                           # (`templates.rs`, one builder for both; `templates/raw_song.rs` is a whole arranged song), genre sound packs, sound library
 │                           # downloads (`library.rs`: ureq + zip), SFZ instruments read on worker
 │                           # threads (`assets.rs`: `SfzLoader`), self-update from GitHub
 │                           # releases (`update.rs`), installer config;

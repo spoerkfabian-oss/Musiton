@@ -586,6 +586,13 @@ The owner approved this sound ("genau so"). Keep it when building anything in th
 - Owner: notes should be held, not short, except where they slide from one chord to the next: held chords end a sixteenth-quarter early and glide per voice (0.15–0.4 s) into the next.
 - Templates: Raw (sixteenths without gaps, accented by velocity, gliding 60 ms into each new chord; the owner rejected moving upper notes), Raw flow (the owner's mix of slides and ambient: long 1.5-bar and short 2-beat chords in turn, 120 BPM), Raw slides (two beats per chord, 120 BPM), Raw slowed (a bar per chord, half-time drums, 90 BPM), Raw ambient (two bars per chord, no drums, 3 s room, 70 BPM).
 
+## Raw song (2026-11-26)
+- Owner asked for a whole original song in the Aloboi style, "longing/warm" mixed with "dark", 2–3 minutes, as a template plus a WAV, with agents for the music theory. Two agents designed it (harmony + melody, rhythm + arrangement); their data was checked by script and is in `crates/musiton-app/src/templates/raw_song.rs`.
+- Harmony: D major with chords borrowed from D minor, all overtone stacks over roots A1–E2: Dmaj9, Dm9, A7 and A7sus2 (natural seventh), Bbmaj9, C9, Bm9 (19/16 minor third), E9, Ebmaj9#11 (11th harmonic). Drop: long/short chords (24 + 8 sixteenths); Drop 2 darkens once to Dm9 and resolves Bm9 → Bb → C → D. It avoids the "Want To Love" progression.
+- Arrangement: intro 8 (held), verse 16 (held, then long/short flow), build 8 (held → quarters → eighths → sixteenths, kick and snare rising, sub out in the last bar), drop 16 (gapless gated chords with a 3+3+2 second bar), break 8 (held, quiet lead), drop 2 16 (fuller drums), outro 8; per-bar level automation per track.
+- Lead melody (drops and break): the lead plays single notes, so it cannot find the chord root itself; its "Fixed root key" is automated to each chord's root half a sixteenth before the change, which keeps it pure (G5 over A7 measured at 770.0 Hz = 7/4). Marked notes slide (glide automated to 0.12 s only around them).
+- Master: `master_bus(…, colour: false)`: glue, clipper, limiter (+12 dB) without the EDM high shelf and widening, so the Raw sound stays dry and centred; drop about −9 dBFS RMS, crest 8.9 dB (reference −8 dBFS, 7.6 dB).
+
 ## Self-update (2026-11-26)
 - Owner decisions: check at every start (plus Help → Check for updates…), every push to `main` is an update, support both portable and installed copies.
 - `installer.yml` publishes each `main` build as GitHub release `build-<run number>` (assets `Musiton-portable.zip`, `Musiton-setup.exe`, latest five kept) and compiles the run number in as `MUSITON_BUILD`. The repository is public, so the app reads `releases/latest` without a token.
