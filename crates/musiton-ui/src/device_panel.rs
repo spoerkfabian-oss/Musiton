@@ -17,6 +17,9 @@ pub const FIRST_PAD: u8 = 36;
 /// Number of drum pads shown.
 pub const PADS: u8 = 16;
 
+/// A quick-setting button: (label, tooltip, parameter values it sets).
+pub type QuickSetting = (&'static str, &'static str, &'static [(u64, f32)]);
+
 /// A device type the panel can offer.
 #[derive(Debug, Clone)]
 pub struct DeviceType {
@@ -34,6 +37,8 @@ pub struct DeviceType {
     pub sfz: bool,
     /// Presets: (name, values) — factory presets first, then the user's.
     pub presets: Vec<(String, Vec<(u64, f32)>)>,
+    /// Quick settings: buttons that set these parameters and keep all others.
+    pub quick: &'static [QuickSetting],
     /// Id of the "drum mode" parameter, if any.
     pub drum_param: Option<u64>,
     /// Id of the "root key" parameter, if any.
@@ -397,6 +402,17 @@ impl DevicePanel {
                     }
                 }
             });
+            for (name, tip, values) in ty.quick {
+                if ui.button(*name).on_hover_text(*tip).clicked() {
+                    let mut d = slot
+                        .clone()
+                        .unwrap_or_else(|| DeviceSlot::builtin(slot_id, ty.type_id));
+                    for (p, v) in *values {
+                        d.set_param(*p, Some(*v));
+                    }
+                    actions.push(replace_instrument(d));
+                }
+            }
             ui.add(
                 egui::TextEdit::singleline(&mut self.preset_name)
                     .hint_text("preset name")

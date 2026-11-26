@@ -970,6 +970,28 @@ impl AudioNode for Polysynth {
     }
 }
 
+/// A quick setting: (button, tooltip, parameter values it sets).
+pub type QuickSetting = (&'static str, &'static str, &'static [(u64, f32)]);
+
+/// Quick settings for the device panel: (button, tooltip, values); other knobs stay.
+pub const QUICK: &[QuickSetting] = &[(
+    "Pure",
+    "Just intonation without beating: pure-tuned chords, no detune, drift, unison or \
+     pitch wobble, filter fully open (the Raw stab sound)",
+    &[
+        (id::JUST, 1.0),
+        (id::JUST_KEYS, 2.0),
+        (id::OSC2_DETUNE, 0.0),
+        (id::UNISON, 1.0),
+        (id::DRIFT, 0.0),
+        (id::LFO_PITCH, 0.0),
+        (id::FILTER_MODE, 1.0),
+        (id::CUTOFF, 20.0),
+        (id::RESONANCE, 0.0),
+        (id::FILTER_ENV, 0.0),
+    ],
+)];
+
 /// Factory presets.
 pub const PRESETS: &[(&str, &[(u64, f32)])] = &[
     ("Init", &[]),
@@ -1580,6 +1602,33 @@ mod tests {
         // 220 Hz ± 50 cents ≈ 213.7 … 226.5 Hz.
         let side = |x: &[f32]| magnitude(&x[4_800..43_200], 213.7);
         assert!(side(&seven[0]) > side(&one[0]) * 10.0);
+    }
+
+    #[test]
+    fn the_pure_quick_setting_removes_beating() {
+        let base = [
+            (id::OSC2_LEVEL, 0.7),
+            (id::OSC2_DETUNE, 12.0),
+            (id::UNISON, 3.0),
+            (id::DRIFT, 0.5),
+            (id::AMP_A, 0.002),
+            (id::AMP_S, 1.0),
+        ];
+        // Loudness swing of a held C major chord after the attack, in windows of four
+        // periods of the pure chord (4:5:6 over C3 / 4 = 32.7 Hz).
+        let swing = |settings: &[(u64, f32)]| {
+            let mut s = synth(settings);
+            let out = render(&mut s, &[on(0, 48), on(0, 52), on(0, 55)], 72_000);
+            let w: Vec<f32> = out[12_000..].chunks_exact(5_871).map(rms).collect();
+            let (lo, hi) = w
+                .iter()
+                .fold((f32::MAX, 0.0_f32), |(l, h), &x| (l.min(x), h.max(x)));
+            (hi - lo) / hi
+        };
+        let pure: Vec<(u64, f32)> = base.iter().chain(QUICK[0].2).copied().collect();
+        let (before, after) = (swing(&base), swing(&pure));
+        assert!(before > 0.2, "{before}");
+        assert!(after < 0.01, "{after}");
     }
 
     #[test]

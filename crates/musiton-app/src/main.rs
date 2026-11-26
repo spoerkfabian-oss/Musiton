@@ -332,6 +332,7 @@ fn effect_types() -> Vec<musiton_ui::device_panel::DeviceType> {
             drum_param: None,
             root_param: None,
             sidechain_param: t.sidechain_param,
+            quick: &[],
         })
         .collect()
 }
@@ -770,6 +771,11 @@ impl App {
                     drum_param: sampler.then_some(musiton_devices::sampler::id::DRUM),
                     root_param: sampler.then_some(musiton_devices::sampler::id::ROOT),
                     sidechain_param: None,
+                    quick: if t.type_id == musiton_devices::POLYSYNTH {
+                        musiton_devices::polysynth::QUICK
+                    } else {
+                        &[]
+                    },
                 }
             })
             .collect()
