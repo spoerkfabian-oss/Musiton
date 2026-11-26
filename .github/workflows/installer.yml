@@ -85,10 +85,10 @@ jobs:
           }
           $surge = Get-Plugin 'Surge XT' 'surge-synthesizer/releases-xt' 'win64.*pluginsonly.*\.zip$' 'surge-synthesizer/surge'
           Get-Plugin 'Dexed' 'asb2m10/dexed' '(?i)win.*\.zip$' | Out-Null
-          Get-Plugin 'sfizz' 'sfztools/sfizz' '(?i)win64.*\.zip$' | Out-Null
           # Cardinal: only the VST3 synth and effect (the CLAP builds and the main "Cardinal"
-          # failed the Windows plugin check: no sound, no editor).
-          Get-Plugin 'Cardinal' 'DISTRHO/Cardinal' '(?i)win64.*\.zip$' '' '^Cardinal (Synth|FX)\.vst3$' | Out-Null
+          # failed the Windows plugin check: no sound, no editor). The bundles are named
+          # CardinalSynth.vst3 and CardinalFX.vst3.
+          Get-Plugin 'Cardinal' 'DISTRHO/Cardinal' '(?i)win64.*\.zip$' '' '^Cardinal(Synth|FX)\.vst3$' | Out-Null
           # Dragonfly: VST3 only (the CLAP builds' editors do not open in the check).
           Get-Plugin 'Dragonfly Reverb' 'michaelwillis/dragonfly-reverb' '(?i)win64.*\.zip$' '' '\.vst3$' | Out-Null
           if (-not $surge) { throw 'Surge XT could not be fetched' }
