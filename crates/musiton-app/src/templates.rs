@@ -79,6 +79,11 @@ pub const TEMPLATES: &[Template] = &[
         build: raw_ambient,
     },
     Template {
+        name: "Raw flow",
+        description: "The Raw sound with long and short chords in turn (1.5 bars, 2 beats), all sliding, 120 BPM",
+        build: raw_flow,
+    },
+    Template {
         name: "Phonk",
         description: "2022/23 drift phonk: melodic 808 cowbell, distorted 808, Memphis hats (130 BPM, F# minor)",
         build: phonk,
@@ -308,13 +313,14 @@ fn raw() -> Project {
             })
             .collect();
         vec![
-            raw_chord_part(stabs, 0.0),
+            // The sixteenths slide into the next chord too.
+            raw_chord_part(stabs, 0.08),
             raw_sub_part(
                 seq(4, |bar| {
                     let root = chord_of(bar).first().copied().unwrap_or(36);
                     vec![(0, root - 12, 16, 100)]
                 }),
-                0.0,
+                0.08,
             ),
             drums(
                 "Drums",
@@ -454,6 +460,36 @@ fn raw_slowed() -> Project {
                     hits(8, key::KICK, 115, &[0, 6], 1),
                     hits(8, key::SNARE, 105, &[8], 1),
                     hits(8, key::HAT, 60, &[4, 12], 1),
+                ]
+                .concat(),
+                8.0,
+            ),
+        ]
+    })
+}
+
+fn raw_flow() -> Project {
+    assemble(Some("raw"), 120.0, 8, 1, || {
+        let (keys, sub) = held_chords(&[
+            (RAW_B, 24),
+            (RAW_CS, 8),
+            (RAW_DS, 24),
+            (RAW_CS, 8),
+            (RAW_AS, 24),
+            (RAW_B, 8),
+            (RAW_CS, 24),
+            (RAW_DS, 8),
+        ]);
+        vec![
+            raw_chord_part(keys, 0.2),
+            raw_sub_part(sub, 0.2),
+            drums(
+                "Drums",
+                "Punchy",
+                [
+                    hits(8, key::KICK, 120, &[0, 10], 1),
+                    hits(8, key::SNARE, 110, &[8], 1),
+                    hits(8, key::HAT, 70, &[2, 6, 10, 14], 1),
                 ]
                 .concat(),
                 8.0,
