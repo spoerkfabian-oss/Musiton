@@ -56,28 +56,28 @@ impl AssetStore {
                 }
             }
         }
+        failed
+    }
+
+    /// SFZ instruments the project uses that are not loaded yet (each path once).
+    pub fn missing_sfz(&self, project: &Project) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
         for path in project
             .tracks
             .iter()
             .filter_map(|t| t.devices.first()?.sfz())
         {
-            if let Err(e) = self.load_sfz(path) {
-                tracing::error!("cannot load {path}: {e}");
+            if !self.sfz.contains_key(path) && !out.iter().any(|p| p == path) {
+                out.push(path.to_owned());
             }
         }
-        failed
+        out
     }
 
-    /// Reads an SFZ instrument and decodes its samples (once per path).
-    pub fn load_sfz(&mut self, path: &str) -> Result<usize, String> {
-        if let Some(r) = self.sfz.get(path) {
-            return Ok(r.regions.len());
-        }
-        let loaded = load_sfz_file(Path::new(path))?;
-        let n = loaded.regions.len();
-        self.sfz.insert(path.to_owned(), Arc::new(loaded));
+    /// Adds a loaded SFZ instrument (the graph is rebuilt with it).
+    pub fn insert_sfz(&mut self, path: String, loaded: LoadedSfz) {
+        self.sfz.insert(path, Arc::new(loaded));
         self.generation += 1;
-        Ok(n)
     }
 
     /// A loaded SFZ instrument.
@@ -213,6 +213,60 @@ impl Importer {
     /// Number of imports still running.
     pub fn running(&self) -> usize {
         self.running
+    }
+}
+
+/// A finished background SFZ load: the path and the instrument or an error.
+pub type SfzDone = (String, Result<LoadedSfz, String>);
+
+/// Reads SFZ instruments on worker threads (large libraries take seconds to decode).
+pub struct SfzLoader {
+    tx: mpsc::Sender<SfzDone>,
+    rx: mpsc::Receiver<SfzDone>,
+    pending: Vec<String>,
+}
+
+impl Default for SfzLoader {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self {
+            tx,
+            rx,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl SfzLoader {
+    /// Starts loading `path` unless it is already loading.
+    pub fn start(&mut self, path: String) {
+        if self.pending.contains(&path) {
+            return;
+        }
+        let tx = self.tx.clone();
+        let p = path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("musiton-sfz".into())
+            .spawn(move || {
+                let result = load_sfz_file(Path::new(&p));
+                let _ = tx.send((p, result));
+            });
+        match spawned {
+            Ok(_) => self.pending.push(path),
+            Err(e) => tracing::error!("cannot start SFZ loading thread: {e}"),
+        }
+    }
+
+    /// Loads that finished since the last call.
+    pub fn finished(&mut self) -> Vec<SfzDone> {
+        let done: Vec<SfzDone> = self.rx.try_iter().collect();
+        self.pending.retain(|p| done.iter().all(|(d, _)| d != p));
+        done
+    }
+
+    /// Whether any instrument is still loading.
+    pub fn busy(&self) -> bool {
+        !self.pending.is_empty()
     }
 }
 
@@ -378,11 +432,9 @@ mod sfz_tests {
         .unwrap();
         let path = sfz.to_string_lossy().into_owned();
         let mut assets = AssetStore::default();
-        assert_eq!(
-            assets.load_sfz(&path),
-            Ok(1),
-            "the missing sample is skipped"
-        );
+        let loaded = load_sfz_file(Path::new(&path)).unwrap();
+        assert_eq!(loaded.regions.len(), 1, "the missing sample is skipped");
+        assets.insert_sfz(path.clone(), loaded);
 
         let mut project = crate::templates::assemble(None, 120.0, 1, 1, || {
             vec![crate::templates::Part {
@@ -402,6 +454,11 @@ mod sfz_tests {
         {
             *sfz = Some(path.clone());
         }
+        assert!(assets.missing_sfz(&project).is_empty());
+        assert_eq!(
+            AssetStore::default().missing_sfz(&project),
+            vec![path.clone()]
+        );
         let out = crate::export::render_project(
             &project,
             &assets,
@@ -414,6 +471,24 @@ mod sfz_tests {
         .unwrap();
         let peak = out[0].iter().fold(0.0_f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.05, "peak {peak}");
+
+        // In the background: the loader reports the same instrument, once per path.
+        let mut loader = SfzLoader::default();
+        loader.start(path.clone());
+        loader.start(path.clone());
+        assert!(loader.busy());
+        let mut done = Vec::new();
+        for _ in 0..500 {
+            done.extend(loader.finished());
+            if !loader.busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!loader.busy());
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].0, path);
+        assert_eq!(done[0].1.as_ref().map(|l| l.regions.len()), Ok(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

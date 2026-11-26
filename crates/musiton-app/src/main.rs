@@ -232,6 +232,8 @@ struct App {
     command_search: command_search::CommandSearch,
     assets: AssetStore,
     importer: Importer,
+    /// SFZ instruments being read in the background.
+    sfz_loader: assets::SfzLoader,
     relink: relink::RelinkDialog,
     /// Background conversion of the project's audio to the device rate.
     converting: Option<std::sync::mpsc::Receiver<assets::Converted>>,
@@ -397,6 +399,7 @@ impl App {
             command_search: command_search::CommandSearch::default(),
             assets: AssetStore::default(),
             importer: Importer::default(),
+            sfz_loader: assets::SfzLoader::default(),
             relink: relink::RelinkDialog::default(),
             converting: None,
             conversion_failed: std::collections::HashSet::new(),
@@ -854,9 +857,9 @@ impl App {
             return;
         };
         let path_str = path.to_string_lossy().into_owned();
-        if let Err(e) = self.assets.load_sfz(&path_str) {
-            self.set_status(format!("Loading {} failed: {e}", path.display()));
-            return;
+        // The track gets the instrument now; it plays once the samples are read.
+        if self.assets.sfz(&path_str).is_none() {
+            self.sfz_loader.start(path_str.clone());
         }
         let p = &mut self.doc.project;
         let Some(t) = p.track(track) else {
@@ -884,6 +887,9 @@ impl App {
             .doc
             .perform(musiton_project::Edit::SetDevices { track, devices }, false)
         {
+            Ok(()) if self.sfz_loader.busy() => {
+                self.set_status(format!("Loading {}…", path.display()));
+            }
             Ok(()) => self.set_status(format!("Loaded {}", path.display())),
             Err(e) => self.set_status(format!("Loading the instrument failed: {e}")),
         }
@@ -1746,6 +1752,29 @@ impl App {
         self.arrange.selected_clips.clear();
         self.arrange.selected = None;
         self.relink.missing = self.assets.load_project(&self.doc.project, self.doc.dir());
+        for path in self.assets.missing_sfz(&self.doc.project) {
+            self.sfz_loader.start(path);
+        }
+    }
+
+    /// Adds SFZ instruments that finished loading (their tracks start to play).
+    fn finish_sfz_loads(&mut self) {
+        for (path, result) in self.sfz_loader.finished() {
+            let name = Path::new(&path)
+                .file_stem()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            match result {
+                Ok(loaded) => {
+                    self.set_status(format!("Loaded {name} ({} samples)", loaded.regions.len()));
+                    self.assets.insert_sfz(path, loaded);
+                }
+                Err(e) => {
+                    tracing::error!("cannot load {path}: {e}");
+                    self.set_status(format!("Loading {name} failed: {e}"));
+                }
+            }
+        }
     }
 
     /// The "missing audio files" dialog.
@@ -2941,8 +2970,9 @@ impl App {
         self.finish_recordings();
         self.finish_midi_recordings();
         self.update_automation_recording(&ctx);
+        self.finish_sfz_loads();
         self.update_graph();
-        if self.importer.running() > 0 {
+        if self.importer.running() > 0 || self.sfz_loader.busy() {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
         self.library.show(&ctx, Settings::data_dir().as_deref());
