@@ -25,6 +25,7 @@ mod key {
 }
 
 /// One track of a template: instrument with settings, effects and notes.
+#[derive(Clone)]
 pub struct Part {
     /// Track name.
     pub name: &'static str,

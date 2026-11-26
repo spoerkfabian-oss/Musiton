@@ -527,7 +527,8 @@ Newest entries are at the bottom of the log. Issues that were fixed later are ma
 - New presets: polysynth "Phonk cowbell" (808 cowbell: two squares 540 : 800 Hz through a band-pass, played as a melody), "Phonk 808", "Tekk lead", "Hyper supersaw"; drum synth "Phonk", "Tekk", "House".
 - Levels balanced by measurement (no listening in the cloud): tracks −21 … −33 dB RMS, mixes about −18 dB RMS with peaks ≤ −3 dB. The owner should judge the sound; tweaks are cheap.
 - Owner clarification: "own environments" means separate Musiton sections, so a Raw song shows no orchestra. Decisions: per song; filtered with a "Show all" escape. `musiton-devices/src/genres.rs` lists per genre the fitting instruments and factory preset names (the sampler, "Init" and user presets always fit); the transport bar has the selector and "Show all"; `device_types()` filters. File format: new optional `genre` field on the project (absent = all sounds; older files load unchanged, no version bump).
-- Still to do: sound packs (one-shots in the browser, filtered by genre too), orchestral/choir (after the sampled instruments), CC0 sample packs.
+- Sound packs (`sound_packs.rs`): 3–8 one-shots per genre rendered with the template builder (one note or chord, held, tail trimmed at −80 dB with a 5 ms fade, normalized, 24-bit WAV) into `<data dir>/Sounds/<genre>/` the first time the browser's "Sounds" button is pressed; made again when `PACK_VERSION` changes; other files there are left alone. Takes about a second.
+- Still to do: orchestral/choir with real samples (after the sampled instruments), CC0 sample packs.
 
 ## Open: CI maintenance
 - GitHub warns that `actions/upload-artifact@v4` targets Node.js 20 (deprecated; forced to run on Node.js 24). Move `installer.yml` (and any other workflow using it) to a release of the action that targets Node.js 24 when convenient. Not urgent: the runs still pass.

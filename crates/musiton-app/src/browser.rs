@@ -18,6 +18,8 @@ pub enum BrowserAction {
     FolderChanged(PathBuf),
     /// Double-clicked an audio file.
     Import(PathBuf),
+    /// Show the genre sound packs (made first if needed).
+    Sounds,
 }
 
 impl Browser {
@@ -50,6 +52,13 @@ impl Browser {
         let mut action = None;
         ui.horizontal(|ui| {
             ui.strong("Browser");
+            if ui
+                .button("Sounds")
+                .on_hover_text("One-shot sounds made by Musiton, for the song's genre")
+                .clicked()
+            {
+                action = Some(BrowserAction::Sounds);
+            }
             if ui.button("Folder…").clicked() {
                 let mut d = rfd::FileDialog::new().set_title("Choose a folder with audio files");
                 if let Some(dir) = &self.dir {

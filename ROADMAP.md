@@ -176,7 +176,7 @@ Per genre a project template (File → New from template: tracks, instruments, e
 - [x] Phonk (2022/23 drift phonk: melodic 808 cowbell, distorted 808, Memphis triplet hats) and Tekk (hardtekk: distorted 4/4 kick, offbeat bass, high lead)
 - [x] Trap / hip-hop, house, techno, hyperpop, hardstyle
 - [x] Genre environments (owner: "own Musiton sections"): per song, chosen in the transport bar; instrument menu and preset lists show only the genre's sounds, "Show all" lists everything
-- [ ] Sound packs: genre one-shots rendered by Musiton's own synths into the data folder (browser → Sounds), genre presets on the instruments
+- [x] Sound packs: genre one-shots rendered by Musiton's own synths into the data folder (browser → Sounds), genre presets on the instruments
 - [ ] Epic orchestral / choir: needs the sampled instruments of phase 18b (VSCO-2, Sonatina, a free choir library with a clean licence)
 - [ ] Free CC0 sample packs per genre through the sound library downloader (licence checked per pack)
 

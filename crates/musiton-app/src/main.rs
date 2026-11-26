@@ -22,6 +22,7 @@ mod remote;
 mod session;
 mod settings;
 mod settings_dialog;
+mod sound_packs;
 mod templates;
 mod transport;
 mod video_view;
@@ -1236,6 +1237,23 @@ impl App {
     fn default_dir(&self) -> Option<PathBuf> {
         let recent = self.settings.recent_projects.first()?;
         recent.parent()?.parent().map(Path::to_path_buf)
+    }
+
+    /// Shows the sound pack of the song's genre in the browser (making the packs first).
+    fn show_sounds(&mut self) {
+        let Some(data) = Settings::data_dir() else {
+            self.error = Some("No data folder for the sound packs.".into());
+            return;
+        };
+        match sound_packs::install(&data) {
+            Ok(root) => {
+                let dir = sound_packs::genre_dir(&root, self.doc.project.genre.as_deref());
+                self.browser.set_dir(&dir);
+                self.settings.browser_dir = Some(dir);
+                self.save_settings();
+            }
+            Err(e) => self.error = Some(format!("Could not make the sound packs: {e}")),
+        }
     }
 
     /// Copies the demo song to the Documents folder (first time) and opens it.
@@ -2803,6 +2821,7 @@ impl App {
                     self.settings.browser_dir = Some(dir);
                     self.save_settings();
                 }
+                Some(BrowserAction::Sounds) => self.show_sounds(),
                 Some(BrowserAction::Import(file)) => {
                     let at = self.playhead().0.unwrap_or(0.0);
                     let at = self.arrange.snap.floor(at, self.doc.project.time_sig);
